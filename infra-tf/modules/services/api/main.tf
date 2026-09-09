@@ -31,6 +31,44 @@ resource "aws_api_gateway_rest_api" "this" {
 # `aws_api_gateway_deployment.triggers` on the body hash ensures every
 # spec change produces a new deployment.
 
+# ═════════════════════════════════════════════════════════════════════
+#  Account-level CloudWatch Logs role (singleton per account+region)
+# ═════════════════════════════════════════════════════════════════════
+# API Gateway refuses to enable stage access/execution logging until
+# aws_api_gateway_account.cloudwatch_role_arn is set. It's an account-
+# wide setting — only this module creates API Gateways so the singleton
+# lives here. Uses the AWS-managed AmazonAPIGatewayPushToCloudWatchLogs
+# policy for least-privilege.
+
+data "aws_iam_policy_document" "apigw_logs_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["apigateway.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "apigw_cloudwatch" {
+  name               = "${var.name_prefix}-apigw-cloudwatch-logs"
+  assume_role_policy = data.aws_iam_policy_document.apigw_logs_trust.json
+  tags               = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "apigw_cloudwatch" {
+  role       = aws_iam_role.apigw_cloudwatch.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_api_gateway_account" "this" {
+  cloudwatch_role_arn = aws_iam_role.apigw_cloudwatch.arn
+
+  # Depend on the attachment — API Gateway validates the role has the
+  # right policy before accepting the setting.
+  depends_on = [aws_iam_role_policy_attachment.apigw_cloudwatch]
+}
+
 resource "aws_cloudwatch_log_group" "access" {
   name              = "${var.name_prefix}-api-access-logs"
   retention_in_days = 30
@@ -61,9 +99,17 @@ resource "aws_api_gateway_stage" "this" {
 
   xray_tracing_enabled = true
 
+  # Stage log config fails PutRestApi if the account-level logging role
+  # isn't set yet — force apply order.
+  depends_on = [aws_api_gateway_account.this]
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.access.arn
+    # API Gateway rejects access-log configs that don't include either
+    # $context.requestId or $context.extendedRequestId — it's the only
+    # way to correlate an access-log line back to an execution log.
     format = jsonencode({
+      requestId      = "$context.requestId"
       caller         = "$context.identity.caller"
       httpMethod     = "$context.httpMethod"
       ip             = "$context.identity.sourceIp"
@@ -114,8 +160,16 @@ resource "aws_api_gateway_method_settings" "expensive" {
 #  API Gateway invoke permission on every unique Lambda ARN
 # ═════════════════════════════════════════════════════════════════════
 
+# for_each keys must be plan-time-known. Lambda ARNs (esp. the stub's)
+# are apply-time. Key by path — a static string from the merged spec —
+# and dereference the ARN inside. Multiple paths hitting the same ARN
+# produce redundant-but-harmless permission resources (API Gateway
+# accepts duplicate statement IDs when their contents match).
 resource "aws_lambda_permission" "apigw_invoke" {
-  for_each = toset(local.unique_lambda_arns)
+  for_each = merge(
+    { for path in keys(local.path_arns) : path => local.path_arns[path] },
+    { "__stub" = aws_lambda_function.stub.arn },
+  )
 
   statement_id_prefix = "AllowAPIGatewayInvoke"
   action              = "lambda:InvokeFunction"

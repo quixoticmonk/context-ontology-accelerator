@@ -31,12 +31,17 @@ locals {
   }
 
   # Response headers to overlay on every operation's responses.
+  # `Access-Control-Allow-Origin` must be declared here because the
+  # /health mock integration sets it via responseParameters, and API
+  # Gateway rejects PutRestApi when integration-level headers don't
+  # exist as method-response headers.
   security_response_headers = {
-    "Strict-Transport-Security" = { schema = { type = "string" } }
-    "X-Content-Type-Options"    = { schema = { type = "string" } }
-    "X-Frame-Options"           = { schema = { type = "string" } }
-    "Cache-Control"             = { schema = { type = "string" } }
-    "Referrer-Policy"           = { schema = { type = "string" } }
+    "Access-Control-Allow-Origin" = { schema = { type = "string" } }
+    "Strict-Transport-Security"   = { schema = { type = "string" } }
+    "X-Content-Type-Options"      = { schema = { type = "string" } }
+    "X-Frame-Options"             = { schema = { type = "string" } }
+    "Cache-Control"               = { schema = { type = "string" } }
+    "Referrer-Policy"             = { schema = { type = "string" } }
   }
 
   authorizer_invoke_uri = "arn:${data.aws_partition.current.partition}:apigateway:${var.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.authorizer.arn}/invocations"
@@ -87,12 +92,24 @@ locals {
               })
             }
             # AWS_PROXY integration to the resolved Lambda ARN, or /health
-            # mock for the health probe.
-            "x-amazon-apigateway-integration" = (path == "/health" && method == "get") ? local.health_mock_integration : {
+            # mock for the health probe. Terraform's ternary requires both
+            # branches to have the same object type, so pad missing keys with
+            # null — jsonencode() strips nulls at serialization, so the API
+            # Gateway spec is identical to hand-authored either variant.
+            "x-amazon-apigateway-integration" = (path == "/health" && method == "get") ? {
+              type                = "mock"
+              passthroughBehavior = local.health_mock_integration.passthroughBehavior
+              requestTemplates    = local.health_mock_integration.requestTemplates
+              responses           = local.health_mock_integration.responses
+              httpMethod          = null
+              uri                 = null
+              } : {
               type                = "aws_proxy"
+              passthroughBehavior = "when_no_match"
+              requestTemplates    = null
+              responses           = null
               httpMethod          = "POST"
               uri                 = "arn:${data.aws_partition.current.partition}:apigateway:${var.region}:lambda:path/2015-03-31/functions/${local.path_arns[path]}/invocations"
-              passthroughBehavior = "when_no_match"
             }
             # Per-op security: authorizer for secured paths, empty for unsecured.
             security = contains(var.unsecured_paths, path) ? [] : [

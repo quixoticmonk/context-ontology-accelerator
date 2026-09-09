@@ -169,8 +169,12 @@ make up-all
 
 Under the hood:
 ```
-apply-00-network → apply-10-foundation → apply-20-namespace → apply-25-ecr
-  → build                                    # Lambda zips + container images
+apply-00-network
+  → apply-10-foundation
+  → build-lambdas                            # 20-namespace needs control-plane.zip
+  → apply-20-namespace
+  → apply-25-ecr
+  → build-images                             # ECR repos now exist for pushes
   → apply-30-services                        # metric-service, vkg, ontology
   → apply-40-sources                         # sources (ingestion, discovery, KG build)
   → apply-50-agentcore                       # serve + mcp AgentCore Runtimes

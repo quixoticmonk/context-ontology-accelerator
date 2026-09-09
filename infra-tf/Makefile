@@ -8,9 +8,10 @@
 #   make init-all              # once
 #   make apply-00-network
 #   make apply-10-foundation
+#   make build-lambdas         # 20-namespace consumes control-plane.zip
 #   make apply-20-namespace
 #   make apply-25-ecr          # ECR repos owned before any image-consuming stack
-#   make build                 # build lambda zips + push images to ECR
+#   make build-images          # push images to freshly-created ECR repos
 #   make apply-30-services     # metric-service, vkg, ontology
 #   make apply-40-sources
 #   make apply-50-agentcore    # serve + mcp AgentCore Runtimes
@@ -141,12 +142,13 @@ destroy-20-namespace: FORCE
 .PHONY: init-all up-all down-all fmt-all
 init-all: $(addprefix init-,$(LAYERS)) ## terraform init on every stack
 
-up-all: ## Apply every stack in order, building artifacts between ECR and services
+up-all: ## Apply every stack in order; builds Lambda zips before 20-namespace and images after 25-ecr
 	$(MAKE) apply-00-network
 	$(MAKE) apply-10-foundation
+	$(MAKE) build-lambdas            # 20-namespace needs control-plane.zip
 	$(MAKE) apply-20-namespace
 	$(MAKE) apply-25-ecr
-	$(MAKE) build
+	$(MAKE) build-images             # images need ECR repos to exist
 	$(MAKE) apply-30-services
 	$(MAKE) apply-40-sources
 	$(MAKE) apply-50-agentcore
