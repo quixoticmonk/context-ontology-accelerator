@@ -1,0 +1,247 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# IAM for the VKG module:
+#   1. task      — ECS task role: S3 read on the ontology bucket
+#   2. execution — ECS execution role: ECR pull + CloudWatch Logs
+#   3. reload    — reload Lambda role: ECS/ServiceDiscovery/autoscaling
+#                  provisioning + iam:PassRole on the task + execution roles
+#
+# Separate aws_iam_policy + aws_iam_role_policy_attachment per capability
+# (no inline policies) per the style guide.
+
+# ════════════════════════════════════════════════════════════════════
+#  Trust policies
+# ════════════════════════════════════════════════════════════════════
+
+data "aws_iam_policy_document" "ecs_tasks_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "lambda_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  1. Task role — S3 read on the ontology bucket
+# ════════════════════════════════════════════════════════════════════
+
+resource "aws_iam_role" "task" {
+  name               = "${var.name_prefix}-vkg-task-role"
+  description        = "VKG ECS task role - reads compiled ontology + R2RML from the ontology bucket"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+
+  tags = local.tags
+}
+
+data "aws_iam_policy_document" "task" {
+  statement {
+    sid       = "OntologyRead"
+    actions   = ["s3:GetObject"]
+    resources = ["${var.ontology_bucket_arn}/*"]
+  }
+
+  statement {
+    sid       = "OntologyList"
+    actions   = ["s3:ListBucket"]
+    resources = [var.ontology_bucket_arn]
+  }
+}
+
+resource "aws_iam_policy" "task" {
+  name   = "${var.name_prefix}-vkg-task-policy"
+  policy = data.aws_iam_policy_document.task.json
+  tags   = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "task" {
+  role       = aws_iam_role.task.name
+  policy_arn = aws_iam_policy.task.arn
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  2. Execution role — ECR pull + CloudWatch Logs
+# ════════════════════════════════════════════════════════════════════
+
+resource "aws_iam_role" "execution" {
+  name               = "${var.name_prefix}-vkg-execution-role"
+  description        = "VKG ECS execution role - ECR pull + CloudWatch Logs for per-namespace services"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "execution_managed" {
+  role       = aws_iam_role.execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Per-namespace VKG services log to /ecs/vkg-* groups the execution role
+# must be able to create on first task launch.
+data "aws_iam_policy_document" "execution_logs" {
+  statement {
+    sid = "VkgPerNamespaceLogs"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*",
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*:*",
+    ]
+  }
+}
+
+resource "aws_iam_policy" "execution_logs" {
+  name   = "${var.name_prefix}-vkg-execution-logs-policy"
+  policy = data.aws_iam_policy_document.execution_logs.json
+  tags   = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "execution_logs" {
+  role       = aws_iam_role.execution.name
+  policy_arn = aws_iam_policy.execution_logs.arn
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  3. Reload Lambda role
+# ════════════════════════════════════════════════════════════════════
+
+resource "aws_iam_role" "reload" {
+  name               = "${local.reload_fn_name}-role"
+  description        = "VKG reload Lambda role - provisions per-namespace ECS services on ontology publish"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "reload_vpc" {
+  role       = aws_iam_role.reload.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+data "aws_iam_policy_document" "reload" {
+  # ECS service lifecycle scoped to this cluster's services.
+  statement {
+    sid = "EcsServiceLifecycle"
+    actions = [
+      "ecs:UpdateService",
+      "ecs:DescribeServices",
+      "ecs:CreateService",
+    ]
+    resources = ["arn:${data.aws_partition.current.partition}:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:service/${aws_ecs_cluster.this.name}/*"]
+  }
+
+  # ListServices has no resource type; scope to this cluster via condition.
+  statement {
+    sid       = "EcsListServices"
+    actions   = ["ecs:ListServices"]
+    resources = ["*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.this.arn]
+    }
+  }
+
+  # Task-definition register/describe have no resource-level scoping.
+  statement {
+    sid       = "EcsTaskDefinition"
+    actions   = ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"]
+    resources = ["*"]
+  }
+
+  # PassRole the task + execution roles to ECS only.
+  statement {
+    sid       = "PassVkgRoles"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.task.arn, aws_iam_role.execution.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+
+  # Cloud Map service registration for per-namespace services.
+  statement {
+    sid = "ServiceDiscovery"
+    actions = [
+      "servicediscovery:CreateService",
+      "servicediscovery:ListServices",
+    ]
+    resources = ["*"]
+  }
+
+  # Application auto-scaling for per-namespace services.
+  statement {
+    sid = "AutoScaling"
+    actions = [
+      "application-autoscaling:RegisterScalableTarget",
+      "application-autoscaling:PutScalingPolicy",
+    ]
+    resources = ["arn:${data.aws_partition.current.partition}:application-autoscaling:${var.region}:${data.aws_caller_identity.current.account_id}:scalable-target/*"]
+  }
+
+  # Per-namespace log-group management.
+  statement {
+    sid = "VkgLogs"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*",
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*:*",
+    ]
+  }
+
+  # Read the image-URI SSM parameter.
+  statement {
+    sid       = "ReadImageParam"
+    actions   = ["ssm:GetParameter"]
+    resources = [aws_ssm_parameter.container_image.arn]
+  }
+
+  # PutMetricData has no resource-level scoping; restrict by namespace.
+  statement {
+    sid       = "ReloadMetrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["COA/VKG"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "reload" {
+  name   = "${local.reload_fn_name}-policy"
+  policy = data.aws_iam_policy_document.reload.json
+  tags   = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "reload" {
+  role       = aws_iam_role.reload.name
+  policy_arn = aws_iam_policy.reload.arn
+}

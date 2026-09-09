@@ -1,0 +1,48 @@
+# Terraform ---------------------------------------------------------------
+.terraform/
+**/.terraform/
+.terraform.tfstate.lock.info
+
+# State — never commit. Local backend keeps state in `terraform.tfstate`
+# in this directory; S3 backend leaves nothing here.
+*.tfstate
+*.tfstate.*
+
+# Plans — never commit (may contain secrets in resource attributes).
+*.tfplan
+*.tfplan.*
+
+# Per-module lock files created by module-level `terraform init` during
+# sub-agent validation. The root `.terraform.lock.hcl` is the source of
+# truth for the composed graph; per-module locks are throwaway artifacts.
+modules/**/.terraform.lock.hcl
+
+# tfvars — never commit anything but the example. Real tfvars can carry
+# secrets (OIDC client secrets, admin emails, cert ARNs, VPC IDs).
+*.tfvars
+!terraform.tfvars.example
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Override files - typically used for local one-off changes
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Build artifacts ---------------------------------------------------------
+# Lambda zip bundles and container image tag files. All rebuilt by
+# `make build`; nothing to commit.
+artifacts/lambdas/
+artifacts/images/
+!artifacts/lambdas/.gitkeep
+!artifacts/images/.gitkeep
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

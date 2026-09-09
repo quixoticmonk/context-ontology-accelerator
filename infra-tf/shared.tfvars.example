@@ -1,0 +1,73 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Shared tfvars — copied by every stack apply via `-var-file=../../shared.tfvars`.
+# Copy this file to `shared.tfvars` (gitignored) and edit for your deployment.
+
+# ── Environment identity ─────────────────────────────────────────────
+resource_prefix = "coa"
+env             = "dev"
+region          = "us-east-1"
+
+# ── Availability zones ───────────────────────────────────────────────
+# In AgentCore-restricted regions (us-east-1 today), stack 00-network
+# ignores this value and auto-resolves the correct AZs by intersecting
+# AgentCore's supported physical zone IDs with the AOSS endpoint's AZs.
+# In unrestricted regions this value is used verbatim.
+# Recommended default:
+azs = ["us-east-1a", "us-east-1b"]
+
+# ── Bedrock model IDs ────────────────────────────────────────────────
+# bedrock_embed_model_id         = "us.cohere.embed-v4:0"
+# bedrock_embed_dimensions       = 1024
+# bedrock_chat_model_id          = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# bedrock_induction_llm_model_id = "us.anthropic.claude-sonnet-5"
+# bedrock_llm_model_id           = "us.anthropic.claude-sonnet-5"
+
+# ── AOSS NEXTGEN capacity ────────────────────────────────────────────
+# aoss_min_ocu = 2
+# aoss_max_ocu = 96
+
+# ── Identity provider ────────────────────────────────────────────────
+idp_type            = "COGNITO"
+initial_admin_email = "admin@example.com"
+
+# OIDC branch (required when idp_type = "OIDC"):
+# oidc_settings = {
+#   issuer_url  = "https://dev-123.okta.com/oauth2/default"
+#   client_id   = "0oa..."
+#   group_claim = "groups"
+# }
+
+# ── Custom domain (all-or-nothing) ───────────────────────────────────
+# ui_domain_name      = "coa.example.com"
+# ui_certificate_arn  = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+# api_domain_name     = "api.coa.example.com"
+# api_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+# hosted_zone_id      = "Z1234567890ABC"
+
+# ── WAF WebACL overrides ─────────────────────────────────────────────
+# api_web_acl_arn        = "arn:aws:wafv2:us-east-1:123456789012:regional/webacl/..."
+# cloudfront_web_acl_arn = "arn:aws:wafv2:us-east-1:123456789012:global/webacl/..."
+
+# ── Cross-network JDBC connectivity ──────────────────────────────────
+# jdbc_peer_vpc_id       = "vpc-0abc123"
+# jdbc_peer_cidrs        = ["10.20.0.0/16"]
+# jdbc_peer_owner_id     = "999999999999"
+# jdbc_peer_region       = "us-west-2"
+# jdbc_tgw_id            = "tgw-0abc123"
+# jdbc_tgw_cidrs         = ["10.30.0.0/16"]
+# jdbc_privatelink_service      = "com.amazonaws.vpce.us-east-1.vpce-svc-0abc123"
+# jdbc_privatelink_port         = 5432
+# jdbc_privatelink_private_dns  = true
+
+# ── Lambda tuning ────────────────────────────────────────────────────
+# lambda_reserved_concurrency = 5
+
+# ── VPC import ───────────────────────────────────────────────────────
+# vpc_id = "vpc-0abc123"
+
+# ── Data-plane brand tokens ──────────────────────────────────────────
+# graph_base_uri      = "http://coa.amazon.com"
+# event_source_prefix = ""
+
