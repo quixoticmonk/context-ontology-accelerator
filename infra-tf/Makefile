@@ -51,7 +51,7 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-28s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 # ── Artifact builds ─────────────────────────────────────────────────
-.PHONY: build build-lambdas build-images smithy-generate
+.PHONY: build build-lambdas build-images build-web build-openapi smithy-generate
 
 # Both lambda zips and container images COPY from ../smithy-generated/,
 # which is gitignored. Generate it once before either build runs.
@@ -59,7 +59,13 @@ REPO_ROOT       := $(abspath $(CURDIR)/..)
 SMITHY_MARKER   := $(REPO_ROOT)/smithy-generated/control-plane-python-server
 SMITHY_SCRIPT   := $(REPO_ROOT)/scripts/smithy-generate.sh
 
-build: smithy-generate build-lambdas build-images ## Generate smithy models, build every Lambda zip, and every container image
+WEB_APP_DIR     := $(REPO_ROOT)/packages/web-app
+WEB_APP_DIST    := $(WEB_APP_DIR)/dist
+
+OPENAPI_MERGE_DIR := $(CURDIR)/modules/services/api/openapi
+OPENAPI_MERGED    := $(CURDIR)/artifacts/openapi/merged.json
+
+build: smithy-generate build-lambdas build-openapi build-images build-web ## Generate smithy models, merge OpenAPI, build every Lambda zip, container image, and the web app
 
 smithy-generate: ## Generate smithy models under ../smithy-generated (idempotent)
 	@if [ -d "$(SMITHY_MARKER)" ]; then \
@@ -76,6 +82,24 @@ build-lambdas: smithy-generate ## Build every Lambda zip (parallel-safe with `-j
 	    $(MAKE) -C $$d build || exit 1; \
 	  done; \
 	fi
+
+build-openapi: smithy-generate ## Merge control-plane + data-layer OpenAPI into artifacts/openapi/merged.json (consumed by 60-api-edge)
+	@echo "==> build-openapi: $(OPENAPI_MERGE_DIR)"
+	@$(MAKE) -C $(OPENAPI_MERGE_DIR) build
+
+build-web: ## Build the Vite web app to packages/web-app/dist (uploaded by 60-api-edge)
+	@echo "==> build-web: $(WEB_APP_DIR)"
+	@command -v pnpm >/dev/null 2>&1 || { \
+	  echo "ERROR: pnpm not on PATH. Install with 'brew install pnpm' or 'npm install -g pnpm'."; \
+	  echo "This repo is a pnpm workspace — npm/yarn will fail on 'workspace:*' protocol."; \
+	  exit 1; \
+	}
+	@if [ ! -d "$(REPO_ROOT)/node_modules" ]; then \
+	  echo "==> installing workspace dependencies (pnpm install at repo root)"; \
+	  cd $(REPO_ROOT) && pnpm install; \
+	fi
+	@cd $(REPO_ROOT) && pnpm --filter coa-web-app build
+	@echo "==> built $(WEB_APP_DIST)"
 
 build-images: smithy-generate ## Build and push every container image to ECR
 	@if [ -z "$(IMAGE_DIRS)" ]; then echo "no image Makefiles yet — nothing to build"; else \
@@ -153,6 +177,8 @@ up-all: ## Apply every stack in order; builds Lambda zips before 20-namespace an
 	$(MAKE) apply-40-sources
 	$(MAKE) apply-50-agentcore
 	$(MAKE) apply-55-data-layer
+	$(MAKE) build-openapi            # 60-api-edge reads merged.json
+	$(MAKE) build-web                # 60-api-edge uploads dist/ to the website bucket
 	$(MAKE) apply-60-api-edge
 	$(MAKE) apply-70-observability
 

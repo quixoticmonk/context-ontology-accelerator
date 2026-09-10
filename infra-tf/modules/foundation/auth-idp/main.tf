@@ -142,6 +142,16 @@ resource "aws_cognito_user_pool_client" "userpool" {
     aws_cognito_identity_provider.saml,
     aws_cognito_identity_provider.oidc,
   ]
+
+  # The CloudFront domain isn't known until stack 60-api-edge applies, so
+  # stack 60's web module invokes `cognito-callback-patch` Lambda to add
+  # `https://<cf-domain>/authenticate/` and `https://<cf-domain>/` to
+  # these two allowlists AFTER-the-fact. Every subsequent `terraform
+  # apply` on stack 10 would revert those additions if TF still owned
+  # the fields — ignore them so the Lambda's patches survive.
+  lifecycle {
+    ignore_changes = [callback_urls, logout_urls]
+  }
 }
 
 # ── MCP/CLI public client ──────────────────────────────────────────
@@ -263,6 +273,23 @@ resource "aws_ssm_parameter" "issuer" {
   name  = "${var.ssm_prefix}/issuer"
   type  = "String"
   value = local.issuer_url
+
+  tags = {
+    Component = var.component
+  }
+}
+
+# Cognito hosted UI domain prefix (e.g. "coa-dev-auth-697621333100"). The
+# full origin is https://<prefix>.auth.<region>.amazoncognito.com and hosts
+# /oauth2/authorize, /oauth2/token, /oauth2/userInfo, /oauth2/revoke.
+# The web module needs it in the CSP `connect-src` allowlist so the SPA's
+# token exchange fetch isn't blocked.
+resource "aws_ssm_parameter" "user_pool_domain" {
+  count = local.cognito_enabled ? 1 : 0
+
+  name  = "${var.ssm_prefix}/userpool-domain"
+  type  = "String"
+  value = aws_cognito_user_pool_domain.this[0].domain
 
   tags = {
     Component = var.component

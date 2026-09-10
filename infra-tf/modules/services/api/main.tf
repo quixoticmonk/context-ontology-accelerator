@@ -89,6 +89,7 @@ resource "aws_api_gateway_deployment" "this" {
 
   depends_on = [
     aws_lambda_permission.apigw_invoke,
+    aws_lambda_permission.apigw_invoke_stub,
   ]
 }
 
@@ -160,20 +161,30 @@ resource "aws_api_gateway_method_settings" "expensive" {
 #  API Gateway invoke permission on every unique Lambda ARN
 # ═════════════════════════════════════════════════════════════════════
 
-# for_each keys must be plan-time-known. Lambda ARNs (esp. the stub's)
-# are apply-time. Key by path — a static string from the merged spec —
-# and dereference the ARN inside. Multiple paths hitting the same ARN
-# produce redundant-but-harmless permission resources (API Gateway
-# accepts duplicate statement IDs when their contents match).
+# One invoke permission per unique Lambda. Keying by path (with 88+ paths)
+# blew past Lambda's 20 KB resource-policy limit even though each statement
+# is trivially redundant — API Gateway's source_arn wildcard (`/*/*`) covers
+# every stage and method, so one permission per function is sufficient.
+# Values from `var.path_handlers` are SSM-backed ARN strings resolved at
+# plan time; the stub lives in this module and is granted separately so we
+# don't reference an apply-time attribute inside a `for_each` key.
 resource "aws_lambda_permission" "apigw_invoke" {
-  for_each = merge(
-    { for path in keys(local.path_arns) : path => local.path_arns[path] },
-    { "__stub" = aws_lambda_function.stub.arn },
-  )
+  # SSM data sources mark their values sensitive; that propagates to
+  # `values(var.path_handlers)`. `for_each` refuses sensitive keys, so
+  # peel the flag off — these are Lambda ARNs, not secrets.
+  for_each = toset(nonsensitive(distinct(values(var.path_handlers))))
 
   statement_id_prefix = "AllowAPIGatewayInvoke"
   action              = "lambda:InvokeFunction"
   function_name       = each.value
+  principal           = "apigateway.amazonaws.com"
+  source_arn          = "${aws_api_gateway_rest_api.this.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "apigw_invoke_stub" {
+  statement_id_prefix = "AllowAPIGatewayInvokeStub"
+  action              = "lambda:InvokeFunction"
+  function_name       = aws_lambda_function.stub.arn
   principal           = "apigateway.amazonaws.com"
   source_arn          = "${aws_api_gateway_rest_api.this.execution_arn}/*/*"
 }

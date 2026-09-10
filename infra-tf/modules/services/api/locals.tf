@@ -69,6 +69,7 @@ locals {
     }
   }
 
+
   # Build the enriched spec:
   #  1. Start from local.merged_spec_raw
   #  2. For every (path, method) that is a real HTTP method operation,
@@ -117,7 +118,10 @@ locals {
             ]
           }) if contains(local.http_methods, method)
         },
-        # Preserve non-method top-level path keys (parameters, etc.).
+        # Preserve non-method top-level path keys (parameters, options, etc.).
+        # Smithy emits `options` with a canned CORS-preflight mock integration
+        # (security = [], responseHeaders set). Preserving it as-is is what
+        # gives us browser-side CORS preflight support end-to-end.
         { for k, v in methods : k => v if !contains(local.http_methods, k) },
       )
     }
@@ -127,18 +131,37 @@ locals {
       # header scheme, and populate authorizerUri +
       # authorizerCredentials with the runtime values. Smithy emits
       # http/Bearer which API Gateway rejects.
-      securitySchemes = {
-        for name, scheme in try(local.merged_spec_raw.components.securitySchemes, {}) :
-        name => try(scheme["x-amazon-apigateway-authorizer"], null) != null ? {
-          type = "apiKey"
-          name = "Authorization"
-          in   = "header"
-          "x-amazon-apigateway-authorizer" = merge(scheme["x-amazon-apigateway-authorizer"], {
-            authorizerUri         = local.authorizer_invoke_uri
-            authorizerCredentials = aws_iam_role.authorizer_invoke.arn
-          })
-        } : scheme
-      }
+      #
+      # Split into two for-loops (one per branch) so each loop's values
+      # have a uniform shape — Terraform's strict-type ternary rejects
+      # branches with different object attribute sets in a single map.
+      securitySchemes = merge(
+        {
+          for name, scheme in try(local.merged_spec_raw.components.securitySchemes, {}) :
+          # API Gateway requires `x-amazon-apigateway-authtype: custom` on
+          # apiKey schemes with an x-amazon-apigateway-authorizer — without
+          # it, ImportRestApi silently drops the securityScheme AND every
+          # per-op `security` reference to it, leaving every route with
+          # authType: NONE. Smithy emits it in the merged spec; this
+          # transformation must preserve it verbatim.
+          name => {
+            type                              = "apiKey"
+            name                              = "Authorization"
+            in                                = "header"
+            "x-amazon-apigateway-authtype"    = try(scheme["x-amazon-apigateway-authtype"], "custom")
+            "x-amazon-apigateway-authorizer" = merge(scheme["x-amazon-apigateway-authorizer"], {
+              authorizerUri         = local.authorizer_invoke_uri
+              authorizerCredentials = aws_iam_role.authorizer_invoke.arn
+            })
+          }
+          if try(scheme["x-amazon-apigateway-authorizer"], null) != null
+        },
+        {
+          for name, scheme in try(local.merged_spec_raw.components.securitySchemes, {}) :
+          name => scheme
+          if try(scheme["x-amazon-apigateway-authorizer"], null) == null
+        },
+      )
     })
     info = merge(local.merged_spec_raw.info, {
       description = "Context Ontology Accelerator REST API — namespace, ingestion, and query management."

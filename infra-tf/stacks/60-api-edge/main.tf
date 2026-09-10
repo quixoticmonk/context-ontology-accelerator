@@ -140,11 +140,21 @@ module "web" {
     ui_certificate_arn = var.ui_certificate_arn
     hosted_zone_id     = var.hosted_zone_id
   } : null
-  is_cognito_mode   = var.idp_type != "OIDC"
-  name_prefix       = local.name_prefix
-  serve_runtime_arn = local.serve_runtime_arn
-  ssm_prefix        = local.ssm_prefix
-  web_acl_arn       = var.cloudfront_web_acl_arn
+  is_cognito_mode      = var.idp_type != "OIDC"
+  name_prefix          = local.name_prefix
+  serve_runtime_arn    = local.serve_runtime_arn
+  ssm_prefix           = local.ssm_prefix
+  web_acl_arn          = var.cloudfront_web_acl_arn
+  website_content_path = "${path.root}/../../../packages/web-app/dist"
+
+  # Wire the Cognito callback patch — CloudFront domain isn't known
+  # until this stack applies, so patching the pool client is deferred
+  # here (via a Lambda invoked by the aws_lambda_invoke action).
+  user_pool_id                    = var.idp_type != "OIDC" ? nonsensitive(data.aws_ssm_parameter.user_pool_id[0].value) : ""
+  userpool_client_id              = var.idp_type != "OIDC" ? nonsensitive(data.aws_ssm_parameter.userpool_client_id[0].value) : ""
+  cognito_callback_patch_zip_path = "${path.root}/../../artifacts/lambdas/cognito-callback-patch.zip"
+  cognito_hosted_ui_origin = var.idp_type != "OIDC" ? "https://${nonsensitive(data.aws_ssm_parameter.userpool_domain[0].value)}.auth.${var.region}.amazoncognito.com" : ""
+  api_cors_patch_zip_path  = "${path.root}/../../artifacts/lambdas/api-cors-patch.zip"
 }
 
 # ── Stack-added SSM writes for observability ─────────────────────────

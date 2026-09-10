@@ -18,6 +18,8 @@ uv --version
 python3 --version    # 3.12+
 jq --version
 java -version        # 17+ (Smithy codegen runs on the JVM)
+node -v              # 20+ (web-app build)
+pnpm -v              # 9+ (workspace-aware; npm/yarn WILL NOT WORK)
 
 export AWS_PROFILE=your-profile-name
 aws sts get-caller-identity
@@ -38,6 +40,15 @@ java -version   # should print openjdk 21
 `make build` invokes `scripts/smithy-generate.sh` before building any Lambda
 zip or container image; the codegen output (`../smithy-generated/`) is
 gitignored, so a first-time or clean checkout requires Java to be present.
+
+The repo is a **pnpm workspace** — the web-app's `package.json` uses the
+`workspace:*` protocol that only pnpm (not npm or yarn) understands. Install
+pnpm before running `make build-web` or `make up-all`:
+
+```bash
+brew install pnpm            # or: npm install -g pnpm
+pnpm -v                      # should print 9+
+```
 
 ### Terraform plugin cache (recommended)
 
@@ -179,7 +190,8 @@ apply-00-network
   → apply-40-sources                         # sources (ingestion, discovery, KG build)
   → apply-50-agentcore                       # serve + mcp AgentCore Runtimes
   → apply-55-data-layer                      # data-layer Lambda (needs serve ARN)
-  → apply-60-api-edge                        # API Gateway + CloudFront + S3 website
+  → build-web                                # Vite build → packages/web-app/dist
+  → apply-60-api-edge                        # API Gateway + CloudFront + uploads dist/ to S3
   → apply-70-observability                   # CloudWatch alarms
 ```
 

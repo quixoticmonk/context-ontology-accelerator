@@ -76,3 +76,33 @@ variable "website_content_path" {
   type        = string
   default     = null
 }
+
+variable "user_pool_id" {
+  description = "Cognito user pool ID (from auth-idp via SSM). When non-empty, the module patches the pool's client to register the CloudFront callback + logout URLs. Empty in OIDC mode."
+  type        = string
+  default     = ""
+}
+
+variable "userpool_client_id" {
+  description = "Cognito user pool CLIENT ID (from auth-idp via SSM). Callback + logout allowlists are patched onto this client."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_callback_patch_zip_path" {
+  description = "Path to the built cognito-callback-patch Lambda zip. Required when `user_pool_id` is set."
+  type        = string
+  default     = ""
+}
+
+variable "cognito_hosted_ui_origin" {
+  description = "Full origin (scheme + host) of the Cognito hosted UI domain, e.g. `https://coa-dev-auth-697621333100.auth.us-east-1.amazoncognito.com`. Added to the CSP connect-src allowlist so the SPA can POST to /oauth2/token. Empty string when Cognito is not the IdP (OIDC mode)."
+  type        = string
+  default     = ""
+}
+
+variable "api_cors_patch_zip_path" {
+  description = "Path to the built api-cors-patch Lambda zip. Required if `api_rest_api_id` is set."
+  type        = string
+  default     = ""
+}

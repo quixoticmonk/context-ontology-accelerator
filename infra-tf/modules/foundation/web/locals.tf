@@ -44,7 +44,15 @@ locals {
 
   connect_src = distinct(concat(
     ["'self'"],
-    compact([local.api_origin, local.auth_origin, local.agentcore_origin, local.cognito_origin]),
+    compact([
+      local.api_origin,
+      local.auth_origin,          # cognito-idp.<region>.amazonaws.com (issuer + jwks)
+      local.agentcore_origin,
+      local.cognito_origin,
+      # Hosted UI domain — /oauth2/token, /oauth2/userInfo, /oauth2/revoke.
+      # Separate origin from the issuer, so it needs its own allowlist entry.
+      var.cognito_hosted_ui_origin != "" ? var.cognito_hosted_ui_origin : null,
+    ]),
     local.api_origin == null ? ["https:"] : [],
   ))
 

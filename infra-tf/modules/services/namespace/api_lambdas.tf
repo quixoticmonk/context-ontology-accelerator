@@ -221,8 +221,17 @@ resource "aws_lambda_function" "namespace_api" {
   handler          = "coa_control_plane.namespace.namespace_api_handler.handler"
   filename         = var.control_plane_zip_path
   source_code_hash = local.lambda_zip_hash
-  timeout          = 15
-  memory_size      = 256
+  # CDK sets 15s. TF port bumps to 300s because fresh accounts have
+  # observed DataZone CreateProject take >60s (bootstrap latency on
+  # first project in a new domain — ACL init, Glue catalog registration,
+  # permission propagation, potentially SSM/IAM prop delays chained
+  # from service.py). Lambda billing is per-ms of actual duration so
+  # headroom costs nothing on warm paths. NB: API Gateway integration
+  # timeout caps user-facing latency at 29s; longer runs return 504 to
+  # the client but complete the backend work — the namespace appears
+  # in the list after refresh.
+  timeout     = 300
+  memory_size = 256
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids

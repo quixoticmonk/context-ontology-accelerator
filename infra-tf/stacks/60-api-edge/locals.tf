@@ -85,3 +85,17 @@ data "aws_ssm_parameter" "ontology_api_fn_arn" { name = "${local.ssm_prefix}/ont
 data "aws_ssm_parameter" "data_layer_api_fn_arn" { name = "${local.ssm_prefix}/data-layer/api-fn-arn" }
 
 data "aws_ssm_parameter" "serve_runtime_arn" { name = "${local.ssm_prefix}/serve/runtime-arn" }
+
+# Cognito identifiers (Cognito mode only; empty string when idp_type=OIDC).
+data "aws_ssm_parameter" "user_pool_id" {
+  count = var.idp_type != "OIDC" ? 1 : 0
+  name  = "${local.ssm_prefix}/userpool-id"
+}
+data "aws_ssm_parameter" "userpool_client_id" {
+  count = var.idp_type != "OIDC" ? 1 : 0
+  name  = "${local.ssm_prefix}/userpool-client-id"
+}
+data "aws_ssm_parameter" "userpool_domain" {
+  count = var.idp_type != "OIDC" ? 1 : 0
+  name  = "${local.ssm_prefix}/userpool-domain"
+}

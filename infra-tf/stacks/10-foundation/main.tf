@@ -25,10 +25,22 @@ module "authnz" {
   source = "../../modules/foundation/authnz"
 
   cedar_seed_path = "${path.root}/../../../libs/common/src/coa_authorization/seed"
-  claims_mappings = var.initial_claims_mappings
-  environment     = var.env
-  name_prefix     = local.name_prefix
-  ssm_prefix      = local.ssm_prefix
+  # CDK auto-appends { group: "Admin", roles: ["platform-admin"] } for
+  # Cognito/SAML modes (idp-authentication-stack.ts:137-143). Without
+  # this, the initial admin has no global role and every list-namespaces
+  # call returns [] (list_handler falls through to per-user scoping,
+  # which only matches resource-scoped role assignments — of which the
+  # bootstrap Admin user has none).
+  claims_mappings = concat(
+    var.initial_claims_mappings,
+    var.idp_type != "OIDC" ? [{
+      group_value  = "Admin"
+      mapped_roles = ["platform-admin"]
+    }] : [],
+  )
+  environment = var.env
+  name_prefix = local.name_prefix
+  ssm_prefix  = local.ssm_prefix
 }
 
 module "guardrail" {
