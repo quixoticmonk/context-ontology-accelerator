@@ -56,17 +56,21 @@ locals {
     DEEP_REASONING_SYNTHESIS_RESERVE_S = "25"
     RESOLVE_TIMEOUT_S                  = "170"
     ALLOW_NO_GUARDRAIL                 = var.env != "prod" ? "true" : "false"
-    GRAPH_URI_TEMPLATE                 = "https://ontology-workbench.local/{namespace}"
-    DATA_SOURCES_TABLE                 = var.sources_table_name
-    NAMESPACES_TABLE                   = var.namespaces_table_name
-    ROLES_TABLE_NAME                   = var.roles_table_name
-    RRM_TABLE_NAME                     = var.resource_role_mappings_table_name
-    GROUP_CLAIM_NAME                   = var.group_claim_name
-    MEMORY_ID                          = aws_bedrockagentcore_memory.session.id
-    SESSION_METADATA_TABLE             = aws_dynamodb_table.session_metadata.name
-    SCL_CEDAR_FAIL_OPEN_NO_ROLES       = "false"
-    BEDROCK_MODEL_ID                   = var.bedrock_llm_model_id
-    BEDROCK_EMBED_MODEL_ID             = var.bedrock_embed_model_id
-    ALLOWED_OVERRIDE_MODELS            = join(",", var.allowed_override_models)
+    # Reader path: matches the writers (metric-service NDB_GRAPH_URI_BASE,
+    # ontology-engine neptune_db_graph). Serve reads these graphs, so a
+    # reader-only override would match nothing — always derive from the
+    # brand base URI the writers use (via local.brand_env at the root).
+    GRAPH_URI_TEMPLATE           = "${var.brand_env.GRAPH_BASE_URI}/{namespace}"
+    DATA_SOURCES_TABLE           = var.sources_table_name
+    NAMESPACES_TABLE             = var.namespaces_table_name
+    ROLES_TABLE_NAME             = var.roles_table_name
+    RRM_TABLE_NAME               = var.resource_role_mappings_table_name
+    GROUP_CLAIM_NAME             = var.group_claim_name
+    MEMORY_ID                    = aws_bedrockagentcore_memory.session.id
+    SESSION_METADATA_TABLE       = aws_dynamodb_table.session_metadata.name
+    SCL_CEDAR_FAIL_OPEN_NO_ROLES = "false"
+    BEDROCK_MODEL_ID             = var.bedrock_llm_model_id
+    BEDROCK_EMBED_MODEL_ID       = var.bedrock_embed_model_id
+    ALLOWED_OVERRIDE_MODELS      = join(",", var.allowed_override_models)
   })
 }

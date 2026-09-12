@@ -42,17 +42,30 @@ locals {
   agentcore_origin = var.serve_runtime_arn != null ? "https://bedrock-agentcore.${local.region}.amazonaws.com" : null
   cognito_origin   = "https://cognito-idp.${local.region}.amazonaws.com"
 
+  # S3 origins for the browser→S3 presigned PUT/GET used by OSI import/export.
+  # Region-scoped like the other origins: the OSI bucket lives in a service
+  # stack (cross-module), so we scope to the region's S3 rather than couple
+  # foundation/web to it. Both virtual-hosted (`<bucket>.s3.<region>...`,
+  # boto3's default) and path-style are allowed. Without these, connect-src
+  # blocks the presigned upload and OSI import via the UI fails with
+  # "Failed to fetch" (issue 103).
+  s3_origins = [
+    "https://*.s3.${local.region}.amazonaws.com",
+    "https://s3.${local.region}.amazonaws.com",
+  ]
+
   connect_src = distinct(concat(
     ["'self'"],
     compact([
       local.api_origin,
-      local.auth_origin,          # cognito-idp.<region>.amazonaws.com (issuer + jwks)
+      local.auth_origin, # cognito-idp.<region>.amazonaws.com (issuer + jwks)
       local.agentcore_origin,
       local.cognito_origin,
       # Hosted UI domain — /oauth2/token, /oauth2/userInfo, /oauth2/revoke.
       # Separate origin from the issuer, so it needs its own allowlist entry.
       var.cognito_hosted_ui_origin != "" ? var.cognito_hosted_ui_origin : null,
     ]),
+    local.s3_origins,
     local.api_origin == null ? ["https:"] : [],
   ))
 

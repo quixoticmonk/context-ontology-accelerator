@@ -369,6 +369,20 @@ aws ssm get-parameters-by-path --path /coa --recursive --query 'Parameters[].Nam
 # Provider transient error on macOS ("failed to read plugin stdout")
 xattr -c ~/.terraform.d/plugin-cache/**/*.so 2>/dev/null || true
 find stacks -name .terraform -type d -exec rm -rf {} + && make init-all
+
+# UI shows stale API endpoint after 60-api-edge changes (e.g. new API id,
+# Cognito client rotation). CloudFront caches runtime-config.json and
+# index.html at edge for up to 24h; the S3 upload doesn't purge the CDN.
+# Force a refresh:
+CF_ID=$(cd stacks/60-api-edge && terraform output -raw cloudfront_distribution_id)
+aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths '/*'
+
+# API Gateway has zero authorizers / every route returns 401 or shows as
+# authType: NONE. The OpenAPI import silently drops a custom-authorizer
+# securityScheme when `x-amazon-apigateway-authtype: custom` is missing.
+# `modules/services/api/locals.tf` preserves it in the enriched_spec; if
+# you touch that transformation, verify with:
+aws apigateway get-authorizers --rest-api-id $(cd stacks/60-api-edge && terraform output -raw api_id) --region us-east-1
 ```
 
 ---

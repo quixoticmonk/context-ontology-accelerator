@@ -124,7 +124,11 @@ locals {
           FunctionName = aws_lambda_function.preprocessing.arn
           "Payload.$"  = "$"
         }
-        # Trim payload to avoid States.DataLimitExceeded (256KB).
+        # Trim payload to avoid States.DataLimitExceeded (256KB limit). Only
+        # pass the summary fields needed by downstream states. The full
+        # per-file issues list is bounded IN THE LAMBDA (issue 104) — the raw
+        # Lambda payload is size-checked before this selector runs, so the
+        # handler returns a capped preview + an S3 pointer, not the whole array.
         ResultSelector = {
           "status.$"             = "$.Payload.status"
           "files_total.$"        = "$.Payload.files_total"
@@ -132,7 +136,9 @@ locals {
           "files_skipped.$"      = "$.Payload.files_skipped"
           "files_errored.$"      = "$.Payload.files_errored"
           "staging_prefix.$"     = "$.Payload.staging_prefix"
-          "issues.$"             = "$.Payload.issues"
+          "issues_preview.$"     = "$.Payload.issues_preview"
+          "issues_truncated.$"   = "$.Payload.issues_truncated"
+          "issues_s3_key.$"      = "$.Payload.issues_s3_key"
         }
         ResultPath = "$.preprocessResult"
         Retry = [{
@@ -154,24 +160,31 @@ locals {
             PK = { "S.$" = "States.Format('NS#{}', $.namespace_id)" }
             SK = { "S.$" = "States.Format('SRC#{}', $.doc_source_id)" }
           }
-          UpdateExpression = "SET #s = :s, #ft = :ft, #fp = :fp, #fs = :fs, #fe = :fe, #pi = :pi, #u = :u"
+          UpdateExpression = "SET #s = :s, #ft = :ft, #fp = :fp, #fs = :fs, #fe = :fe, #pi = :pi, #pik = :pik, #pit = :pit, #u = :u"
           ExpressionAttributeNames = {
-            "#s"  = "status"
-            "#ft" = "filesTotal"
-            "#fp" = "filesPreprocessed"
-            "#fs" = "filesSkipped"
-            "#fe" = "filesErrored"
-            "#pi" = "preprocessingIssues"
-            "#u"  = "updatedAt"
+            "#s"   = "status"
+            "#ft"  = "filesTotal"
+            "#fp"  = "filesPreprocessed"
+            "#fs"  = "filesSkipped"
+            "#fe"  = "filesErrored"
+            "#pi"  = "preprocessingIssues"
+            "#pik" = "preprocessingIssuesS3Key"
+            "#pit" = "preprocessingIssuesTruncated"
+            "#u"   = "updatedAt"
           }
           ExpressionAttributeValues = {
-            ":s"  = { "S.$" = "$.preprocessResult.status" }
-            ":ft" = { "N.$" = "States.Format('{}', $.preprocessResult.files_total)" }
-            ":fp" = { "N.$" = "States.Format('{}', $.preprocessResult.files_preprocessed)" }
-            ":fs" = { "N.$" = "States.Format('{}', $.preprocessResult.files_skipped)" }
-            ":fe" = { "N.$" = "States.Format('{}', $.preprocessResult.files_errored)" }
-            ":pi" = { "S.$" = "States.JsonToString($.preprocessResult.issues)" }
-            ":u"  = { "S.$" = "$$.State.EnteredTime" }
+            ":s"   = { "S.$" = "$.preprocessResult.status" }
+            ":ft"  = { "N.$" = "States.Format('{}', $.preprocessResult.files_total)" }
+            ":fp"  = { "N.$" = "States.Format('{}', $.preprocessResult.files_preprocessed)" }
+            ":fs"  = { "N.$" = "States.Format('{}', $.preprocessResult.files_skipped)" }
+            ":fe"  = { "N.$" = "States.Format('{}', $.preprocessResult.files_errored)" }
+            ":pi"  = { "S.$" = "States.JsonToString($.preprocessResult.issues_preview)" }
+            ":pik" = { "S.$" = "$.preprocessResult.issues_s3_key" }
+            # BOOL.$ substitutes the JSONPath at runtime; a plain "BOOL" would
+            # be validated as a boolean literal and reject the JSONPath string
+            # (mirrors CDK's booleanFromJsonPath(stringAt(...)) idiom).
+            ":pit" = { "BOOL.$" = "$.preprocessResult.issues_truncated" }
+            ":u"   = { "S.$" = "$$.State.EnteredTime" }
           }
         }
         ResultPath = null

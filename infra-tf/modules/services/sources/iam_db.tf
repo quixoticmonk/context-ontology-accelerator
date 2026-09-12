@@ -526,10 +526,21 @@ data "aws_iam_policy_document" "db_connector" {
       "glue:GetTable", "glue:GetTables",
       "glue:GetPartitions",
       "glue:GetConnection",
+      # Nested/federated Glue catalogs (catalogId "account:catalogName")
+      # authorize GetDatabase/GetTables against the nested-catalog resource
+      # itself, not just its children — without these a federated source
+      # fails discovery with AccessDenied on `catalog/<name>` (issue 118).
+      "glue:GetCatalog",
+      "glue:GetCatalogs",
       "glue:GetTags",
     ]
     resources = [
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:catalog",
+      # The nested-catalog resource federated reads authorize against.
+      # Account-wide because catalog names arrive per-source at runtime and
+      # are not knowable at synth; mirrors the federation-provisioner and
+      # serve grants. Actions stay read-only.
+      "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:catalog/*",
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:database/*",
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:table/*/*",
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:connection/*",
@@ -819,13 +830,18 @@ data "aws_iam_policy_document" "db_enrichment_task" {
   }
 
   statement {
-    sid = "GlueRead"
+    sid = "EnrichmentGlueCatalogAccess"
     actions = [
       "glue:GetTable", "glue:GetTables",
       "glue:GetDatabase", "glue:GetConnection",
+      # Nested/federated catalogs authorize against the catalog resource
+      # itself — same gap as discovery (issue 118).
+      "glue:GetCatalog",
+      "glue:GetCatalogs",
     ]
     resources = [
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:catalog",
+      "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:catalog/*",
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:database/*",
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:table/*/*",
       "arn:${data.aws_partition.current.partition}:glue:${var.region}:${data.aws_caller_identity.current.account_id}:connection/*",
