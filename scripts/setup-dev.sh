@@ -50,7 +50,7 @@ echo ""
 echo "Syncing UV workspace..."
 uv sync --all-packages
 
-# Install Node dependencies via pnpm (TS packages: infra, web-app, ts-shared)
+# Install Node dependencies via pnpm (TS packages: web-app, ts-shared, mcp-proxy)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo ""
 echo "Installing Node dependencies..."

@@ -12,13 +12,13 @@
 #            counterpart in v6.63.0)
 #
 # Ordering / lifecycle:
-#   The CDK marks every DataZone resource RemovalPolicy.RETAIN so CFN
-#   never tries to delete them itself — DataZone requires specific
+#   The CDK ancestor marked every DataZone resource RemovalPolicy.RETAIN so
+#   CFN never tried to delete them itself — DataZone requires specific
 #   pre-delete state (FormType DISABLED, project ownership cascades)
-#   that CFN can't satisfy. The TF equivalent is
+#   that CFN could not satisfy. The TF equivalent is
 #   `lifecycle { prevent_destroy = false }` on the domain and its
-#   children; teardown is handled by `scripts/destroy.sh` which calls
-#   `datazone delete-domain --skip-deletion-check` directly.
+#   children; teardown is handled by `infra-tf/scripts/nuke-coa-dev.sh`
+#   which calls `datazone delete-domain --skip-deletion-check` directly.
 
 # ═════════════════════════════════════════════════════════════════════
 #  Domain (V2, IAM-based)

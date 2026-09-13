@@ -4,7 +4,7 @@
 /** Application display name shown in the UI header / browser title. */
 export const UI_DISPLAY_TITLE = "Context Ontology Accelerator";
 
-/** Default resource prefix used across CDK stacks and resource naming. */
+/** Default resource prefix used across Terraform modules and resource naming. */
 export const DEFAULT_RESOURCE_PREFIX = "coa";
 
 /** Default deployment environment name. */
@@ -37,7 +37,7 @@ export const BRAND = "coa";
 /**
  * Base authority for knowledge-graph IRIs.
  * Used by: ontology-engine (IRI minting), context-manager (SPARQL), metric-service (Neptune writes).
- * Override at deploy time via CDK context `graph_base_uri`.
+ * Override at deploy time via the Terraform `graph_base_uri` variable.
  */
 export const DEFAULT_GRAPH_BASE_URI = `http://${BRAND}.amazon.com`;
 
@@ -117,7 +117,7 @@ export const RUNTIME_CONFIG_FILENAME = "runtime-config.json";
 // ---------------------------------------------------------------------------
 // DynamoDB table logical names
 // Actual table name = `{prefix}-{env}-{logicalName}`
-// Used by CDK stacks (table creation) and cross-stack references (env vars).
+// Used by Terraform modules (table creation) and cross-module references (env vars).
 // ---------------------------------------------------------------------------
 
 export const TABLE_NAMES = {

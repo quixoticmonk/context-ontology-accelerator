@@ -3,9 +3,9 @@
 
 """Shared constants for the Context Ontology Accelerator.
 
-These values form the contract between infrastructure (CDK/Step Functions),
-backend services (preprocessing Lambda, KG Build ECS), the API layer, and
-the web application.
+These values form the contract between infrastructure (Terraform / Step
+Functions), backend services (preprocessing Lambda, KG Build ECS), the API
+layer, and the web application.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ from enum import StrEnum
 RESOURCE_PREFIX: str = os.environ.get("RESOURCE_PREFIX", "coa").rstrip("-")
 """Deployment prefix for resource naming (S3, IAM, DynamoDB, SSM paths).
 
-CDK injects this as ``{prefix}-{env}-`` (e.g. ``scl-dev-``) because its consumers
-build resource names from it. Do NOT derive data-plane identifiers from it — use
-``BRAND`` below.
+Deploy-time infrastructure injects this as ``{prefix}-{env}-`` (e.g.
+``coa-dev-``) because its consumers build resource names from it. Do NOT
+derive data-plane identifiers from it — use ``BRAND`` below.
 """
 
 BRAND: str = "coa"
@@ -37,11 +37,11 @@ contracts between services, and into DataZone metadata. They must stay stable
 across deployments, so they are fixed here rather than derived from
 ``resource_prefix``.
 
-The tokens below previously derived from ``RESOURCE_PREFIX``, which CDK sets to
-``{prefix}-{env}-``. Under ``resource_prefix=scl`` that yielded
-``http://scl-dev.amazon.com/vocab/scl-dev#`` for writers while readers used their
-own compiled-in default — the two silently stopped matching. Mirrors the BRAND
-block in libs/ts-shared/src/constants.ts.
+The tokens below previously derived from ``RESOURCE_PREFIX``, which deploy-time
+infrastructure sets to ``{prefix}-{env}-``. Under ``resource_prefix=scl`` that
+yielded ``http://scl-dev.amazon.com/vocab/scl-dev#`` for writers while readers
+used their own compiled-in default — the two silently stopped matching. Mirrors
+the BRAND block in libs/ts-shared/src/constants.ts.
 """
 
 GRAPH_BASE_URI: str = os.environ.get("GRAPH_BASE_URI", f"http://{BRAND}.amazon.com")
@@ -515,7 +515,8 @@ MAX_PAGE_SIZE: int = 100
 # orchestration, so both surfaces that expose them (data-layer's ``handler.py``
 # and MCP's ``coa_mcp.tools.discovery``) invoke the backend Lambdas DIRECTLY
 # and skip the Context Manager. The env var names and resource paths below are
-# the contract between those callers and the CDK stacks that wire the ARNs in.
+# the contract between those callers and the Terraform modules that wire the
+# ARNs in.
 #
 # If any of these strings diverge between call sites, a caller falls back to
 # an empty ARN (silent 501) or hits a URL the ontology-api-proxy's alias table
@@ -523,7 +524,8 @@ MAX_PAGE_SIZE: int = 100
 
 # Env var names that the data-layer and MCP-server Lambdas read at cold start
 # to locate the ontology-api-proxy and metric-service Lambdas. Must match what
-# ``data-layer-stack.ts`` and ``mcp-stack.ts`` set in the target Lambda's env.
+# the Terraform modules ``modules/services/data-layer`` and
+# ``modules/services/mcp`` set in the target Lambda's env.
 ONTOLOGY_PROXY_LAMBDA_ARN_ENV: str = "ONTOLOGY_PROXY_LAMBDA_ARN"
 METRIC_SERVICE_LAMBDA_ARN_ENV: str = "METRIC_SERVICE_LAMBDA_ARN"
 
@@ -596,15 +598,16 @@ def namespace_tag_key(prefix: str | None = None) -> str:
     """Resource-tag key binding a resource to one or more namespaces.
 
     ``prefix`` defaults to the deployment's bare resource prefix from
-    ``RESOURCE_TAG_PREFIX`` (CDK injects ``resolveContext().prefix``), falling
-    back to :data:`BRAND` (``"coa"``).
+    ``RESOURCE_TAG_PREFIX`` (deploy-time infrastructure injects the resolved
+    ``resource_prefix``), falling back to :data:`BRAND` (``"coa"``).
 
     Deliberately NOT derived from ``RESOURCE_PREFIX``: that variable means
-    different things in different runtimes — CDK injects ``{prefix}-{env}-``
-    (``scl-dev-``) into compute, while the integ runner sets the bare prefix
-    (``scl``) for SSM paths. A tag key must be one exact string shared by the
-    registration check, the IAM conditions, and whoever tags the secret, so it
-    gets its own unambiguous variable rather than a guess at which form arrived.
+    different things in different runtimes — deploy-time infrastructure injects
+    ``{prefix}-{env}-`` (``coa-dev-``) into compute, while the integ runner sets
+    the bare prefix (``coa``) for SSM paths. A tag key must be one exact string
+    shared by the registration check, the IAM conditions, and whoever tags the
+    secret, so it gets its own unambiguous variable rather than a guess at
+    which form arrived.
     """
     resolved = (prefix if prefix is not None else os.environ.get("RESOURCE_TAG_PREFIX", "")) or BRAND
     return f"{resolved.strip().rstrip('-')}:namespace"

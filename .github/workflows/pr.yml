@@ -6,17 +6,19 @@
 # GitHub is deleted by the next sync.
 #
 # Purpose (unchanged from the internal pipeline): fast feedback on a PR — lint,
-# unit tests and CDK synth, scoped to the projects a PR actually touches via
-# `nx affected`. The merge queue runs the FULL suite instead, because the
-# declared Nx graph has gaps (web-app has no project.json, smithy-generated is
-# not an implicit dep of anything), so a change can pass `affected` on the PR
-# and still fail `run-many` after it lands.
+# unit tests and Terraform validate, scoped to the projects a PR actually
+# touches via `nx affected` (for lint/test) or a path filter (for terraform).
+# The merge queue runs the FULL suite instead, because the declared Nx graph
+# has gaps (web-app has no project.json, smithy-generated is not an implicit
+# dep of anything), so a change can pass `affected` on the PR and still fail
+# `run-many` after it lands.
 #
 # Deliberately NOT ported (each depends on internal-only infrastructure that
 # cannot and should not exist in a public repo):
-#   - CDK dry-run against a live dev account (needs a deploy-scoped IAM role and
-#     that account's ECR image URIs; a public fork PR must never hold cloud
-#     credentials).
+#   - Terraform plan against a live dev account (needs a deploy-scoped IAM role
+#     and that account's remote state / provider credentials; a public fork PR
+#     must never hold cloud credentials). Validate + fmt-check catch syntax and
+#     provider-schema drift without state.
 #   - The GenAI code-review child pipeline (built on the internal CI platform's
 #     API, review components and bot identity).
 #   - The cache-warming pre-stage and container resource sizing, which are
@@ -46,7 +48,8 @@ concurrency:
 
 env:
   # Required by the shared response helper at import time (fail-closed CORS).
-  # A placeholder is fine here; real deployments set it via CDK.
+  # A placeholder is fine here; real deployments set it via Terraform (see
+  # allowed_origins in the api module).
   ALLOWED_ORIGIN: "https://ci-test.example.com"
 
 jobs:
@@ -161,37 +164,76 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  cdk-synth:
-    needs: smithy-generate
+  # Terraform static checks: format compliance + provider-schema validation.
+  # Runs on every PR that touches infra-tf/, and on every merge-queue run.
+  #
+  # Deliberately NOT running `terraform plan`: plan requires real provider
+  # credentials and remote state, neither of which a public-repo PR has. Fmt
+  # and validate catch every HCL / provider-schema regression the internal
+  # pipeline's dry-run plan would catch that does not depend on live account
+  # state — the plan step happens on the internal pipeline where it has both.
+  terraform-validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          name: smithy-generated
-          path: smithy-generated
-      - uses: ./.github/actions/setup-build
 
-      # CDK_BUNDLING_STACKS="[]" skips Docker asset bundling: synth only has to
-      # prove the templates are valid, and bundling every image would dominate
-      # the run. A merge-queue run has no PR base to diff against, so it synths
-      # every stack.
-      - name: Synth CDK stacks
+      # dorny/paths-filter is not first-party actions/*, so instead detect
+      # infra-tf changes with a plain git diff. On merge_group there is no PR
+      # base — always run the full check to catch anything a PR path filter
+      # let through.
+      - name: Detect infra-tf changes
+        id: filter
         env:
-          CDK_BUNDLING_STACKS: "[]"
-          # Empty on a manual run (no PR); this workflow only ever targets main.
           BASE_REF: ${{ github.base_ref || 'main' }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "merge_group" ]; then
-            pnpm nx run-many -t synth
-          else
-            pnpm nx affected -t synth --base="origin/${BASE_REF}" --head=HEAD
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            exit 0
           fi
+          git fetch --no-tags --depth=100 origin "$BASE_REF"
+          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -qE '^infra-tf/'; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Terraform
+        if: steps.filter.outputs.changed == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          # Keep in step with infra-tf/terraform.tf required_version and
+          # infra-tf/stacks/*/terraform.tf. Action blocks are used in
+          # 40-sources, which need >= 1.14.
+          terraform_version: "1.14.0"
+          terraform_wrapper: false
+
+      - name: terraform fmt (check)
+        if: steps.filter.outputs.changed == 'true'
+        run: terraform -chdir=infra-tf fmt -check -recursive
+
+      # `terraform validate` needs a plugin cache, so init every stack in a
+      # loop against a shared cache directory. Fresh provider downloads dominate
+      # cold-CI time — the cache lets each subsequent stack hard-link its
+      # providers from the first. Skipping backend init keeps this offline.
+      - name: terraform init + validate (per stack)
+        if: steps.filter.outputs.changed == 'true'
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-plugin-cache
+          TF_IN_AUTOMATION: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          fail=0
+          for stack in infra-tf/stacks/*/; do
+            echo "::group::validate $stack"
+            terraform -chdir="$stack" init -backend=false -input=false >/dev/null || fail=1
+            terraform -chdir="$stack" validate -no-color || fail=1
+            echo "::endgroup::"
+          done
+          exit "$fail"
 
   # Last line of defence before a PR lands: the full suite, not `affected`.
   # See the note at the top of this file for why `affected` is not enough.

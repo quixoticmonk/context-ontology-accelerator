@@ -76,39 +76,41 @@ notice:
 	uv run python -m scripts.supply_chain.cli notice
 
 preflight:
-	./scripts/preflight-deploy.sh
+	@echo "'make preflight' is retired. Deployment is Terraform (infra-tf/); use:"
+	@echo "  cd infra-tf && make init-all validate"
+	@echo "See infra-tf/DEPLOY.md for the full deploy flow."
+	@exit 1
 
 deploy-dev:
-	./scripts/deploy.sh dev
+	@echo "'make deploy-dev' is retired. Use the Terraform stacks under infra-tf/:"
+	@echo "  cd infra-tf && make up-all"
+	@echo "See infra-tf/DEPLOY.md for step-by-step deploy instructions."
+	@exit 1
 
 deploy-serve:
-	./scripts/deploy-serve.sh dev
+	@echo "'make deploy-serve' is retired. The serve module ships with the main"
+	@echo "Terraform deploy; use:"
+	@echo "  cd infra-tf && make apply-50-agentcore"
+	@echo "See infra-tf/DEPLOY.md for the full deploy flow."
+	@exit 1
 
 ## Deploy the example Athena federation connector (connectors/) into a dev account,
-## giving integration tests a federated source to query. Separate from deploy-dev on
-## purpose: it stands in for something a customer deploys in their own account, and it
-## must run AFTER COA — it reads COA's serve and discovery role ARNs from SSM.
-## Optional env vars: SCL_PREFIX (default: coa — matches the CDK app),
+## giving integration tests a federated source to query. Separate from the platform
+## deploy on purpose: it stands in for something a customer deploys in their own
+## account, and it must run AFTER the platform Terraform apply — it reads the
+## platform's serve and discovery role ARNs from SSM.
+## Optional env vars: SCL_PREFIX (default: coa — matches the deployment),
 ## FUNCTION_NAME_PREFIX (default <prefix>-<env>-), EXAMPLE_BULK_ROWS /
 ## EXAMPLE_BULK_ROW_BYTES to size the fixture past Athena's 6 MB limit and exercise spill.
 deploy-example-connector:
 	./scripts/deploy-example-connector.sh dev
 
-## Tear down all dev stacks in one command. Deletes AgentCore Runtimes,
-## waits for their ENIs to detach (and stops if they do not),
-## deletes VKG's ECS services, force-deletes the DataZone domain (cascades
-## to RETAINed child resources CFN can't clear on its own), deletes every connector
-## stack (separate CDK apps, so `cdk destroy --all` never sees them), then runs
-## `cdk destroy --all` and verifies no stacks remain (see #660, #661, #707).
-## Optional env vars: SCL_PREFIX (default: coa — matches the CDK app), SCL_DESTROY_YES=1 to skip
-## the confirmation prompt (e.g. in CI), and the wait budgets
-## SCL_ENI_WAIT_MAX_SECONDS (600), SCL_ECS_WAIT_MAX_SECONDS (300),
-## SCL_DOMAIN_WAIT_MAX_SECONDS (300), SCL_CLOUDMAP_WAIT_MAX_SECONDS (180),
-## SCL_CONNECTOR_DELETE_WAIT_MAX_SECONDS (600).
 destroy-dev:
-	make generate
-	pnpm install
-	./scripts/destroy.sh dev
+	@echo "'make destroy-dev' is retired. Use the Terraform teardown under infra-tf/:"
+	@echo "  cd infra-tf && make down-all           # reverse-order destroy"
+	@echo "  cd infra-tf && ./scripts/nuke-coa-dev.sh   # nuclear reset of a dev deployment"
+	@echo "See infra-tf/DEPLOY.md sections 7 and 9."
+	@exit 1
 
 docs:
 	@if [ -d docs ]; then cd docs && mkdocs serve; \

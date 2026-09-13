@@ -2,8 +2,6 @@ packages:
   - "libs/ts-shared"
   - "packages/web-app"
   - "packages/mcp-proxy"
-  - "infra"
-  - "tests/cdk"
   - "smithy-generated/control-plane-typescript-client"
   - "smithy-generated/data-layer-typescript-client"
 allowBuilds:
@@ -26,11 +24,11 @@ overrides:
   # is hours old, and the minReleaseAge quarantine above then rejects the lockfile
   # it just produced. This is not a stale lockfile: re-resolving reproduces it,
   # because the tag keeps moving. A fresh clone fails `make setup` outright, with
-  # node_modules left empty and every TS target (CDK, web-app, Nx) unusable.
+  # node_modules left empty and every TS target (web-app, Nx) unusable.
   #
   # Scoped to downlevel-dts rather than overriding typescript globally: the
-  # workspace packages pin real ranges (~5.7.0 for infra, ^5.6.0 for web-app and
-  # ts-shared, ^6.0.3 for mcp-proxy) and a blanket override would drag them all
+  # workspace packages pin real ranges (^5.6.0 for web-app and ts-shared,
+  # ^6.0.3 for mcp-proxy) and a blanket override would drag them all
   # onto one version. downlevel-dts only rewrites .d.ts files for older
   # consumers — a build-time tool inside the Smithy-generated clients, not
   # something whose exact compiler version changes what ships.
