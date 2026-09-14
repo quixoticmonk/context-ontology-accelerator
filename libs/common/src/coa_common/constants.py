@@ -576,8 +576,8 @@ GOVERNED_METRICS_ONTOLOGY_ID: str = f"urn:{URN_PREFIX}:vocab#GovernedMetrics"
 # The KEY carries the deployment's resource prefix so two deployments co-located
 # in one AWS account bind independently: a secret onboarded to `scl` is not
 # readable by a `coa` deployment's roles, whose IAM conditions name their own
-# key. (Same reasoning as `eventSourcePrefix` in infra/lib/context.ts — the
-# resource being tagged is account-global and therefore shared.)
+# key. (Same reasoning as `eventSourcePrefix` on the deploy-time infrastructure
+# side — the resource being tagged is account-global and therefore shared.)
 #
 # The VALUE is a whitespace-separated list so one secret can serve several
 # namespaces (a shared read-only reporting credential, say) without a per-

@@ -517,7 +517,7 @@ Federation failure is **FATAL for JDBC sources**. If provisioning or its persist
 
 ### Prerequisite — Lake Formation data-lake admin
 
-Federation provisioning **and** teardown require the federation provisioner role (`{prefix}federated-catalog-role`, ARN published at SSM `/{prefix}/sources/federation-provisioner-role-arn`) to be registered as a Lake Formation **data-lake admin**. Creating a federated catalog needs `Create Catalog` / `DATA_LOCATION_ACCESS` that only an LF admin can grant, and source deletion assumes this role (via `FEDERATION_PROVISIONER_ROLE_ARN`) to drop the LF-governed catalog. This is an account-global setting **not** managed by this service stack — it must be applied during foundation/LF bootstrap. Without it, every JDBC scan fails with `Insufficient Lake Formation permission(s): Required Create Catalog on Catalog` (an LF authorization error, not IAM). See [`infra/README.md`](../../infra/README.md#athena-federation-architecture) for the bootstrap command.
+Federation provisioning **and** teardown require the federation provisioner role (`{prefix}federated-catalog-role`, ARN published at SSM `/{prefix}/sources/federation-provisioner-role-arn`) to be registered as a Lake Formation **data-lake admin**. Creating a federated catalog needs `Create Catalog` / `DATA_LOCATION_ACCESS` that only an LF admin can grant, and source deletion assumes this role (via `FEDERATION_PROVISIONER_ROLE_ARN`) to drop the LF-governed catalog. The Terraform sources module registers the role as an LF admin automatically at deploy time via a Lambda invocation action (`infra-tf/modules/services/sources/lakeformation_admin.tf`); the merge is non-destructive so existing admins are preserved. Without the registration, every JDBC scan fails with `Insufficient Lake Formation permission(s): Required Create Catalog on Catalog` (an LF authorization error, not IAM). See [`infra-tf/DEPLOY.md` §8 "Lake Formation admin registration"](../../infra-tf/DEPLOY.md) for the walkthrough and manual pruning steps.
 
 ### Resources created per source
 
@@ -533,7 +533,7 @@ Both the connection and catalog names are returned in the `GetSource` response u
 
 ### Per-namespace workgroup
 
-Athena workgroups provide query isolation: each namespace gets its own workgroup `{resource-prefix}{namespaceId}`. Lifecycle, configuration, and naming are managed by the control-plane namespace service — see `packages/control-plane/README.md` and `infra/README.md#per-namespace-workgroups-namespace-service`. The workgroup name is exposed on `GetNamespace.athenaWorkgroupName`.
+Athena workgroups provide query isolation: each namespace gets its own workgroup `{resource-prefix}{namespaceId}`. Lifecycle, configuration, and naming are managed by the control-plane namespace service — see `packages/control-plane/README.md` and the workgroup resource in `infra-tf/modules/services/namespace/workgroup.tf`. The workgroup name is exposed on `GetNamespace.athenaWorkgroupName`.
 
 ### Network requirements
 
@@ -759,7 +759,7 @@ always enforced on the connection.
 #### Observability — structured scan dashboard
 
 The CloudWatch dashboard `<prefix>-sources-structured-scan` (defined in
-`infra/lib/stacks/services/sources-stack.ts`) charts the scan and enrichment
+`infra-tf/modules/services/sources/observability.tf`) charts the scan and enrichment
 pipeline. Widgets use `SEARCH()` so a new source subtype appears without a stack
 change.
 
@@ -868,27 +868,23 @@ sources-doc-deletion-pipeline (Step Functions)
 | `{namespaceId}/staging/` | Pre-processed text files | No expiry |
 | `{namespaceId}/extracted/` | Intermediate extraction artifacts | 30-day expiry |
 
-## CDK Context Variables
+## Deploy-time image variables
 
-These context variables control which Docker images are deployed for pipeline tasks. When not set, CDK builds images locally from source (development only).
+The Terraform sources module resolves each container image URI from an ECR tag
+file written by `make build-images` at the top of `infra-tf/`. The module has
+no context-key equivalent; a manual override is a one-liner in the module
+call.
 
-| Context key | Description |
-|-------------|-------------|
-| `sources_db_enrichment_image_uri` | ECR image URI for the database enrichment ECS task |
-| `sources_preprocessing_image_uri` | ECR image URI for the document preprocessing Lambda |
-| `sources_kg_build_image_uri` | ECR image URI for the document KG build ECS task |
-| `ecr_repository_arn` | ARN of the shared ECR repository |
-| `ecr_repository_name` | Name of the shared ECR repository |
+| Image | Tag file | Terraform variable / local |
+|-------|----------|----------------------------|
+| DB enrichment ECS task | `infra-tf/artifacts/images/sources-db-enrichment.tag` | `local.enrichment_image_uri` |
+| Document preprocessing Lambda | `infra-tf/artifacts/images/sources-preprocessing.tag` | `local.preprocessing_image_uri` |
+| Document KG-build ECS task | `infra-tf/artifacts/images/sources-kg-build.tag` | `local.kg_build_image_uri` |
 
-Example (CI deploy):
-```bash
-cdk deploy coa-dev-sources \
-  --context sources_db_enrichment_image_uri=123456789012.dkr.ecr.us-east-1.amazonaws.com/coa:sources-db-enrichment-abc1234 \
-  --context sources_preprocessing_image_uri=123456789012.dkr.ecr.us-east-1.amazonaws.com/coa:sources-preprocessing-abc1234 \
-  --context sources_kg_build_image_uri=123456789012.dkr.ecr.us-east-1.amazonaws.com/coa:sources-kg-build-abc1234 \
-  --context ecr_repository_arn=arn:aws:ecr:us-east-1:123456789012:repository/coa \
-  --context ecr_repository_name=coa
-```
+The tag files are populated by the per-image Makefiles under
+`infra-tf/modules/services/sources/*/Makefile`, which build, tag, and push to
+the ECR repositories owned by stack `25-ecr`. See
+`infra-tf/DEPLOY.md` §3c for the build flow.
 
 
 
@@ -961,5 +957,5 @@ saved queries / BI tools to the 4-part `AwsDataCatalog` syntax (see
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Preprocessing fails with "unsupported content type" | Uploaded file has a MIME type not in `SUPPORTED_UPLOAD_CONTENT_TYPES` | Check the file extension/type; supported: PDF, DOCX, TXT, MD, HTML |
-| KG build ECS task exits with OOM | Document too large for the task memory | Increase task memory in CDK or split the document |
+| KG build ECS task exits with OOM | Document too large for the task memory | Raise the task memory in `infra-tf/modules/services/sources/compute_docs.tf` (the `aws_ecs_task_definition` for the KG build task), or split the document |
 | Delete leaves orphaned Neptune nodes | Deletion pipeline's `CleanupKG` step failed | Check the Step Functions execution; retry the delete |

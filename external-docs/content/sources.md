@@ -235,7 +235,7 @@ aws secretsmanager create-secret \
     is an HTTP-only protocol with no HTTPS variant, and the responses are
     cryptographically signed. Both rules are egress-only. Deployments that onboard
     no Snowflake source can drop the port-80 rule with the
-    `connector_ocsp_egress=false` CDK context key, and all connector egress can be
+    `connector_ocsp_egress = false` Terraform variable, and all connector egress can be
     narrowed from `0.0.0.0/0` to fixed CIDRs with `connector_egress_cidrs`. See the
     internal egress-controls reference for details.
 

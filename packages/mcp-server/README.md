@@ -246,7 +246,7 @@ Integration tests validate the MCP server against a live deployed AgentCore Runt
 
 ### Prerequisites
 
-- Deployed `coa-dev-mcp` stack (CDK)
+- Deployed `coa-dev-mcp` module (Terraform — `infra-tf/modules/services/mcp/`)
 - Valid Cognito user tokens
 - Network access to the AgentCore endpoint
 

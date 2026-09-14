@@ -5,7 +5,8 @@
 
 AgentCore Runtime's ``RuntimeAuthorizerConfiguration.usingJWT`` already
 verifies signature/issuer/audience against the configured IdP's JWKS before
-a request reaches this server (see infra/lib/stacks/services/mcp-stack.ts).
+a request reaches this server (wired at deploy time by
+`infra-tf/modules/services/mcp`).
 This module adds defense-in-depth on top of that platform control: if the
 AgentCore authorizer is ever misconfigured, disabled, or bypassed by a caller
 reaching this code through a path that skips it, an attacker-forged JWT

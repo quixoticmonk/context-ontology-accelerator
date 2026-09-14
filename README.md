@@ -32,7 +32,7 @@ Access is governed by namespace isolation and role-based access control: namespa
 git clone --branch <tag> https://github.com/aws/context-ontology-accelerator.git
 cd context-ontology-accelerator
 
-make setup      # install Python + CDK TypeScript dependencies
+make setup      # install Python + Node dependencies (uv sync + pnpm install)
 make format     # auto-format code
 make lint       # check linting
 make test       # run unit tests
@@ -46,7 +46,7 @@ make test       # run unit tests
 semantic-context/
 ├── models/              # Smithy API models (source of truth for API contracts)
 ├── smithy-generated/    # Auto-generated from Smithy (OpenAPI, Python interfaces, TS client)
-├── infra/               # AWS CDK (TypeScript) — foundation + per-service stacks
+├── infra-tf/            # Terraform (HCL) — layered stacks: foundation + services + observability
 ├── packages/
 │   ├── control-plane/           # Control Plane APIs
 │   ├── data-layer/              # Data Layer APIs (query, retrieval, traversal)
@@ -70,7 +70,7 @@ semantic-context/
 | ---------------------- | -------------------------------------------------------- |
 | Languages              | Python 3.12, TypeScript                                  |
 | API Contracts          | Smithy → OpenAPI + Python interfaces + TypeScript client |
-| IaC                    | AWS CDK (TypeScript)                                     |
+| IaC                    | Terraform (HCL, hashicorp/aws provider)                  |
 | Frontend               | React + Cloudscape Design System                         |
 | Package Management     | uv (Python), pnpm (TypeScript)                           |
 | Monorepo Orchestration | Nx                                                       |

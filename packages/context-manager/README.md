@@ -24,9 +24,9 @@ Bidirectional streaming endpoint for the Playground UI. Maintains a persistent c
 | ALB (VPC-internal) | `ws://<AlbDnsName>/ws` | Services within VPC or private deployment mode |
 | Direct VPC endpoint | `wss://bedrock-agentcore.<region>.amazonaws.com/runtimes/<arn>/ws` | Backend services with VPC access |
 
-> **Note:** Browser clients cannot access the VPC endpoint directly. Use the CloudFront or ALB route. Obtain `AlbDnsName` from the `coa-dev-serve` CDK stack output.
+> **Note:** Browser clients cannot access the VPC endpoint directly. Use the CloudFront or ALB route. Obtain `AlbDnsName` from the `coa-dev-serve` stack outputs (see `infra-tf/stacks/50-agentcore/outputs.tf`).
 
-**Authentication:** JWT Access Token via `Authorization: Bearer <token>` header. See [infra/README.md](../../infra/README.md#serve-stack-coa-dev-serve) for auth configuration details. User identity (`sub` claim) scopes sessions — each user gets isolated conversation history per namespace. Unauthenticated connections can still send single-turn queries but won't have session persistence.
+**Authentication:** JWT Access Token via `Authorization: Bearer <token>` header. See [infra-tf/README.md](../../infra-tf/README.md) for auth configuration details. User identity (`sub` claim) scopes sessions — each user gets isolated conversation history per namespace. Unauthenticated connections can still send single-turn queries but won't have session persistence.
 
 #### Request message
 
@@ -311,7 +311,7 @@ All executed queries are subject to a `max_rows` cap (default: 10,000):
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GRAPH_URI_TEMPLATE` | No | `urn:coa:{namespace}:published` | Graph URI template for ontology resolution. Must contain a `{namespace}` placeholder. |
-| `MEMORY_ID` | No | `""` (disabled) | AgentCore Memory ID for conversation session state. When set, enables multi-turn session management (create/resume, history loading, turn storage). Obtain from CDK output of serve-stack. |
+| `MEMORY_ID` | No | `""` (disabled) | AgentCore Memory ID for conversation session state. When set, enables multi-turn session management (create/resume, history loading, turn storage). Obtain from stack outputs of `infra-tf/stacks/50-agentcore`. |
 | `SCL_DISABLE_JDBC_DISPATCH` | No | unset (JDBC dispatch on) | `true` forces Athena-only execution — the composite executor never routes to direct JDBC. Operational off-switch; restores the previous single-executor behavior. |
 | `SCL_DISABLE_CEDAR` | No | unset (Cedar on) | `true` swaps the real Cedar evaluator for the allow-all `NullCedarAuthorizer`. SQL-firewall safety + allowlist/denylist checks still run. |
 | `SCL_CEDAR_FAIL_OPEN_NO_ROLES` | No | unset (fail-closed) | `true` lets callers with **no resolved roles** pass Cedar (dev/pre-provisioning E2E convenience). Leave unset in production: no roles → deny. |

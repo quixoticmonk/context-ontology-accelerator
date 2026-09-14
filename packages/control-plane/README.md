@@ -231,10 +231,10 @@ DataZone V2 auto-creates a user profile per unique IAM role session. If services
 
 ### Rules
 
-- The `CfnUserProfile` is created in CDK at deploy time (namespace-stack)
+- The `aws_datazone_user_profile` for this role is created by Terraform at deploy time (namespace module)
 - Each assuming service uses a **fixed session name** (`"connector-service"`, `"enrichment-task"`, `"datasource-api"`)
 - Only `CreateProjectMembership` is called at namespace creation time
-- New services that need DataZone access: `grantAssumeRole` in CDK + `PROJECT_ACCESS_ROLE_ARN` env var + fixed session name
+- New services that need DataZone access: add an `aws_iam_role_policy` granting `sts:AssumeRole` on the project-access role ARN + a `PROJECT_ACCESS_ROLE_ARN` env var + a fixed session name
 - The trust policy on the project-access role is scoped to the account; each assuming role also needs explicit `sts:AssumeRole` permission
 
 ### Why not per-role profiles?
@@ -382,32 +382,32 @@ Located in `src/coa_authorization/seed/`. Each `.cedar` file defines permissions
 
 | Variable | Source | Required | Description |
 |----------|--------|----------|-------------|
-| `NAMESPACES_TABLE` | CDK | Yes | Namespaces DynamoDB table |
-| `ROLES_TABLE` | CDK | Yes | Roles DynamoDB table |
-| `RESOURCE_ROLE_MAPPINGS_TABLE` | CDK | Yes | Grants DynamoDB table |
-| `SOURCES_TABLE` | CDK | No | Unified sources table (for delete cleanup) |
-| `SOURCE_SCAN_JOBS_TABLE` | CDK | No | Source scan jobs table (for delete cleanup) |
-| `ONTOLOGY_ENGINE_TABLE` | CDK | No | Ontology engine table (for delete precondition check) |
-| `METRIC_IMPORT_JOBS_TABLE` | CDK | No | Metric import jobs table (for delete precondition check) |
-| `DATAZONE_DOMAIN_ID` | CDK | Yes | SMUS domain ID |
-| `DATAZONE_PROJECT_PROFILE_ID` | CDK | Yes | Default project profile ID |
-| `PROJECT_ACCESS_ROLE_ARN_SSM` | CDK | Yes | SSM param path for project-access role ARN |
-| `ALLOWED_ORIGIN` | CDK | Yes | CORS allowed origin |
+| `NAMESPACES_TABLE` | Terraform | Yes | Namespaces DynamoDB table |
+| `ROLES_TABLE` | Terraform | Yes | Roles DynamoDB table |
+| `RESOURCE_ROLE_MAPPINGS_TABLE` | Terraform | Yes | Grants DynamoDB table |
+| `SOURCES_TABLE` | Terraform | No | Unified sources table (for delete cleanup) |
+| `SOURCE_SCAN_JOBS_TABLE` | Terraform | No | Source scan jobs table (for delete cleanup) |
+| `ONTOLOGY_ENGINE_TABLE` | Terraform | No | Ontology engine table (for delete precondition check) |
+| `METRIC_IMPORT_JOBS_TABLE` | Terraform | No | Metric import jobs table (for delete precondition check) |
+| `DATAZONE_DOMAIN_ID` | Terraform | Yes | SMUS domain ID |
+| `DATAZONE_PROJECT_PROFILE_ID` | Terraform | Yes | Default project profile ID |
+| `PROJECT_ACCESS_ROLE_ARN_SSM` | Terraform | Yes | SSM param path for project-access role ARN |
+| `ALLOWED_ORIGIN` | Terraform | Yes | CORS allowed origin |
 
 ### Roles API Lambda
 
 | Variable | Source | Required | Description |
 |----------|--------|----------|-------------|
-| `ROLES_TABLE` | CDK | Yes | Roles DynamoDB table |
-| `ALLOWED_ORIGIN` | CDK | Yes | CORS allowed origin |
+| `ROLES_TABLE` | Terraform | Yes | Roles DynamoDB table |
+| `ALLOWED_ORIGIN` | Terraform | Yes | CORS allowed origin |
 
 ### Grants API Lambda
 
 | Variable | Source | Required | Description |
 |----------|--------|----------|-------------|
-| `RESOURCE_ROLE_MAPPINGS_TABLE` | CDK | Yes | Grants DynamoDB table |
-| `ROLES_TABLE` | CDK | Yes | Roles table (validate role exists) |
-| `ALLOWED_ORIGIN` | CDK | Yes | CORS allowed origin |
+| `RESOURCE_ROLE_MAPPINGS_TABLE` | Terraform | Yes | Grants DynamoDB table |
+| `ROLES_TABLE` | Terraform | Yes | Roles table (validate role exists) |
+| `ALLOWED_ORIGIN` | Terraform | Yes | CORS allowed origin |
 
 ## DELETE /namespaces/{namespaceId} Behavior
 

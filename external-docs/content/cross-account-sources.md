@@ -388,12 +388,12 @@ How to establish network connectivity between the Context Ontology Accelerator p
 | Situation | Connectivity | Notes |
 |---|---|---|
 | DBs in Context Ontology Accelerator's VPC | None needed | Deploy test stack with `vpc_id`=Context Ontology Accelerator VPC |
-| DBs in a separate VPC (same account) | VPC Peering or Transit Gateway | Deploy test stack first, then Context Ontology Accelerator with `jdbc_peer_*` context |
+| DBs in a separate VPC (same account) | VPC Peering or Transit Gateway | Deploy test stack first, then set the `jdbc_peer_*` variables in Context Ontology Accelerator's `shared.tfvars` |
 | DBs in a separate account | VPC Peering/TGW + cross-account role | As above + `CustomerAccessStack` |
 
 ## Same-VPC (No Cross-Network)
 
-> **Note:** The `tests/cdk` directory referenced below is an internal integration-test stack and is not included in the public mirror. The CDK patterns shown here illustrate how to deploy companion test databases; adapt them to your own infrastructure stack.
+> **Note:** The `tests/cdk` directory referenced below is an internal integration-test stack and is not included in the public mirror. The patterns shown here illustrate how to deploy companion test databases; adapt them to your own infrastructure code.
 
 Simplest path. Deploy the test databases into Context Ontology Accelerator's VPC:
 
@@ -418,17 +418,27 @@ cd tests/cdk && npx cdk deploy coa-integ-test-databases
 
 Capture: test VPC ID, VPC CIDR from stack outputs.
 
-### 2. Deploy Context Ontology Accelerator with peering context
+### 2. Deploy Context Ontology Accelerator with peering variables
 
-```bash
-cd infra && npx cdk deploy --all -c env=dev \
-  -c jdbc_peer_vpc_id=<test-vpc-id> \
-  -c jdbc_peer_cidrs=<test-vpc-cidr>
+Set the peering variables in `infra-tf/shared.tfvars`:
+
+```hcl
+jdbc_peer_vpc_id = "<test-vpc-id>"
+jdbc_peer_cidrs  = ["<test-vpc-cidr>"]
 ```
 
-For cross-account peers, also pass:
-- `-c jdbc_peer_owner_id=<account-id>`
-- `-c jdbc_peer_region=<region>` (if cross-region)
+For cross-account peers, also set:
+
+```hcl
+jdbc_peer_owner_id = "<account-id>"
+jdbc_peer_region   = "<region>"   # required only for cross-region
+```
+
+Then apply:
+
+```bash
+cd infra-tf && make apply-00-network
+```
 
 ### 3. Finish the peer (test-DB) side
 
@@ -453,40 +463,39 @@ For cross-account peers, also pass:
 
 ### Transit Gateway
 
-Best for many-VPC fan-out:
+Best for many-VPC fan-out. In `infra-tf/shared.tfvars`:
 
-```bash
-cd infra && npx cdk deploy --all -c env=dev \
-  -c jdbc_tgw_id=<tgw-id> \
-  -c jdbc_tgw_cidrs=<test-cidr>
+```hcl
+jdbc_tgw_id    = "<tgw-id>"
+jdbc_tgw_cidrs = ["<test-cidr>"]
 ```
 
-Attach the test VPC to the same TGW and add route-table entries both ways.
+Apply, then attach the test VPC to the same TGW and add route-table entries both ways.
 
 ### PrivateLink
 
-Tolerates overlapping CIDRs — no route/CIDR coordination needed:
+Tolerates overlapping CIDRs — no route/CIDR coordination needed. In `infra-tf/shared.tfvars`:
 
-```bash
-cd infra && npx cdk deploy --all -c env=dev \
-  -c jdbc_privatelink_service=<svc-name> \
-  -c jdbc_privatelink_port=<port>
+```hcl
+jdbc_privatelink_service      = "<svc-name>"
+jdbc_privatelink_port         = <port>
+jdbc_privatelink_private_dns  = true   # optional
 ```
 
 Requires the test side to expose the DB behind an NLB + VPC endpoint service.
 
-## CDK Context-Key Reference
+## Terraform variable reference
 
-| Key | Purpose |
+| Variable | Purpose |
 |---|---|
 | `jdbc_peer_vpc_id` | Peer VPC to connect to (enables peering) |
-| `jdbc_peer_cidrs` | Comma-separated CIDRs in the peer network to route to |
+| `jdbc_peer_cidrs` | List of CIDRs in the peer network to route to |
 | `jdbc_peer_owner_id` | Peer account ID (cross-account peering) |
 | `jdbc_peer_region` | Peer region (cross-region peering) |
 | `jdbc_tgw_id` | Existing Transit Gateway ID to attach to |
-| `jdbc_tgw_cidrs` | Comma-separated CIDRs reachable via the TGW |
+| `jdbc_tgw_cidrs` | List of CIDRs reachable via the TGW |
 | `jdbc_privatelink_service` | Producer endpoint-service name |
 | `jdbc_privatelink_port` | DB port the endpoint service listens on |
-| `jdbc_privatelink_private_dns` | `"true"` to enable private DNS on the endpoint |
+| `jdbc_privatelink_private_dns` | `true` to enable private DNS on the endpoint |
 
-These keys apply only when Context Ontology Accelerator creates its own VPC (no `vpc_id` context set). Imported VPCs are expected to bring their own connectivity.
+These variables apply only when Context Ontology Accelerator creates its own VPC (no `vpc_id` set). Imported VPCs are expected to bring their own connectivity.

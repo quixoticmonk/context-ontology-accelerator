@@ -1,12 +1,12 @@
 # Terraform Infrastructure
 
-Terraform port of the CDK infrastructure in [`../infra/`](../infra/). See
-[`../TERRAFORM_MIGRATION_PLAN.md`](../TERRAFORM_MIGRATION_PLAN.md) for the
-full CDK → TF resource mapping, phasing, and known gotchas.
+The full deploy stack for the Context Ontology Accelerator, split into 10
+layered stacks under `stacks/` with local state per stack. See
+[`DEPLOY.md`](./DEPLOY.md) for the full deploy walkthrough.
 
-**Status:** Phases 0–7 complete. 17 modules landed, ~17,650 lines HCL.
-Full-graph `terraform validate` passes; `terraform plan` builds the
-graph without errors.
+**Status:** production. 17 modules across foundation / services /
+observability, ~17,650 lines HCL. `terraform validate` passes fleet-wide;
+`terraform plan` builds the graph without errors.
 
 ## Structure
 

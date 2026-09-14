@@ -200,7 +200,7 @@ not available on any backend this package targets:
 
 - **Neptune Database** — the live deployment (`WORKBENCH_BACKEND=opensearch_neptune`),
   pinned to engine **1.4.7.0** in
-  `infra/lib/stacks/foundation/storage-stack.ts`. Its SPARQL engine implements
+  `infra-tf/modules/foundation/storage/neptune.tf`. Its SPARQL engine implements
   SPARQL 1.1; there is no RDF-star/SPARQL-star support to store or match a
   quoted triple. This constraint is **version-bound, not architectural** —
   re-check it against the pinned engine version before concluding RDF-star is

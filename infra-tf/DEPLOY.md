@@ -327,9 +327,9 @@ aws lakeformation put-data-lake-settings --cli-input-json file://settings.json
 
 ## 9. Full reset (development / iteration)
 
-If a partial apply left orphans that block a fresh run — or you're
-recovering from a prior CDK deploy — nuke every `coa-dev-*` resource
-this repo's stacks manage plus every stack's local state:
+If a partial apply left orphans that block a fresh run, nuke every
+`coa-dev-*` resource this repo's stacks manage plus every stack's local
+state:
 
 ```bash
 ./scripts/nuke-coa-dev.sh

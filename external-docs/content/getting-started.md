@@ -3,11 +3,12 @@
 ## Prerequisites
 
 - Python 3.12 (pinned via `.python-version` — uv will use this automatically)
-- Node.js 22+ (for CDK CLI and web-app)
+- Node.js 22+ (for the web-app and Smithy TypeScript client build)
 - [pnpm](https://pnpm.io/) (Node package manager — installed via `mise` or `npm install -g pnpm`)
 - Docker (for local dev services and container image builds)
 - Java 17+ and Gradle (for Smithy codegen)
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
+- [Terraform](https://developer.hashicorp.com/terraform/downloads) 1.14+ (for deploys)
 - AWS CLI v2 (for deployments and ECR auth)
 
 ## Initial Setup
@@ -32,43 +33,57 @@ make format
 # Run linting (ruff + mypy + TypeScript type-check + prettier)
 make lint
 
-# Run unit tests (Python pytest + CDK Jest)
+# Run unit tests (Python pytest + JS unit tests)
 make test
 
 # Run integration tests (requires deployed dev stack)
 make test-integ
 ```
 
-### CDK (infrastructure)
+### Terraform (infrastructure)
 
 ```bash
-# Build all TS packages and validate CDK stacks
-pnpm nx run-many -t build
-pnpm --filter coa-infra exec cdk synth
+cd infra-tf
 
-# Deploy to dev environment
-make deploy-dev
+# Initialize all stacks (downloads providers, populates plugin cache)
+make init-all
+
+# Format + validate every stack in the tree
+make fmt-write
+make validate
+
+# Deploy the full stack (foundation → services → observability) in dependency order
+make up-all
 ```
 
-> **CDK CLI:** If you see a version mismatch error, update: `npm install -g aws-cdk@latest`
+> **Terraform version:** the stacks pin `required_version = ">= 1.14"` because
+> `40-sources` uses lifecycle action blocks. If you see a version error at
+> `terraform init`, upgrade the CLI (`brew install terraform` / `tfenv install`).
 
-#### CDK context variables
+#### Terraform variables
 
-All stacks use context-driven configuration via `CoaStack` base class:
+The stacks are configured via a shared tfvars file (`infra-tf/shared.tfvars`,
+copied from `shared.tfvars.example`). Common knobs:
 
-| Variable                   | Default            | Description                                                    |
-|----------------------------|--------------------|----------------------------------------------------------------|
-| `resource_prefix`          | `coa`              | Prefix for all resource names                                  |
-| `env`                      | `dev`              | Deployment environment                                         |
-| `project_tag`              | `semantic-context` | AWS `Project` tag value                                        |
-| `vpc_id`                   | (none)             | Import an existing VPC instead of creating one                 |
-| `aoss_max_ocu`             | `96`               | Max OCU capacity for OpenSearch Serverless (indexing + search) |
-| `aoss_min_ocu`             | `2`                | Min OCU capacity for OpenSearch Serverless (indexing + search). Set to `0` for scale-to-zero — see below |
-| `api_throttle_rate_limit`  | `50`               | API Gateway stage requests-per-second rate limit               |
-| `api_throttle_burst_limit` | `100`              | API Gateway stage burst capacity                               |
-| `lambda_reserved_concurrency` | `5`             | Reserved concurrency for the VKG-reload and doc-preprocessing Lambdas; `0` disables reserving (needed on reduced Lambda-quota accounts) |
+| Variable                       | Default            | Description                                                    |
+|--------------------------------|--------------------|----------------------------------------------------------------|
+| `resource_prefix`              | `coa`              | Prefix for all resource names                                  |
+| `env`                          | `dev`              | Deployment environment                                         |
+| `region`                       | `us-east-1`        | AWS region                                                     |
+| `project_tag`                  | `semantic-context` | AWS `Project` tag value                                        |
+| `vpc_id`                       | `null`             | Import an existing VPC instead of creating one (BYOVPC)        |
+| `azs`                          | `["us-east-1a", "us-east-1b"]` | Availability zones (auto-resolved in AgentCore-restricted regions) |
+| `aoss_max_ocu`                 | `96`               | Max OCU capacity for OpenSearch Serverless (indexing + search) |
+| `aoss_min_ocu`                 | `2`                | Min OCU capacity for OpenSearch Serverless. Set to `0` for scale-to-zero — see below |
+| `api_throttle_rate_limit`      | `50`               | API Gateway stage requests-per-second rate limit               |
+| `api_throttle_burst_limit`     | `100`              | API Gateway stage burst capacity                               |
+| `lambda_reserved_concurrency`  | `5`                | Reserved concurrency for the VKG-reload and doc-preprocessing Lambdas; `0` disables reserving (needed on reduced Lambda-quota accounts) |
+| `initial_admin_email`          | `nobody@amazon.com` | Email of the initial admin user (Cognito user pool) — **change this** |
+| `idp_type`                     | `COGNITO`          | Identity provider: `COGNITO`, `SAML`, or `OIDC`                |
 
-Resource naming follows `{prefix}-{env}-{name}` (e.g. `coa-dev-neptune`).
+Resource naming follows `{prefix}-{env}-{name}` (e.g. `coa-dev-neptune`). See
+`infra-tf/shared.tfvars.example` and `infra-tf/variables.tf` for the full
+input surface.
 
 #### OpenSearch Serverless capacity and scale-to-zero
 
@@ -78,10 +93,10 @@ idle, which removes the always-on OCU cost floor, but COA ships a minimum of
 **2 OCU** rather than 0 so that a default deployment does not pay cold-start
 latency on its first query after an idle period.
 
-To opt into scale-to-zero:
+To opt into scale-to-zero, set the following in `infra-tf/shared.tfvars`:
 
-```bash
-cdk deploy -c aoss_min_ocu=0
+```hcl
+aoss_min_ocu = 0
 ```
 
 Valid `aoss_min_ocu` values are `0`, `2`, `4`, `8`, `16`, or multiples of 16.
@@ -96,69 +111,72 @@ environment serving interactive queries or running large scans.
 
 #### First-time deployment
 
-Deploying for the first time to a new AWS account requires bootstrapping CDK
-and authenticating to ECR Public — see
-[Deploying Context Ontology Accelerator](deploying.md) for those one-time steps (both
-are also handled automatically by `make deploy-dev`'s preflight checks).
+Deploying for the first time to a new AWS account requires authenticating to
+ECR Public — see [Deploying Context Ontology Accelerator](deploying.md) for
+the one-time steps.
 
 #### Lake Formation bootstrap (required for JDBC data sources)
 
 JDBC sources are provisioned as Lake Formation–governed Glue federated catalogs.
-Creating those catalogs requires the federation provisioner's Lambda role to be a
-Lake Formation **data-lake admin**. The `LakeFormationAdmin` custom resource
-registers it automatically and non-destructively (it appends to the existing
-admin list rather than overwriting it).
+Creating those catalogs requires the federation provisioner's Lambda role to be
+a Lake Formation **data-lake admin**. The Terraform sources module registers
+it automatically via a Lambda invocation action
+(`infra-tf/modules/services/sources/lakeformation_admin.tf`) — the merge is
+non-destructive, appending to the existing admin list rather than overwriting
+it.
 
 There is no manual bootstrap step, on greenfield or on existing accounts alike.
 
-`PutDataLakeSettings` is authorized by the **IAM permission** `lakeformation:PutDataLakeSettings`, which the custom resource's Lambda role already carries — *not* by the caller's membership in `DataLakeAdmins`. A principal holding that permission can read the settings and modify the admin list whether or not it is itself an admin, and whether or not the account already has admins.
+`PutDataLakeSettings` is authorized by the **IAM permission** `lakeformation:PutDataLakeSettings`, which the Lambda's role already carries — *not* by the caller's membership in `DataLakeAdmins`. A principal holding that permission can read the settings and modify the admin list whether or not it is itself an admin, and whether or not the account already has admins.
 
 #### What COA changes about your Lake Formation settings
 
 Worth knowing before the first deploy, but nothing here needs action:
 
-- **Your existing data-lake admins are preserved.** The custom resource reads the
-  current settings, appends one principal if absent, and writes them back. It never
-  overwrites the admin list. Other settings, including the `IAM_ALLOWED_PRINCIPALS`
-  defaults that make LF defer to IAM, are round-tripped untouched — deploying COA
-  does not flip an account into strict LF mode.
+- **Your existing data-lake admins are preserved.** The Lambda reads the
+  current settings, appends one principal if absent, and writes them back. It
+  never overwrites the admin list. Other settings, including the
+  `IAM_ALLOWED_PRINCIPALS` defaults that make LF defer to IAM, are round-tripped
+  untouched — deploying COA does not flip an account into strict LF mode.
 - **One principal is added:** the federation provisioner role, published at
   `/{prefix}/sources/federation-provisioner-role-arn`. It needs data-lake admin
   standing to grant `DATA_LOCATION_ACCESS` on per-source Glue connections during a
   JDBC scan.
-- **`cdk destroy` removes it again,** deregistering only the principal COA
-  registered.
+- **`terraform destroy` does not deregister the principal.** Terraform Actions
+  do not yet support `before_destroy`, so the LF admin entry stays in place
+  after teardown. The role itself is deleted, so the dangling entry is
+  harmless. To prune manually, see `infra-tf/DEPLOY.md` §8.
 - The read-modify-write has no compare-and-swap, so a governance tool that
   reconciles LF settings concurrently could race with it. Unlikely to matter in
   practice; worth knowing if you run one.
 
-See `infra/README.md` (Lake Formation bootstrap) for troubleshooting.
+See `infra-tf/DEPLOY.md` §8 for troubleshooting.
 
 #### Customizing deployments
 
-Pass context overrides via environment variables:
+Edit `infra-tf/shared.tfvars` to override defaults:
 
-```bash
+```hcl
 # Custom prefix
-SCL_PREFIX=myproj make deploy-dev
+resource_prefix = "myproj"
 
-# Import existing VPC
-SCL_VPC_ID=vpc-0abc123 make deploy-dev
-
-# Multiple overrides
-SCL_PREFIX=acme SCL_VPC_ID=vpc-xyz make deploy-dev
+# Import existing VPC (BYOVPC)
+vpc_id = "vpc-0abc123"
 ```
+
+`shared.tfvars` is gitignored — copy `shared.tfvars.example` as the starting
+point. Every knob has a documented default in `infra-tf/variables.tf`.
 
 #### Deployment architecture
 
-See [Deploying Context Ontology Accelerator](deploying.md) for the full stack list
-(16 stacks total), dependency order, and per-stack purpose — CDK resolves
-ordering automatically from the dependency graph in `bin/app.ts`.
+See [Deploying Context Ontology Accelerator](deploying.md) for the full stack
+list (10 layered stacks under `infra-tf/stacks/`), dependency order, and
+per-stack purpose. Cross-stack values flow through SSM Parameter Store under
+`/coa/*`, so stacks can be applied incrementally.
 
 > **Cost warning:** Neptune + OpenSearch Serverless cost ~$930/mo when idle.
 > Destroy stacks when not actively testing — see
-> [Deploying Context Ontology Accelerator: Tearing Down](deploying.md) for the
-> recommended `make destroy-dev` command.
+> [Deploying Context Ontology Accelerator: Tearing Down](deploying.md).
 
 ### Smithy codegen
 
@@ -195,9 +213,17 @@ pnpm dev        # opens at http://localhost:5173
 | `make test`        | Run unit tests via Nx                                                            |
 | `make test-integ`  | Run integration tests                                                            |
 | `make build`       | Build all packages via Nx                                                        |
-| `make deploy-dev`  | Deploy to dev environment via CDK (supports `SCL_PREFIX`, `SCL_VPC_ID` env vars) |
-| `make destroy-dev` | Tear down all dev stacks (AgentCore Runtimes, VKG ECS services, DataZone domain, then `cdk destroy --all`) — see the [Deploying guide](deploying.md), "Tearing Down" section |
 | `make docs`        | Serve docs site locally (MkDocs)                                                 |
+
+For deployment, use the Terraform Makefile under `infra-tf/`:
+
+```bash
+cd infra-tf && make help          # list all deploy targets
+cd infra-tf && make up-all        # full apply, dependency-ordered
+cd infra-tf && make down-all      # full reverse-order destroy (dev only)
+```
+
+See [`infra-tf/DEPLOY.md`](https://github.com/aws/context-ontology-accelerator/blob/main/infra-tf/DEPLOY.md) for the full deploy walkthrough.
 
 ## Next Steps
 

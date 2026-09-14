@@ -2,18 +2,26 @@
 
 This guide walks you through deploying Context Ontology Accelerator into your AWS account.
 
+The infrastructure is defined in [Terraform](https://developer.hashicorp.com/terraform)
+under `infra-tf/`, split into 10 sequential stacks under `infra-tf/stacks/`
+with local state per stack. Cross-stack values flow through SSM Parameter
+Store under `/coa/*`. The `Makefile` in `infra-tf/` sequences the apply
+end-to-end.
+
 ## Prerequisites
 
 | Requirement | Version | Purpose |
 |-------------|---------|---------|
 | AWS Account | — | Target deployment account |
-| AWS CLI v2 | 2.x | Credential management, stack operations |
-| Node.js | 22+ | CDK CLI, web-app build |
+| AWS CLI v2 | 2.x | Credential management |
+| Terraform | 1.14+ | Infrastructure provisioning (`40-sources` uses lifecycle action blocks — 1.14 required) |
+| Node.js | 22+ | Web-app build |
 | Python | 3.12 | Backend services |
-| pnpm | 10+ | TypeScript package management |
+| pnpm | 10+ | TypeScript package management (workspace-aware; npm/yarn will not work) |
 | uv | 0.4+ | Python package management |
 | Java | 17+ | Smithy code generation |
 | Docker | — | Container image builds |
+| jq | — | Deploy helper scripts |
 
 ## AWS Account Setup
 
@@ -21,14 +29,13 @@ Context Ontology Accelerator deploys into a single AWS account and region. Ensur
 
 ### Service Quotas
 
-Two account service quotas can block a deploy. The preflight check
-(`scripts/preflight-deploy.sh`) validates both before CDK runs, but on a fresh
-or sandbox account it is worth confirming them up front:
+Two account service quotas can block a deploy. On a fresh or sandbox
+account it is worth confirming them up front:
 
 | Quota | Code | Requirement | If too low |
 |-------|------|-------------|------------|
-| **VPC** (VPCs per Region) | `L-F678F1CE` | Room for one more VPC in the target region | Delete an unused VPC or request an increase |
-| **Lambda** (Concurrent executions) | `L-B99A9384` | Enough unreserved headroom to reserve the deployment's Lambda concurrency (default 5 × 2 functions = 10) above Lambda's account-wide minimum of 10 | Request an increase, **or** deploy with `SCL_LAMBDA_RESERVED_CONCURRENCY=0` (see [Lambda reserved concurrency](#lambda-reserved-concurrency)) |
+| **VPC** (VPCs per Region) | `L-F678F1CE` | Room for one more VPC in the target region (skip when using `vpc_id` to import an existing VPC) | Delete an unused VPC or request an increase — or set `vpc_id` in `shared.tfvars` |
+| **Lambda** (Concurrent executions) | `L-B99A9384` | Enough unreserved headroom to reserve the deployment's Lambda concurrency (default 5 × 2 functions = 10) above Lambda's account-wide minimum of 10 | Request an increase, **or** deploy with `lambda_reserved_concurrency = 0` (see [Lambda reserved concurrency](#lambda-reserved-concurrency)) |
 
 Check them with:
 
@@ -42,24 +49,31 @@ New accounts sometimes have the Lambda concurrent-executions quota at the
 reduced default of `10`, on which reserving *any* concurrency is rejected.
 Raising it (`L-B99A9384`) opens an AWS Support case rather than being granted
 immediately, so if you are on a reduced-quota account and want to deploy now,
-disable the reservations with `SCL_LAMBDA_RESERVED_CONCURRENCY=0`.
+disable the reservations by setting `lambda_reserved_concurrency = 0` in
+`infra-tf/shared.tfvars`.
 
-These two are the only quotas the preflight check validates. Several others —
-OpenSearch Serverless OCUs, Bedrock per-model invocation limits, Fargate vCPU,
-ENIs, S3 buckets — can still block a deploy on a new or sandbox account. See
+Several other quotas — OpenSearch Serverless OCUs, Bedrock per-model
+invocation limits, Fargate vCPU, ENIs, S3 buckets — can still block a
+deploy on a new or sandbox account. See
 [Appendix A: Quotas to check](#a3-quotas-to-check-before-deploying) for the
 fuller list and why each one matters here.
 
 ### Region Selection
 
-Context Ontology Accelerator defaults to `us-east-1` if no region is set. To deploy to a different region, export `AWS_DEFAULT_REGION` (used by the AWS CLI and preflight checks) **and** `CDK_DEFAULT_REGION` (used by CDK/`bin/app.ts` for AZ resolution and region-specific config) before running any deploy command:
+Context Ontology Accelerator defaults to `us-east-1`. To deploy to a
+different region, set `region` (and `azs`) in `infra-tf/shared.tfvars`:
+
+```hcl
+region = "us-west-2"
+azs    = ["us-west-2a", "us-west-2b"]
+```
+
+Also export `AWS_DEFAULT_REGION` so the AWS CLI and any helper scripts
+target the same region as the Terraform stacks:
 
 ```bash
 export AWS_DEFAULT_REGION=us-west-2
-export CDK_DEFAULT_REGION=us-west-2
 ```
-
-Both must be set consistently — if only one is set, CDK and the AWS CLI can silently target different regions.
 
 ### Region Prerequisites
 
@@ -94,7 +108,7 @@ complete inventory, including the services that are only called at run time rath
 by the deploy, see [Appendix A: AWS Service Inventory](#appendix-a-aws-service-inventory-quotas-and-considerations).
 
 !!! warning "GovCloud and China regions are not supported"
-    These partitions lack several required dependencies, and the stacks assume the `aws` partition in
+    These partitions lack several required dependencies, and the modules assume the `aws` partition in
     ARN construction. Deploying there would need code changes beyond region configuration.
 
 #### Bedrock model availability
@@ -122,22 +136,23 @@ only `us.` and `eu.` geographic profiles. Also
 [request model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) for
 each model in the deploy region, and note that `global.` profiles require
 [additional IAM/SCP permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html)
-beyond what the stacks grant by default.
+beyond what the modules grant by default.
 
 ##### Where the model IDs live
 
-Every model ID is configurable from the SSM deploy config (`/{prefix}/config`) — no source edits are
-required to deploy outside the US. Set the keys you need before deploying; each falls back to the
-built-in default when omitted, so a deployment that configures none of them behaves exactly as it
-does today.
+Every model ID is a Terraform variable in `infra-tf/variables.tf`, exposed
+under `infra-tf/shared.tfvars`. No source edits are required to deploy
+outside the US. Set the variables you need before deploying; each falls
+back to the built-in default when omitted, so a deployment that configures
+none of them behaves exactly as it does today.
 
-| Config key | Sets the model for | Default |
-|------------|--------------------|---------|
-| `bedrockLlmModelId` | Serve query LLM (NL-to-SPARQL, synthesis) | `us.anthropic.claude-sonnet-5` |
-| `bedrockEmbedModelId` | **All** embeddings — induction, doc-KG-build, metric matching, serve retrieval | `us.cohere.embed-v4:0` |
-| `bedrockEmbedDimensions` | Vector dimension for the embedding model above | `1024` |
-| `bedrockInductionLlmModelId` | Ontology induction, grounding rerank, description generation | `us.anthropic.claude-sonnet-5` |
-| `bedrockChatModelId` | Source enrichment, constraint inference, document-ingestion extraction | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| Variable | Sets the model for | Default |
+|----------|--------------------|---------|
+| `bedrock_llm_model_id` | Serve query LLM (NL-to-SPARQL, synthesis) | `us.anthropic.claude-sonnet-5` |
+| `bedrock_embed_model_id` | **All** embeddings — induction, doc-KG-build, metric matching, serve retrieval | `us.cohere.embed-v4:0` |
+| `bedrock_embed_dimensions` | Vector dimension for the embedding model above | `1024` |
+| `bedrock_induction_llm_model_id` | Ontology induction, grounding rerank, description generation | `us.anthropic.claude-sonnet-5` |
+| `bedrock_chat_model_id` | Source enrichment, constraint inference, document-ingestion extraction | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 
 Both **geographic inference profiles** (`us.`, `eu.`, `apac.`, `jp.`, `global.`) and **bare in-region model
 IDs** (e.g. `cohere.embed-v4:0`) are accepted — bare IDs matter because some models publish geo
@@ -145,18 +160,17 @@ profiles for only a subset of regions. The same resolved values also drive the B
 the CloudWatch dashboards' `ModelId` dimensions, so permissions and cost widgets follow your
 configuration automatically.
 
-Example `/{prefix}/config` for an `ap-northeast-1` deployment (a bare in-region ID for the embedding
-model because Cohere Embed v4 publishes no `jp.` profile):
+Example `infra-tf/shared.tfvars` for an `ap-northeast-1` deployment (a bare
+in-region ID for the embedding model because Cohere Embed v4 publishes no
+`jp.` profile):
 
-```json
-{
-  "initialAdminEmail": "admin@example.com",
-  "bedrockLlmModelId": "global.anthropic.claude-sonnet-5",
-  "bedrockEmbedModelId": "cohere.embed-v4:0",
-  "bedrockEmbedDimensions": 1024,
-  "bedrockInductionLlmModelId": "global.anthropic.claude-sonnet-5",
-  "bedrockChatModelId": "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
-}
+```hcl
+initial_admin_email             = "admin@example.com"
+bedrock_llm_model_id            = "global.anthropic.claude-sonnet-5"
+bedrock_embed_model_id          = "cohere.embed-v4:0"
+bedrock_embed_dimensions        = 1024
+bedrock_induction_llm_model_id  = "global.anthropic.claude-sonnet-5"
+bedrock_chat_model_id           = "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
 ```
 
 Not every model publishes a profile for every geography, so check what your region offers before
@@ -165,12 +179,12 @@ setting these: `aws bedrock list-inference-profiles` and `aws bedrock list-found
 !!! warning "`us.` profiles cannot be invoked outside the US"
     Bedrock rejects a cross-geography inference profile with
     `ValidationException: The provided model identifier is invalid.` Nothing validates model IDs at
-    synth time, so a deploy with unusable IDs still reaches `CREATE_COMPLETE` and fails at first
+    plan time, so a deploy with unusable IDs still reaches `apply-complete` and fails at first
     invocation. Check each model in your target region before deploying.
 
 !!! warning "Changing the embedding model is a data migration"
     All embeddings must use the same model — existing indexes were written with the previous one and
-    must be re-ingested, or retrieval degrades silently. `bedrockEmbedDimensions` is baked into the
+    must be re-ingested, or retrieval degrades silently. `bedrock_embed_dimensions` is baked into the
     OpenSearch index at creation and cannot be changed afterwards. Set both at **initial** deploy.
 
 !!! warning "Only `us-east-1` has been tested"
@@ -183,37 +197,17 @@ setting these: `aws bedrock list-inference-profiles` and `aws bedrock list-found
 These apply **no matter which region you deploy to**:
 
 - **`us-east-1` is always involved.** CloudFront-scope WAF WebACLs and CloudFront ACM certificates
-  exist only in `us-east-1`, so the `*-edge-waf` stack always deploys there and `uiCertificateArn`
-  must be a `us-east-1` certificate. Amazon ECR Public is likewise `us-east-1`-only (build-time).
+  exist only in `us-east-1`, so the edge-WAF resources always use the `aws.us_east_1` provider alias
+  in `infra-tf/providers.tf` and `ui_certificate_arn` must be a `us-east-1` certificate. Amazon ECR
+  Public is likewise `us-east-1`-only (build-time).
 - **Availability Zones can be restricted within a region.** A service being present in a region does
   not mean it is present in every AZ of that region. In `us-east-1`, AgentCore Runtime supports only
   3 of 6 AZs and the OpenSearch Serverless VPC endpoint is offered in a different subset, so
-  `bin/app.ts` resolves the intersection at synth time (`infra/lib/utils/agentcore-az.ts`) and pins
-  the VPC to it. If your region turns out to have similar AZ restrictions, add it to
-  `AGENTCORE_RESTRICTED_AZ_IDS` in that file — otherwise the AgentCore Runtime or the AOSS endpoint
+  `infra-tf/stacks/00-network/locals.tf` resolves the intersection at plan time and pins
+  the VPC to it. If your region turns out to have similar AZ restrictions, extend
+  `agentcore_supported_zone_ids` in that file — otherwise the AgentCore Runtime or the AOSS endpoint
   can fail to create on an unsupported zone.
-- **One region per `SCL_PREFIX`.** See the multi-region warning under Environment Variables below.
-
-### Bootstrap CDK
-
-If this is the first CDK deployment to the account/region:
-
-```bash
-npx cdk bootstrap aws://<ACCOUNT_ID>/<REGION>
-```
-
-!!! warning "Deploying outside `us-east-1` needs TWO bootstraps"
-    The `*-edge-waf` stack always deploys to `us-east-1` (CloudFront-scope WAF WebACLs and CloudFront
-    ACM certificates exist only there — see "Cross-region and AZ constraints" above), so that region
-    must be bootstrapped as well or the deploy fails partway through on that stack:
-
-    ```bash
-    npx cdk bootstrap aws://<ACCOUNT_ID>/<REGION>       # your deploy region
-    npx cdk bootstrap aws://<ACCOUNT_ID>/us-east-1      # always required — edge-waf stack
-    ```
-
-    Preflight checks both and fails fast if either is missing.
-
+- **One region per `resource_prefix`.** See the multi-region warning under Configuration below.
 
 ## Installation
 
@@ -229,136 +223,173 @@ mise install
 make setup
 ```
 
-`make deploy-dev` re-checks required toolchain versions and re-runs Smithy codegen (`make generate`) automatically if `smithy-generated/` is missing or stale, so a manual re-run is only needed if you want generated artifacts refreshed without doing a full deploy.
+`make setup` regenerates Smithy artifacts (`smithy-generated/`) and syncs
+Python + Node dependencies. Re-run it after pulling changes that touch
+`.smithy` files or `pyproject.toml` / `package.json`.
+
+### Terraform plugin cache (recommended)
+
+Each stack has its own `.terraform/` directory. Without a shared cache,
+`terraform init` re-downloads the aws/awscc/time/external providers into
+every stack — ~1 GB of duplicated binaries and slow first-inits. Point
+Terraform at a shared cache once:
+
+```bash
+mkdir -p ~/.terraform.d/plugin-cache
+
+cat >> ~/.terraformrc <<'EOF'
+plugin_cache_dir   = "$HOME/.terraform.d/plugin-cache"
+disable_checkpoint = true
+EOF
+```
+
+Or, per-session:
+
+```bash
+export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
+```
+
+`make init-all` will now populate the cache on the first stack and hard-link
+subsequent stacks' providers from it.
 
 ## Deploy
 
+The Terraform Makefile (`infra-tf/Makefile`) sequences the full deploy
+end-to-end:
+
 ```bash
-make deploy-dev
+cd infra-tf
+
+# One-time: copy the example tfvars and edit
+cp shared.tfvars.example shared.tfvars
+$EDITOR shared.tfvars       # at minimum, set initial_admin_email
+
+# Initialize every stack
+make init-all
+
+# Deploy everything: foundation → ECR → build → services → observability
+make up-all
 ```
 
-This runs `scripts/deploy.sh` which:
+`make up-all` sequences (see `infra-tf/DEPLOY.md` §3d for the full flow):
 
-1. **Preflight checks** — verifies toolchain versions (Node, Java, pnpm), Docker, regenerates Smithy artifacts if missing/stale, authenticates to ECR Public, checks VPC quota
-2. **Builds all packages** — compiles TypeScript, bundles Lambdas
-3. **Synthesizes CloudFormation** — generates templates from CDK
-4. **Deploys all stacks** — CDK handles ordering via dependency graph
+```
+apply-00-network
+  → apply-10-foundation
+  → build-lambdas                    # 20-namespace needs control-plane.zip
+  → apply-20-namespace
+  → apply-25-ecr
+  → build-images                     # ECR repos now exist for pushes
+  → apply-30-services                # metric-service, vkg, ontology
+  → apply-40-sources                 # sources ingestion, discovery, KG build
+  → apply-50-agentcore               # serve + mcp AgentCore Runtimes
+  → apply-55-data-layer              # data-layer Lambda (needs serve ARN)
+  → build-web                        # Vite build → packages/web-app/dist
+  → apply-60-api-edge                # API Gateway + CloudFront + uploads dist/ to S3
+  → apply-70-observability           # CloudWatch alarms
+```
 
-!!! note "ECR Public authentication is automatic"
-    `make deploy-dev` authenticates to ECR Public (`us-east-1`) as part of its preflight checks. No manual `docker login` step is needed.
-    The `us-east-1` region here is intentional and unrelated to your deploy region (see "Region Selection" above) — Amazon ECR Public is a single-region service; its registry and control-plane API exist only in `us-east-1` regardless of which region you deploy Context Ontology Accelerator into.
-
+Each `apply-*` target is safe to run individually, in order.
 
 ### Stacks Deployed
 
+The 10 stacks under `infra-tf/stacks/`:
+
 | Stack | Purpose |
 |-------|---------|
-| `coa-dev-network` | VPC, subnets, security groups |
-| `coa-dev-auth` | Cognito User Pool, OIDC configuration |
-| `coa-dev-guardrail` | Bedrock guardrails |
-| `coa-dev-storage` | Neptune (graph DB), OpenSearch Serverless |
-| `coa-dev-authnz` | DynamoDB tables for roles, grants, Cedar policies |
-| `coa-dev-vkg` | Virtual Knowledge Graph (Ontop) |
-| `coa-dev-namespace` | Namespace service (SMUS domain) |
-| `coa-dev-metric-service` | Metric authoring and validation |
-| `coa-dev-api` | API Gateway (routes, authorizer) |
-| `coa-dev-serve` | Context Manager (query orchestration) |
-| `coa-dev-sources` | Data source ingestion (Glue, JDBC) |
-| `coa-dev-data-layer` | REST API for queries |
-| `coa-dev-edge-waf` | CloudFront WAF WebACL (us-east-1, auto-created unless an existing ARN is supplied) |
-| `coa-dev-web` | CloudFront + S3 (React frontend) |
-| `coa-dev-ontology` | Ontology engine (induction, reasoning) |
-| `coa-dev-mcp` | MCP Server on AgentCore Runtime |
+| `00-network` | VPC, subnets, security groups, Cloud Map namespace, VPC endpoints |
+| `10-foundation` | S3, DynamoDB, OpenSearch Serverless, Neptune, Cognito, Guardrails, WAF |
+| `20-namespace` | DataZone + namespace-deletion pipeline |
+| `25-ecr` | ECR repositories for all container images |
+| `30-services` | Metric service, VKG, ontology engine |
+| `40-sources` | Data source ingestion (Glue, JDBC, documents) |
+| `50-agentcore` | Serve + MCP AgentCore Runtimes |
+| `55-data-layer` | Data Layer Lambda + IAM |
+| `60-api-edge` | API Gateway, CloudFront, WAF WebACL, web-app upload |
+| `70-observability` | CloudWatch alarms |
 
-Total fresh deploy: **~1.5 hours** for CDK/CloudFormation provisioning of all 16 stacks, once dependencies are installed and Smithy artifacts are generated. Neptune and OpenSearch Serverless provisioning, AgentCore Runtime setup, and cross-stack SSM dependency waits account for most of that time — individual stacks vary widely and several run in parallel, so a per-stack breakdown understates the real end-to-end wall-clock time. CDK resolves the deploy order automatically from the dependency graph declared in `bin/app.ts` — you don't need to deploy stacks individually or in this order by hand.
+Total fresh deploy: **~1.5 hours** for full provisioning of all 10 stacks,
+once dependencies are installed and Smithy artifacts are generated.
+Neptune and OpenSearch Serverless provisioning, AgentCore Runtime setup,
+and cross-stack SSM dependency waits account for most of that time —
+individual stacks vary widely and several sub-resources run in parallel,
+so a per-stack breakdown understates the real end-to-end wall-clock time.
 
 !!! warning "First-time setup adds significant time"
-    The ~1.5 hour figure above is CDK/CloudFormation provisioning time only. On a fresh machine or first-time deploy, budget additional time on top of that for: installing `mise`-managed toolchains, `uv sync`/`pnpm install`, Smithy/Gradle codegen (`make generate` — first run downloads Gradle wrappers, openapi-generator, and builds TypeScript clients from scratch), Docker image builds, and CDK bootstrap. Subsequent deploys after initial setup are faster since dependencies and generated artifacts are cached, though CloudFormation provisioning time for a fresh set of stacks remains similar.
+    The ~1.5 hour figure above is Terraform provisioning time only. On a fresh machine or first-time deploy, budget additional time on top of that for: installing `mise`-managed toolchains, `uv sync`/`pnpm install`, Smithy/Gradle codegen (`make generate` — first run downloads Gradle wrappers, openapi-generator, and builds TypeScript clients from scratch), and Docker image builds. Subsequent deploys after initial setup are faster since dependencies and generated artifacts are cached, though provisioning time for a fresh set of resources remains similar.
 
-### Configuration Options
+### Configuration
 
-Override defaults via environment variables:
+`infra-tf/shared.tfvars` (gitignored — copied from `shared.tfvars.example`)
+carries every configurable value. Common overrides:
 
-```bash
+```hcl
 # Custom resource prefix (default: coa)
-SCL_PREFIX=myproject make deploy-dev
+resource_prefix = "myproject"
 
-# Use an existing VPC
-SCL_VPC_ID=vpc-abc123 make deploy-dev
+# Import an existing VPC instead of creating one (BYOVPC)
+vpc_id = "vpc-abc123"
 
-# SMUS admin principal(s) — override the account's `Admin` role fallback.
-# Comma-separated IAM role/user ARN(s) that human admins federate into to
-# access the SageMaker Unified Studio console. Required on any account that
-# doesn't have a role literally named `Admin` (e.g. IAM Identity Center
-# accounts) — `make deploy-dev` checks for that role first and fails fast
-# with a clear message if it's missing and this isn't set. For an IAM
-# Identity Center account, use your permission set's federated role:
-SCL_SMUS_ADMIN_ARNS=arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/us-east-1/AWSReservedSSO_AdministratorAccess_abc123 \
-make deploy-dev
-
-# Custom domain for the web app and API — all five are required together
-# (all-or-nothing; CDK fails synth if only some are set)
-SCL_UI_DOMAIN=ontology.example.com \
-SCL_UI_CERT_ARN=arn:aws:acm:us-east-1:123456789012:certificate/ui-cert-id \
-SCL_API_DOMAIN=api.ontology.example.com \
-SCL_API_CERT_ARN=arn:aws:acm:us-west-2:123456789012:certificate/api-cert-id \
-SCL_HOSTED_ZONE_ID=Z0123456789ABCDEFGHIJ \
-make deploy-dev
+# Custom domain for the web app and API — all-or-nothing group
+ui_domain_name      = "ontology.example.com"
+ui_certificate_arn  = "arn:aws:acm:us-east-1:123456789012:certificate/ui-cert-id"
+api_domain_name     = "api.ontology.example.com"
+api_certificate_arn = "arn:aws:acm:<region>:123456789012:certificate/api-cert-id"
+hosted_zone_id      = "Z0123456789ABCDEFGHIJ"
 ```
 
 !!! note "Custom domain certificate regions"
-    `SCL_UI_CERT_ARN` must be an ACM certificate in `us-east-1` (CloudFront requirement) regardless of your deploy region. `SCL_API_CERT_ARN` must be in the same region you're deploying to (API Gateway requirement). CDK validates both at synth time and fails fast with a clear error if either is in the wrong region.
+    `ui_certificate_arn` must be an ACM certificate in `us-east-1` (CloudFront requirement) regardless of your deploy region. `api_certificate_arn` must be in the same region you're deploying to (API Gateway requirement). The variables are validated at plan time and Terraform fails with a clear error if either is in the wrong region.
 
 !!! warning "Multi-region deployments"
-    S3 buckets and IAM roles are globally scoped, not region-isolated. Deploying the same `SCL_PREFIX` + `env` to a second region **will collide** with an existing deployment. Use a distinct `SCL_PREFIX` per region (e.g., `coa-w2` for `us-west-2`) — do not rely on region alone to disambiguate.
+    S3 buckets and IAM roles are globally scoped, not region-isolated. Deploying the same `resource_prefix` + `env` to a second region **will collide** with an existing deployment. Use a distinct `resource_prefix` per region (e.g., `coa-w2` for `us-west-2`) — do not rely on region alone to disambiguate.
 
 #### Database scan enrichment timeout
 
 A database source scan runs an enrichment step (an ECS Fargate task that calls Bedrock once per discovered table). It is bounded by a deadline; when the deadline is hit the scan fails cleanly to `SCAN_FAILED` so the source can be deleted or re-scanned, rather than being stranded mid-scan. The default deadline is **120 minutes**, sized to comfortably cover a large source (roughly 2,000 tables at ~30–35 s per table with ten tables enriched in parallel).
 
-Raise it only if you are onboarding a source large enough to exceed that — a scan that fails on the deadline reports `SCAN_FAILED`, and this is the knob to give it more time:
+Raise it only if you are onboarding a source large enough to exceed that — a scan that fails on the deadline reports `SCAN_FAILED`, and this is the knob to give it more time. In `infra-tf/shared.tfvars`:
 
-```bash
-# Allow up to 180 minutes for enrichment (default is 120)
-SCL_DB_SCAN_ENRICHMENT_TIMEOUT_MINUTES=180 make deploy-dev
+```hcl
+db_scan_enrichment_timeout_minutes = 180
 ```
 
-The value is minutes and must be a positive number; CDK fails synth otherwise. On a direct `cdk deploy` (rather than the `make`/`deploy.sh` path) pass it as CDK context instead — `--context dbScanEnrichmentTimeoutMinutes=180`, or set it in the `context` block of `infra/cdk.json`. The Step Functions state-machine ceiling is derived automatically as this value plus two minutes, so the per-task deadline always trips first and routes the source to `SCAN_FAILED`.
+The value is minutes and must be a positive number; Terraform fails plan otherwise. The Step Functions state-machine ceiling is derived automatically as this value plus two minutes, so the per-task deadline always trips first and routes the source to `SCAN_FAILED`.
 
 #### Lambda reserved concurrency
 
-Two Lambdas — the VKG reloader and the document preprocessor — reserve concurrent executions (default **5** each) to bound their blast radius. On an account whose **Lambda concurrent-executions quota** (`L-B99A9384`) is at the reduced default of **10** — which AWS applies to some new accounts — reserving *any* concurrency is rejected, because it would drop unreserved capacity below Lambda's account-wide minimum of 10. The deploy runs for ~30 minutes and then fails and rolls back on `coa-dev-vkg` (and `coa-dev-sources` after it) with:
+Two Lambdas — the VKG reloader and the document preprocessor — reserve concurrent executions (default **5** each) to bound their blast radius. On an account whose **Lambda concurrent-executions quota** (`L-B99A9384`) is at the reduced default of **10** — which AWS applies to some new accounts — reserving *any* concurrency is rejected, because it would drop unreserved capacity below Lambda's account-wide minimum of 10. The deploy runs and then fails on `30-services` (and `40-sources` after it) with:
 
 ```
 Specified ReservedConcurrentExecutions for function decreases account's
 UnreservedConcurrentExecution below its minimum value of [10].
 ```
 
-The preflight check (`scripts/preflight-deploy.sh`) catches this before CDK runs. Raising the quota via `request-service-quota-increase` on `L-B99A9384` opens an AWS Support case rather than being granted immediately, so the fast unblock is to deploy without the reservations:
+Raising the quota via `request-service-quota-increase` on `L-B99A9384` opens an AWS Support case rather than being granted immediately, so the fast unblock is to deploy without the reservations. In `infra-tf/shared.tfvars`:
 
-```bash
-# Deploy without reserving Lambda concurrency (default is 5 per function)
-SCL_LAMBDA_RESERVED_CONCURRENCY=0 make deploy-dev
+```hcl
+lambda_reserved_concurrency = 0
 ```
 
-The value must be a non-negative integer; CDK fails synth otherwise. `0` (or unset via context) omits the reservation entirely — the functions then draw from the shared unreserved pool with no dedicated guarantee or cap, which is fine for a single-tenant evaluation. On a direct `cdk deploy`, pass it as context instead — `--context lambda_reserved_concurrency=0`, or set it in the `context` block of `infra/cdk.json`.
+The value must be a non-negative integer. `0` omits the reservation entirely — the functions then draw from the shared unreserved pool with no dedicated guarantee or cap, which is fine for a single-tenant evaluation.
 
 ### Internal Environment Variables
 
-These are set by infrastructure stacks and are not user-configurable:
+These are set by the Terraform modules and are not user-configurable:
 
 | Variable | Set By | Purpose |
 |----------|--------|---------|
-| `SCL_MCP_MODE` | `mcp-stack.ts` | Switches the container entrypoint between Context Manager (default) and MCP Server. When set to `"true"`, the container starts in MCP mode. |
+| `SCL_MCP_MODE` | `modules/services/mcp/main.tf` | Switches the container entrypoint between Context Manager (default) and MCP Server. When set to `"true"`, the container starts in MCP mode. |
 | `BULK_REVIEW_PAGE_BUDGET` | `worker.py` default | Per-invocation table budget for the bulk-review worker (default `1000`); when a source has more tables, the worker processes one page, re-enqueues a continuation, and resumes across chained invocations rather than silently capping. |
 | `BULK_REVIEW_WALL_CLOCK_BUDGET_S` | `worker.py` default | Per-invocation wall-clock budget in seconds (default `240`), a second guard under the 5-minute Lambda timeout that stops the worker after the current search page and continues in a fresh invocation when neared. |
-| `REVIEW_QUEUE_URL` | `sources-stack.ts` | SQS review-queue URL the bulk-review worker re-enqueues page continuations to, wiring its own self-continuation. |
+| `REVIEW_QUEUE_URL` | `modules/services/sources/sqs.tf` | SQS review-queue URL the bulk-review worker re-enqueues page continuations to, wiring its own self-continuation. |
 
 ### API Request Limits and Rate Limiting
 
 Context Ontology Accelerator throttles inbound API traffic at three layers. All limits are **soft** —
 they ship with conservative defaults and can be tuned per deployment. Defaults
-are defined in `infra/lib/constants.ts`.
+live in the module variables under `infra-tf/modules/services/api/` and
+`infra-tf/modules/foundation/edge-waf/`.
 
 | Layer | Default | Applies to |
 |-------|---------|------------|
@@ -378,24 +409,24 @@ write):
 - `POST /namespaces/{namespaceId}/proposals/{proposalId}/compile-constraints`
 - `POST /namespaces/{namespaceId}/proposals/{proposalId}/accept`
 
-**Overriding the limits.** The values are construct props with defaults in
-`infra/lib/constants.ts`, not environment variables.
+**Overriding the limits.** All three are Terraform variables — set them in
+`shared.tfvars` and re-apply the affected stack:
 
-- The **API Gateway throttles** are `ApiStackProps` fields — pass them where
-  `ApiStack` is instantiated in `infra/bin/app.ts`:
-    - `throttleRateLimit` / `throttleBurstLimit` — stage-wide throttle
-    - `expensiveThrottleRateLimit` / `expensiveThrottleBurstLimit` — per-operation throttle
-- The **WAF per-IP limit** (`WafWebAclProps.rateLimit`) is not currently plumbed
-  through to `bin/app.ts`. The `WafWebAcl` construct is created inside `ApiStack`
-  and `EdgeWafStack`, so to change it either edit the
-  `DEFAULT_WAF_RATE_LIMIT_PER_5MIN` default in `constants.ts` or add a
-  pass-through prop on those two stacks. Setting `rateLimit: 0` on the construct
-  disables the rate rule (used when bringing your own WebACL — see below).
+```hcl
+# stack 60-api-edge
+api_throttle_rate_limit             = 100
+api_throttle_burst_limit            = 200
+api_expensive_throttle_rate_limit   = 10
+api_expensive_throttle_burst_limit  = 20
 
-To bring an entirely pre-built WebACL instead of the auto-created one, set the
-`api_web_acl_id` (REGIONAL, API stage) or `cloudfront_web_acl_id` (CloudFront
-edge) CDK context value; the `WafWebAcl` construct — and its rate rule — is then
-skipped entirely for that surface.
+# stack 10-foundation (edge WAF) and 60-api-edge (regional WAF)
+waf_rate_limit_per_5min = 5000
+```
+
+To bring an entirely pre-built WebACL instead of the auto-created one, set
+`api_web_acl_arn` (REGIONAL, API stage) or `cloudfront_web_acl_arn`
+(CloudFront edge) to the ARN of your existing WebACL; the built-in WebACL
+and its rate rule are then skipped entirely for that surface.
 
 **When to tune for production.** The defaults suit a modest authenticated-user
 population. Raise the stage-wide and per-operation throttles if legitimate
@@ -418,7 +449,7 @@ it.
 
 ### 1. Create Your First User
 
-By default (`idpType: COGNITO`, no `oidcSettings` configured), the deployment
+By default (`idp_type = "COGNITO"`, no `oidc_settings` configured), the deployment
 creates a Cognito User Pool. Add users via the AWS Console or CLI:
 
 ```bash
@@ -428,24 +459,31 @@ aws cognito-idp admin-create-user \
   --user-attributes Name=email,Value=user@example.com Name=email_verified,Value=true
 ```
 
-The User Pool ID is in the `coa-dev-auth` stack outputs or SSM at `/<prefix>/userpool-id`.
+The User Pool ID is in `stacks/10-foundation`'s outputs and at SSM
+`/<prefix>/userpool-id`.
 
 !!! note "Using your own identity provider instead"
     Context Ontology Accelerator can use an external OIDC-compliant IdP (Okta, Azure AD,
-    Auth0, Keycloak, etc.) instead of Cognito — set `idpType: "OIDC"` with
-    `oidcSettings` in the SSM config at `/<prefix>/config` **before** running
-    `make deploy-dev` (this must be configured pre-deploy; switching IdP types
-    afterward requires a redeploy of the `coa-dev-auth` stack). See the
+    Auth0, Keycloak, etc.) instead of Cognito — set `idp_type = "OIDC"` with
+    `oidc_settings` in `infra-tf/shared.tfvars` **before** running
+    `make up-all` (this must be configured pre-deploy; switching IdP types
+    afterward requires a re-apply of `10-foundation` and `60-api-edge`). See the
     [Authentication Setup Guide](authentication-setup.md) for the full config
     reference and a step-by-step Okta walkthrough. In OIDC mode, the
-    `coa-dev-auth` stack does **not** create a Cognito User Pool at all — the
+    `auth-idp` module does **not** create a Cognito User Pool at all — the
     commands above won't apply. Instead, create/manage users directly in your
     IdP; access is controlled entirely by [grants](role-permission-management.md)
     against the user's email or IdP group.
 
 ### 2. Access the Web App
 
-The web app URL is in the `coa-dev-web` stack's CloudFormation output (`WebAppUrl`). Sign in with the Cognito user you created (or your external IdP's credentials, if using OIDC mode).
+The web app URL is in `stacks/60-api-edge`'s outputs (`cloudfront_distribution_domain_name`):
+
+```bash
+cd infra-tf/stacks/60-api-edge && terraform output -raw cloudfront_distribution_domain_name
+```
+
+Sign in with the Cognito user you created (or your external IdP's credentials, if using OIDC mode).
 
 ### 3. Grant Platform Admin
 
@@ -575,192 +613,139 @@ To deploy updates after pulling new code:
 
 ```bash
 git pull
-make deploy-dev
+cd infra-tf
+make up-all      # rebuilds artifacts, re-applies affected stacks
 ```
 
-CDK performs incremental updates — only changed stacks are redeployed.
+Terraform's plan/apply is incremental — only the resources that actually
+changed are updated. To re-apply a single stack in isolation:
+
+```bash
+cd infra-tf
+make apply-30-services
+```
 
 ## Tearing Down
 
-```bash
-make destroy-dev
-```
-
-This runs `scripts/destroy.sh dev`, which orchestrates teardown of resources CFN can't cleanly delete on its own before running `cdk destroy --all`:
-
-1. **Deletes AgentCore Runtimes** (serve + mcp) directly via the Bedrock AgentCore API.
-2. **Waits for AgentCore-owned ENIs to detach** from their security groups — see the [AgentCore ENI wait](#agentcore-eni-wait-can-take-hours) note below. This step is currently a no-op pending a shorter, reliable detach signal.
-3. **Deletes VKG's per-namespace ECS services** (created outside CloudFormation by the ontology-reload Lambda) and waits for them to reach `INACTIVE`.
-4. **Force-deletes the DataZone domain** via `delete-domain --skip-deletion-check`, which cascades through every project, asset, and asset type under it — CloudFormation's own delete can't do this (see [FAQ](#why-does-namespace-stack-fail-to-delete-with-domain-not-empty)).
-5. **Runs `cdk destroy --all`**, then verifies no stacks remain.
-
-Same environment-variable overrides as `make deploy-dev` — pass the same `SCL_PREFIX` and region you deployed with:
+The reverse-order teardown mirrors the deploy sequence. `make down-all`
+runs the full sequence:
 
 ```bash
-SCL_PREFIX=myproject AWS_DEFAULT_REGION=us-west-2 make destroy-dev
+cd infra-tf
+make down-all
 ```
 
-Additional destroy-specific variables:
+Or invoke stacks individually in reverse:
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `SCL_DESTROY_YES` | unset | Set to `1` to skip the interactive confirmation prompt (e.g. in CI). |
-| `SCL_ENI_WAIT_MAX_SECONDS` | `600` | Max wait for AgentCore ENI detach (step 2 — currently disabled). |
-| `SCL_ECS_WAIT_MAX_SECONDS` | `300` | Max wait for VKG ECS services to reach `INACTIVE`. |
-| `SCL_DOMAIN_WAIT_MAX_SECONDS` | `300` | Max wait for the DataZone domain to finish deleting. |
+```bash
+cd infra-tf
+make destroy-70-observability
+make destroy-60-api-edge
+make destroy-55-data-layer
+make destroy-50-agentcore
+make destroy-40-sources
+make destroy-30-services
+make destroy-25-ecr
+# then clean DataZone manually via the console (see below), then:
+make destroy-20-namespace
+make destroy-10-foundation
+make destroy-00-network
+```
 
-Steps 1-4 are idempotent — if the script exits early or a step warns and continues, re-running it later picks up from an already-deleted/in-progress state.
+!!! warning "DataZone requires manual cleanup"
+    The namespace module marks DataZone resources `lifecycle { prevent_destroy = true }` because DataZone requires specific pre-delete state (FormType DISABLED, project ownership cascades) that Terraform cannot reproduce reliably. Delete the domain and its projects manually via the AWS console (or `datazone delete-domain --skip-deletion-check`) before running `destroy-20-namespace`.
 
 !!! warning
     This deletes all resources including databases and stored data. Neptune and OpenSearch data is not recoverable after deletion.
 
-If `make destroy-dev` reports stacks that didn't fully delete, it also scans their CloudFormation events for two known failure signatures and prints the exact fix — see [Troubleshooting](#troubleshooting) below. For anything else, inspect the specific failure with:
+### Full reset for dev
 
-```bash
-aws cloudformation describe-stack-events --stack-name <PREFIX>-dev-<stack> --region <REGION>
-```
-
-### Manual destroy (advanced / non-`dev` environments)
-
-`make destroy-dev` always targets `env=dev`. For any other environment, or if you need to run the underlying steps individually, call the script directly with the environment name:
-
-```bash
-cd <repo-root>
-AWS_DEFAULT_REGION=<REGION> SCL_PREFIX=<PREFIX> ./scripts/destroy.sh <env>
-```
-
-Or fall back to a plain `cdk destroy` (skips all the pre-cleanup steps above — expect the known failures documented in Troubleshooting):
-
-```bash
-cd infra
-AWS_DEFAULT_REGION=<REGION> npx cdk destroy --all \
-  --context env=dev \
-  --context resource_prefix=<PREFIX>
-```
+For a nuclear reset that clears every `coa-dev-*` resource plus every
+stack's local state, use `infra-tf/scripts/nuke-coa-dev.sh` — see
+`infra-tf/DEPLOY.md` §9 for details.
 
 ## Troubleshooting
 
-### `make deploy-dev` fails preflight with "no IAM role named 'Admin'"
+### Terraform plan/apply hangs on provider download
 
-**Symptom:** deploy stops immediately with `ERROR: No SMUS admin principal configured, and this account has no IAM role named 'Admin' to fall back to.`
+The stacks each carry their own `.terraform/` cache, so a fresh clone
+downloads providers per-stack (~1 GB each). Set up the Terraform plugin
+cache once — see [Terraform plugin cache](#terraform-plugin-cache-recommended)
+above.
 
-**Cause:** the `*-namespace` stack's `DomainLoginRole` needs at least one IAM role/user ARN to trust — the specific principal(s) human admins federate into to access the SMUS console. It defaults to the account's `Admin` role, which is an Amazon-internal account convention, not something AWS or this project creates. `make deploy-dev` checks whether that role actually exists before running CDK, so accounts without it fail here instead of several stacks deep into a CloudFormation rollback.
+### `Domain name already exists under this account (DataZone, 409)`
 
-**Fix:** set `SCL_SMUS_ADMIN_ARNS` to the ARN(s) of the role(s) your admins assume — comma-separated for more than one. For an IAM Identity Center account, this is your permission set's federated role:
+**Symptom:** `20-namespace` fails to apply the DataZone domain because a
+prior apply left one behind after a failed rollback, or a manual `terraform
+destroy` didn't reach it.
+
+**Cause:** DataZone resources are `prevent_destroy = true`, so Terraform
+cannot clear them itself. A partial teardown or CFN-migration remnant can
+leave an orphaned domain that a fresh apply cannot recreate under the same
+name.
+
+**Fix:** force-delete the leftover domain and retry:
 
 ```bash
-SCL_SMUS_ADMIN_ARNS=arn:aws:iam::<account>:role/aws-reserved/sso.amazonaws.com/<region>/AWSReservedSSO_AdministratorAccess_<suffix> \
-make deploy-dev
-```
-
-**If you hit the underlying CloudFormation failure directly** (e.g. running `cdk deploy` by hand, bypassing the preflight): `coa-dev-namespace` reaches `CREATE_FAILED` → `ROLLBACK_COMPLETE` on `DomainLoginRole` with `Invalid principal in policy`. If you retry with `SCL_SMUS_ADMIN_ARNS` now set and the stack fails again — this time on `SMUSDomain` with `Domain name already exists under this account (Service: DataZone, Status Code: 409)` — the first rollback left an orphaned DataZone domain behind (CloudFormation's stack rollback deletes the stack's other resources, but not this one). Force-delete the leftover domain, then retry:
-
-```bash
-DOMAIN_ID=$(aws datazone list-domains --query "items[?name=='<PREFIX>-<ENV>-smus-catalog'].id" --output text)
+DOMAIN_ID=$(aws datazone list-domains \
+  --query "items[?name=='<PREFIX>-<ENV>-smus-catalog'].id" --output text)
 aws datazone delete-domain --identifier "$DOMAIN_ID" --skip-deletion-check
-# wait for status DELETED, then delete the ROLLBACK_COMPLETE stack and redeploy
+# wait for status DELETED, then retry
+cd infra-tf && make apply-20-namespace
 ```
 
-### AgentCore ENI wait can take hours
+### AgentCore ENI wait can take hours after runtime deletion
 
-**Symptom:** the `*-mcp` and `*-serve` stacks fail to delete their security groups with `has a dependent object` (`DependencyViolation`), even after `make destroy-dev` deletes the AgentCore Runtimes.
+**Symptom:** the `50-agentcore` stack fails to delete a security group with
+`has a dependent object` (`DependencyViolation`) even after the runtime is
+gone.
 
-**Cause:** AgentCore Runtime provisions VPC network interfaces (ENIs) directly, outside CloudFormation. Runtime deletion doesn't synchronously release them — in practice this has been observed to take **several hours, and sometimes days**, not the few minutes originally expected. CloudFormation has no visibility into these ENIs and tries to delete the security group immediately, before they're gone.
+**Cause:** AgentCore Runtime provisions VPC network interfaces (ENIs)
+directly, outside Terraform. Runtime deletion doesn't synchronously release
+them — in practice this has been observed to take **several hours, and
+sometimes days**, not the few minutes originally expected. Terraform has no
+visibility into these ENIs and tries to delete the security group
+immediately, before they're gone.
 
-**Fix:** there isn't a fast one. `make destroy-dev` already deletes the Runtimes as its first step to start the detach clock as early as possible, but you generally need to **wait and retry later** (a few hours to a day) rather than intervene:
+**Fix:** there isn't a fast one. Re-run the destroy later:
 
 ```bash
-# Re-run later — steps 1-4 are idempotent and safe to repeat.
-make destroy-dev
+cd infra-tf && make destroy-50-agentcore
 ```
 
-Do not attempt to manually detach or delete the ENIs yourself — they're AWS-managed and manual intervention doesn't speed up the release. If it's still stuck after a day or more, treat it as an AWS-side issue rather than something to fix locally.
+Do not attempt to manually detach or delete the ENIs yourself — they're
+AWS-managed and manual intervention doesn't speed up the release.
 
-### Why does namespace stack fail to delete with "domain not empty"?
-
-**Symptom:** the `*-namespace` stack fails to delete with `Domain cannot be deleted because there are existing projects under this domain`, or the `SystemProject`/`DefaultProjectProfile` resources fail with `failed to stabilize due to internal failure` or `deletion prevented by project ...`.
-
-**Cause:** every namespace creates its own DataZone project, and CloudFormation's native `DeleteDomain`/`DeleteProject` calls can't force past a shared asset type (`CoaRelationalTable`) that's still referenced by other projects' assets — which is always true while more than one namespace exists. `make destroy-dev` handles this automatically (step 4: `delete-domain --skip-deletion-check`, a true force-delete at the domain level). If you're running a bare `cdk destroy` instead of `make destroy-dev`, you'll hit this.
-
-**Fix:** use `make destroy-dev` instead of a raw `cdk destroy`. If you're already stuck on a bare `cdk destroy`, resolve the SMUS domain ID from SSM and force-delete it directly, then retry:
+### Provider transient error on macOS (`failed to read plugin stdout`)
 
 ```bash
-DOMAIN_ID=$(aws ssm get-parameter --name /<PREFIX>/smus/domain-id --region <REGION> --query Parameter.Value --output text)
-aws datazone delete-domain --identifier "$DOMAIN_ID" --skip-deletion-check --region <REGION>
-# wait for it to finish deleting, then retry:
-make destroy-dev
+xattr -c ~/.terraform.d/plugin-cache/**/*.so 2>/dev/null || true
+find infra-tf/stacks -name .terraform -type d -exec rm -rf {} +
+cd infra-tf && make init-all
 ```
 
-### Why does the VKG stack fail to delete the ECS cluster?
+### UI shows stale API endpoint after `60-api-edge` changes
 
-**Symptom:** the `*-vkg` stack fails with `The Cluster cannot be deleted while Services are active` (`ClusterContainsServicesException`).
-
-**Cause:** per-namespace VKG services are created outside CloudFormation by the ontology-reload Lambda, so CloudFormation has no record of them and can't clean them up itself. `make destroy-dev` deletes these directly (step 3) before `cdk destroy` reaches the cluster.
-
-**Fix:** use `make destroy-dev` instead of a raw `cdk destroy`. If already stuck, delete the services manually then retry:
+The web-app upload is done, but CloudFront caches `runtime-config.json` and
+`index.html` for up to 24h. Force a cache invalidation:
 
 ```bash
-CLUSTER=<PREFIX>-dev-vkg-cluster
-for SVC in $(aws ecs list-services --cluster "$CLUSTER" --region <REGION> --query 'serviceArns[]' --output text); do
-  aws ecs update-service --cluster "$CLUSTER" --service "$SVC" --desired-count 0 --region <REGION>
-  aws ecs delete-service --cluster "$CLUSTER" --service "$SVC" --force --region <REGION>
-done
-make destroy-dev
+CF_ID=$(cd infra-tf/stacks/60-api-edge && terraform output -raw cloudfront_distribution_id)
+aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths '/*'
 ```
 
-### `GetBucketTagging: AccessDenied` or `NoSuchTagSet` on a bucket cleanup custom resource
+### API Gateway has zero authorizers / every route returns 401
 
-**Symptom:** a stack fails to delete with something like:
-
-```
-User: arn:...assumed-role/<prefix>-storage-CustomS3AutoDeleteObjectsCustomReso-XXXXX
-is not authorized to perform: s3:GetBucketTagging on resource: "arn:aws:s3:::<bucket>"
-```
-
-or
-
-```
-Received response status [FAILED] from custom resource.
-Message returned: NoSuchTagSet: The TagSet does not exist
-```
-
-**Cause:** this is a known, currently-open timing issue in CDK's `Custom::S3AutoDeleteObjects` custom resource — its delete handler checks the bucket's `aws-cdk:auto-delete-objects` tag before proceeding, and that check can race the bucket policy that grants it access. This isn't caused by a missing IAM grant in Context Ontology Accelerator's own code (the grant is present and correctly ordered in the template) — it's an upstream CDK library limitation.
-
-**Fix:** re-tag the bucket so the custom resource recognizes it, then retry:
+The OpenAPI import silently drops a custom-authorizer securityScheme when
+`x-amazon-apigateway-authtype: custom` is missing.
+`infra-tf/modules/services/api/locals.tf` preserves it in the
+`enriched_spec` transformation; if you touch that transformation, verify:
 
 ```bash
-aws s3api put-bucket-tagging --bucket <bucket-name> --region <REGION> \
-  --tagging 'TagSet=[{Key=aws-cdk:auto-delete-objects,Value=true}]'
-make destroy-dev
+aws apigateway get-authorizers \
+  --rest-api-id $(cd infra-tf/stacks/60-api-edge && terraform output -raw api_id) \
+  --region us-east-1
 ```
-
-`make destroy-dev` detects this failure signature automatically in its post-destroy check and prints the exact command with the specific bucket name filled in — you don't need to identify the bucket yourself.
-
-### A bucket fails to delete because it's "not empty"
-
-**Symptom:** a bucket resource (commonly an access-logs bucket, e.g. `AccessLogsBucketCD784A59`) fails to delete with `The bucket you tried to delete is not empty`.
-
-**Cause:** same upstream `Custom::S3AutoDeleteObjects` race as above, just surfacing as leftover objects instead of a tag-check failure.
-
-**Fix:** force-delete every object version, then retry:
-
-```bash
-aws s3api delete-objects --bucket <bucket-name> --region <REGION> --delete "$(
-  aws s3api list-object-versions --bucket <bucket-name> --region <REGION> \
-    --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}')"
-make destroy-dev
-```
-
-`make destroy-dev` detects this failure signature automatically and prints the exact command with the specific bucket name filled in.
-
-After a `DELETE_FAILED` stack is resolved (via any of the fixes above), verify no orphaned resources remain:
-
-```bash
-aws cloudformation list-stacks --region <REGION> \
-  --stack-status-filter DELETE_FAILED | grep <PREFIX>-dev
-```
-
-This should return nothing.
 
 ## Appendix A — AWS Service Inventory, Quotas, and Considerations
 
@@ -770,45 +755,43 @@ specific resource choices. It is scoped to the **single-account, single-region
 evaluation deployment** this guide describes.
 
 It complements rather than repeats the sections above — see
-[Service Quotas](#service-quotas) for the two quotas the preflight check
-validates, [Region Prerequisites](#region-prerequisites) for regional
-availability, and [API Request Limits](#api-request-limits-and-rate-limiting)
-for inbound throttling.
+[Service Quotas](#service-quotas) for the two quotas worth confirming, [Region
+Prerequisites](#region-prerequisites) for regional availability, and [API
+Request Limits](#api-request-limits-and-rate-limiting) for inbound throttling.
 
-### A.1 Services provisioned by CDK
+### A.1 Services provisioned by Terraform
 
-Every service below is created by `make deploy-dev`. "Owning stacks" uses the
-default `coa-dev-` prefix; substitute your own `SCL_PREFIX`. Derived from the
-CDK module imports under `infra/lib/stacks/` — grep there for the current
-mapping if a stack has since been refactored.
+Every service below is created by `make up-all`. "Owning module" points at
+the Terraform module under `infra-tf/modules/`. Substitute your own
+`resource_prefix` for `coa` in resource names.
 
-| Service | Used for | Owning stack(s) |
+| Service | Used for | Owning module(s) |
 |---------|----------|-----------------|
-| **Amazon VPC** (EC2) | Private networking for all compute; Lambdas and tasks are VPC-bound | `network`, and every service stack |
-| **AWS Lambda** | API handlers, workers, custom resources, ontology reload | `api`, `data-layer`, `sources`, `ontology`, `vkg`, `namespace`, `metric-service`, `serve` |
-| **Amazon ECS on Fargate** | Long-running containers: enrichment, doc ingestion, Ontop VKG | `sources`, `ontology`, `vkg` |
-| **Amazon Neptune** | Knowledge-graph store (RDF/SPARQL) | `storage` |
-| **Amazon OpenSearch Serverless** | Vector search for retrieval and grounding | `storage` (collection); `sources`, `ontology`, `serve`, `metric-service` (access policies) |
-| **Amazon DynamoDB** | Job/proposal state, roles, grants, Cedar policies, sessions | `authnz`, `api`, `sources`, `ontology`, `namespace`, `metric-service`, `serve`, `mcp` |
-| **Amazon S3** | Ontology artifacts, staged documents, web assets, access logs | `storage`, `sources`, `ontology`, `vkg`, `metric-service`, `web` |
-| **Amazon Bedrock** | All LLM and embedding inference | Called by `ontology`, `sources`, `serve`, `mcp` |
-| **Bedrock Guardrails** | Content/PII filtering on guarded calls | `guardrail` |
-| **Bedrock AgentCore Runtime** | Hosts the Serve and MCP runtimes | `serve`, `mcp` |
-| **Amazon DataZone** / SageMaker Unified Studio | Namespace domain, projects, data-asset catalog | `namespace` |
-| **Amazon API Gateway** | REST API surface, authorizer, per-route throttles | `api` |
-| **Amazon Cognito** | Default identity provider (skipped in OIDC mode) | `auth` |
-| **AWS WAF** (WAFv2) | Per-IP rate limiting at the edge and API stage | `api`, `edge-waf` |
-| **Amazon CloudFront** | Web-app CDN and TLS termination | `web` |
-| **AWS Step Functions** | Source-scan orchestration, namespace-deletion pipeline | `sources`, `namespace` |
-| **Amazon SQS** | Review queue, bulk-review worker continuations, async work | `api`, `sources`, `metric-service` |
-| **Amazon EventBridge** | Scan/ingest event routing and scheduled rules | `sources`, `ontology`, `vkg` |
-| **AWS Cloud Map** (servicediscovery) | Per-namespace VKG service discovery | `network`, `ontology`, `vkg` |
-| **Amazon ECR** | Container images for Fargate tasks and AgentCore | `sources`; image assets in `serve`, `mcp` |
+| **Amazon VPC** (EC2) | Private networking for all compute; Lambdas and tasks are VPC-bound | `foundation/network` (+ every service module) |
+| **AWS Lambda** | API handlers, workers, custom resources, ontology reload | `services/api`, `services/data-layer`, `services/sources`, `services/ontology`, `services/vkg`, `services/namespace`, `services/metric-service`, `services/serve` |
+| **Amazon ECS on Fargate** | Long-running containers: enrichment, doc ingestion, Ontop VKG | `services/sources`, `services/ontology`, `services/vkg` |
+| **Amazon Neptune** | Knowledge-graph store (RDF/SPARQL) | `foundation/storage` |
+| **Amazon OpenSearch Serverless** | Vector search for retrieval and grounding | `foundation/storage` (collection); every service module (access policies) |
+| **Amazon DynamoDB** | Job/proposal state, roles, grants, Cedar policies, sessions | `foundation/authnz`, `services/api`, `services/sources`, `services/ontology`, `services/namespace`, `services/metric-service`, `services/serve`, `services/mcp` |
+| **Amazon S3** | Ontology artifacts, staged documents, web assets, access logs | `foundation/storage`, `services/sources`, `services/ontology`, `services/vkg`, `services/metric-service`, `foundation/web` |
+| **Amazon Bedrock** | All LLM and embedding inference | Called by `services/ontology`, `services/sources`, `services/serve`, `services/mcp` |
+| **Bedrock Guardrails** | Content/PII filtering on guarded calls | `foundation/guardrail` |
+| **Bedrock AgentCore Runtime** | Hosts the Serve and MCP runtimes | `services/serve`, `services/mcp` |
+| **Amazon DataZone** / SageMaker Unified Studio | Namespace domain, projects, data-asset catalog | `services/namespace` |
+| **Amazon API Gateway** | REST API surface, authorizer, per-route throttles | `services/api` |
+| **Amazon Cognito** | Default identity provider (skipped in OIDC mode) | `foundation/auth-idp` |
+| **AWS WAF** (WAFv2) | Per-IP rate limiting at the edge and API stage | `services/api`, `foundation/edge-waf` |
+| **Amazon CloudFront** | Web-app CDN and TLS termination | `foundation/web` |
+| **AWS Step Functions** | Source-scan orchestration, namespace-deletion pipeline | `services/sources`, `services/namespace` |
+| **Amazon SQS** | Review queue, bulk-review worker continuations, async work | `services/api`, `services/sources`, `services/metric-service` |
+| **Amazon EventBridge** | Scan/ingest event routing and scheduled rules | `services/sources`, `services/ontology`, `services/vkg` |
+| **AWS Cloud Map** (servicediscovery) | Per-namespace VKG service discovery | `foundation/network`, `services/ontology`, `services/vkg` |
+| **Amazon ECR** | Container images for Fargate tasks and AgentCore | `services/sources`; image consumers in `services/serve`, `services/mcp` |
 | **AWS Systems Manager** (SSM) | Cross-stack parameters and deploy config | Every stack |
-| **Amazon CloudWatch** + Logs | Metrics, log groups, dashboards | `api`, `ontology`, `vkg`, `sources` |
-| **AWS IAM** | Task/function roles, least-privilege grants | Every stack |
-| **AWS Certificate Manager** | TLS certs for custom API/UI domains (optional) | `api`, `web` |
-| **Amazon Route 53** | DNS records for custom domains (optional) | `api`, `web` |
+| **Amazon CloudWatch** + Logs | Metrics, log groups, dashboards | `services/api`, `services/ontology`, `services/vkg`, `services/sources`, `observability` |
+| **AWS IAM** | Task/function roles, least-privilege grants | Every module |
+| **AWS Certificate Manager** | TLS certs for custom API/UI domains (optional) | `services/api`, `foundation/web` |
+| **Amazon Route 53** | DNS records for custom domains (optional) | `services/api`, `foundation/web` |
 
 ### A.2 Services called at runtime but not provisioned
 
@@ -827,13 +810,12 @@ group most easily missed when scoping IAM permissions or regional availability.
 | **AWS Secrets Manager** | Data-source credentials (e.g. JDBC) | `packages/sources`, `packages/context-manager` |
 | **AWS STS** | Role assumption and caller identity across services | Widely used (~10 modules) |
 
-
 ### A.3 Quotas to check before deploying
 
-The preflight check (`scripts/preflight-deploy.sh`) validates only the first two.
-The rest are listed because they are plausible blockers on a **new or sandbox
-account**, where reduced default quotas are common. Confirm the ones relevant to
-your usage rather than requesting increases for all of them.
+Confirm the two quotas from [Service Quotas](#service-quotas) up front. The
+rest are listed because they are plausible blockers on a **new or sandbox
+account**, where reduced default quotas are common. Confirm the ones
+relevant to your usage rather than requesting increases for all of them.
 
 Quota codes and the AWS defaults below were read from
 `service-quotas list-aws-default-service-quotas`. Defaults change over time and
@@ -842,8 +824,8 @@ own applied values with the commands that follow.
 
 | Service | Quota (code) | AWS default | Why it matters here |
 |---------|--------------|-------------|---------------------|
-| **VPC** | VPCs per Region (`L-F678F1CE`) | 5 | Deploy creates one VPC unless `SCL_VPC_ID` is set. Preflight-checked — see [Service Quotas](#service-quotas) |
-| **Lambda** | Concurrent executions (`L-B99A9384`) | 1,000 (10 on some new accounts) | Two functions reserve concurrency (default 5 each). Preflight-checked — see [Lambda reserved concurrency](#lambda-reserved-concurrency) |
+| **VPC** | VPCs per Region (`L-F678F1CE`) | 5 | Deploy creates one VPC unless `vpc_id` is set. See [Service Quotas](#service-quotas) |
+| **Lambda** | Concurrent executions (`L-B99A9384`) | 1,000 (10 on some new accounts) | Two functions reserve concurrency (default 5 each). See [Lambda reserved concurrency](#lambda-reserved-concurrency) |
 | **ECS / Fargate** | Fargate On-Demand vCPU resource count (`L-3032A538`) | **6** | **The tightest fit here.** Tasks are 2 vCPU / 8 GB and 4 vCPU / 16 GB, and VKG runs one service **per namespace** — so a single enrichment task plus two namespaces' VKG services can exhaust the default |
 | **OpenSearch Serverless** | Indexing max OCU (`L-50FA809B`), search max OCU (`L-4E98D4EB`) | 10 each | The collection runs with standby replicas enabled, which roughly doubles OCU consumption — see [A.4](#a4-considerations) |
 | **Amazon Bedrock** | Per-model invocation TPM / RPM — one quota per model **per inference profile** (e.g. `L-CCA5DF70`, cross-region RPM for Claude Haiku 4.5) | Varies widely by model (hundreds of thousands to hundreds of millions of tokens/min) | Induction throughput is bounded by model tokens-per-minute far more often than by compute; a large scan can hit it. Look up the four models in [Bedrock model availability](#bedrock-model-availability) for the profile you actually invoke |
@@ -852,12 +834,12 @@ own applied values with the commands that follow.
 | **Amazon Textract** | `DetectDocumentText` TPS (`L-75788A8B`) | 25 | Only relevant if ingesting scanned documents at volume |
 
 Quotas that are **not** worth checking, having confirmed the headroom: the deploy
-creates 16 CloudFormation stacks against a default of 2,000 (`L-0485CB21`), about
-11 S3 buckets against a far higher bucket limit, and consumes ENIs against a
-default of 5,000 per Region (`L-DF5E4CA3`). A single NAT gateway
-(`natGateways: 1`, `maxAzs: 2`) means one Elastic IP. AgentCore's slow ENI
-release after teardown is a real problem, but it is a *timing* issue rather than a
-quota one — see [AgentCore ENI wait](#agentcore-eni-wait-can-take-hours).
+creates ~10 layered stacks against Terraform's own limits, about 11 S3 buckets
+against a far higher bucket limit, and consumes ENIs against a default of
+5,000 per Region (`L-DF5E4CA3`). A single NAT gateway means one Elastic IP.
+AgentCore's slow ENI release after teardown is a real problem, but it is a
+*timing* issue rather than a quota one — see
+[AgentCore ENI wait](#agentcore-eni-wait-can-take-hours-after-runtime-deletion).
 
 Check a specific quota's default and your account's applied value with:
 
@@ -875,8 +857,8 @@ aws service-quotas get-service-quota --service-code fargate --quota-code L-3032A
     Some increases are auto-approved; others (notably Lambda concurrent
     executions, `L-B99A9384`) open an AWS Support case. If you are on a
     reduced-quota account and need to deploy today, prefer the documented
-    workarounds — e.g. `SCL_LAMBDA_RESERVED_CONCURRENCY=0` — over waiting on an
-    increase.
+    workarounds — e.g. `lambda_reserved_concurrency = 0` — over waiting on
+    an increase.
 
 ### A.4 Considerations
 
@@ -893,7 +875,7 @@ throttled.
 
 **OpenSearch Serverless has a cost and OCU floor.** The collection is
 `VECTORSEARCH` type inside a `NEXTGEN` collection group, which requires
-`standbyReplicas: ENABLED` (see `infra/lib/stacks/foundation/storage-stack.ts`).
+`standbyReplicas: ENABLED` (see `infra-tf/modules/foundation/storage/opensearch.tf`).
 Standby replicas roughly double OCU consumption versus a single-AZ
 configuration, and Serverless bills a minimum OCU allocation whether or not you
 are querying — so an idle evaluation deployment still accrues cost here. This is
@@ -903,24 +885,26 @@ knob.
 **Neptune runs a single provisioned instance, not Serverless.** One
 `db.r8g.large` primary with no read replica, IAM (SigV4) auth, encryption at
 rest, and 7-day backups. Deletion protection is enabled **only** when
-`envName === "prod"`. Two consequences for a `dev` deploy: there is no
-availability guarantee from a second instance, and the cluster is deletable — so
-`make destroy-dev` will remove the graph and its data irreversibly.
+`env = "prod"`. Two consequences for a `dev` deploy: there is no availability
+guarantee from a second instance, and the cluster is deletable — so
+`make destroy-00-network` (via `make down-all`) will remove the graph and its
+data irreversibly.
 
 **Neptune and OpenSearch dominate deploy time.** They, plus AgentCore Runtime
 setup and cross-stack SSM waits, are why a fresh deploy takes ~1.5 hours. A
 deploy that looks stuck is usually waiting on one of them — check
-`aws cloudformation list-stacks` before intervening.
+`aws cloudformation list-stacks` or the applicable module's log output before
+intervening.
 
 **Teardown is not symmetric with deploy.** AgentCore Runtime provisions ENIs
-outside CloudFormation and can hold them for hours to days after runtime
-deletion, blocking security-group deletion. VKG creates ECS services outside
-CloudFormation (one per namespace), and DataZone domains need a force-delete.
-`make destroy-dev` handles all three; a bare `cdk destroy` does not. Budget for
-teardown taking longer than deploy, and see [Tearing Down](#tearing-down).
+outside Terraform and can hold them for hours to days after runtime deletion,
+blocking security-group deletion. VKG creates ECS services outside Terraform
+(one per namespace, via the ontology-reload Lambda), and DataZone domains
+need a force-delete. Budget for teardown taking longer than deploy, and see
+[Tearing Down](#tearing-down).
 
 **Per-namespace resources scale with tenant count.** VKG runs one ECS service
-per namespace, created by the ontology-reload Lambda rather than CloudFormation.
+per namespace, created by the ontology-reload Lambda rather than Terraform.
 Fargate task count, ENIs, and Cloud Map registrations therefore grow as
 namespaces are added — relevant to the Fargate vCPU and ENI quotas in
 [A.3](#a3-quotas-to-check-before-deploying), and the reason those quotas are
@@ -936,13 +920,14 @@ Redshift-backed sources. If you deploy to a region missing one of the services
 you actually use, the failure appears at feature-use time rather than at deploy
 time.
 
-**`us-east-1` is always in the picture.** Even for a non-`us-east-1` deployment:
-the CloudFront-scope WAF WebACL and the UI ACM certificate must live in
-`us-east-1`, and ECR Public (build-time image pulls) is `us-east-1`-only. See
+**`us-east-1` is always in the picture.** Even for a non-`us-east-1`
+deployment: the CloudFront-scope WAF WebACL and the UI ACM certificate must
+live in `us-east-1`, and ECR Public (build-time image pulls) is
+`us-east-1`-only. See
 [Cross-region and AZ constraints](#cross-region-and-az-constraints).
 
 **Availability Zones matter, not just regions.** AgentCore Runtime and the
 OpenSearch Serverless VPC endpoint support different AZ subsets within
-`us-east-1`, so `bin/app.ts` pins the VPC to their intersection via
-`infra/lib/utils/agentcore-az.ts`. A service being listed as available in your
-region does not mean it is available in every AZ of it.
+`us-east-1`, so `stacks/00-network/locals.tf` pins the VPC to their
+intersection. A service being listed as available in your region does not mean
+it is available in every AZ of it.

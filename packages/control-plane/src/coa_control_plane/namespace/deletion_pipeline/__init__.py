@@ -4,8 +4,8 @@
 """Namespace deletion Step Functions pipeline — Lambda task handlers.
 
 Each module here is invoked as a Step Functions ``LambdaInvoke`` task. The
-state machine definition lives in CDK
-(``infra/lib/stacks/services/namespace-deletion-pipeline.ts``).
+state machine definition lives in Terraform
+(``infra-tf/modules/services/namespace/deletion_pipeline.tf``).
 
 Pipeline order (see pipeline construct for the full state machine):
   1. delete_sources       — delete every source via the real sources-api

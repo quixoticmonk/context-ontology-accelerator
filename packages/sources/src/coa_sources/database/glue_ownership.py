@@ -34,7 +34,8 @@ Two kinds of target, two different sources of truth:
   Reading that tag needs ``glue:GetTags`` **and** ``glue:GetDatabase`` on the
   catalog — Glue authorizes the former against the latter, and without both the
   check fails closed and refuses every legitimate source. See the
-  ``GlueOwnershipTagRead`` statement in infra/lib/stacks/services/sources-stack.ts.
+  ``GlueOwnershipTagRead`` statement in the sources IAM policy
+  (``infra-tf/modules/services/sources/iam.tf``).
 
 Cross-account targets are exempt. Reaching them at all requires the customer's
 own ``crossAccountRoleArn``, whose trust policy is the authorization, and their

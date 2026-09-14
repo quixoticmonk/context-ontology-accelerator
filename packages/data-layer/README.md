@@ -39,12 +39,12 @@ Cedar actions: `query` (query/translate/traverse), `searchDocuments` (kb/search)
 ```bash
 uv run ruff check packages/data-layer                    # lint
 uv run mypy packages/data-layer/src --ignore-missing-imports  # type check
-pnpm --filter coa-infra exec cdk deploy coa-dev-data-layer coa-dev-api --require-approval=never  # deploy
+cd infra-tf && make apply-55-data-layer apply-60-api-edge     # deploy
 ```
 
 ## Related files
 
 - `models/src/main/smithy/serve.smithy` — API contract (operations + shapes)
 - `models/src/main/smithy/data-layer.smithy` — Service definition
-- `infra/lib/stacks/services/data-layer-stack.ts` — CDK stack
+- `infra-tf/modules/services/data-layer/` — Terraform module that provisions the Lambda + IAM
 - `packages/context-manager/src/coa_serve/main.py` — Action handlers

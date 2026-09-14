@@ -14,8 +14,9 @@ Two-step:
        exists AND the stage points at it. Passing `stageName` in
        CreateDeployment auto-updates the stage pointer.
 
-Mirrors CDK's `UpdateApiCors4XX` + `UpdateApiCors5XX` + `RedeployApi`
-custom resources (`infra/lib/stacks/services/web-stack.ts:317-386`).
+Mirrors the CDK ancestor's `UpdateApiCors4XX` + `UpdateApiCors5XX` +
+`RedeployApi` custom resources; the TF equivalent lives in
+`infra-tf/modules/foundation/web/api_cors_patch.tf`.
 
 Event schema:
     {

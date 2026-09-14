@@ -27,15 +27,17 @@ sequenceDiagram
 
 ## Option A: AWS Cognito User Pool
 
-If you deployed with `make deploy-dev` using the default `idpType: COGNITO`
-(no `oidcSettings` configured — see "Option B: External OIDC Provider" below
-for using your own IdP instead), the User Pool, app client, and an initial
-admin user are **already provisioned automatically** — there is nothing left
-to create manually for a first login.
+If you deployed with the default `idp_type = "COGNITO"` in
+`infra-tf/shared.tfvars` (no `oidc_settings` configured — see
+"Option B: External OIDC Provider" below for using your own IdP instead),
+the User Pool, app client, and an initial admin user are **already
+provisioned automatically** — there is nothing left to create manually for
+a first login.
 
 ### What's Already Set Up
 
-The `coa-dev-auth` stack (`IdpAuthenticationStack`) creates, at deploy time:
+The Terraform `auth-idp` module (`infra-tf/modules/foundation/auth-idp/`)
+creates, at deploy time:
 
 - A Cognito **User Pool** with a hosted UI domain
 - A **web app client** (Authorization Code + PKCE, no client secret) used by the React app
@@ -43,39 +45,35 @@ The `coa-dev-auth` stack (`IdpAuthenticationStack`) creates, at deploy time:
 - An **`Admin` group**, pre-seeded in the authorization tables so that any user
   in this group is automatically granted the `platform-admin` role — no
   manual grant needed
-- An **initial admin user**, created via a CDK custom resource, added to the
+- An **initial admin user**, created via the module, added to the
   `Admin` group, with a Cognito-generated temporary password emailed to them
   (the user must change it on first login)
 
-Find these values in the CloudFormation outputs:
+Find these values in the stack outputs:
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name coa-dev-auth \
-  --query "Stacks[0].Outputs" \
-  --output table
+cd infra-tf/stacks/10-foundation
+terraform output
 ```
 
 Key outputs:
-- `UserPoolId` — the Cognito User Pool ID
-- `UserPoolClientId` — the web app client ID
-- `McpClientId` — the MCP/CLI client ID
-- `CognitoDomainUrl` — the hosted UI domain
+- `user_pool_id` — the Cognito User Pool ID
+- `user_pool_client_id` — the web app client ID
+- `mcp_client_id` — the MCP/CLI client ID
+- `cognito_domain_url` — the hosted UI domain
 
-**To sign in as the initial admin:** the default username/email is a
-placeholder (`nobody@amazon.com`) that you cannot receive mail at — the
-temporary password Cognito emails on user creation would go nowhere useful.
-**Set `initialAdminEmail` in the SSM config at `/<prefix>/config` before your
-first deploy** so the admin user is created under an email you control:
+**To sign in as the initial admin:** the default email is a placeholder
+(`nobody@amazon.com`) that you cannot receive mail at — the temporary
+password Cognito emails on user creation would go nowhere useful.
+**Set `initial_admin_email` in `infra-tf/shared.tfvars` before your first
+apply** so the admin user is created under an email you control:
 
-```json
-{
-  "initialAdminEmail": "you@yourcompany.com"
-}
+```hcl
+initial_admin_email = "you@yourcompany.com"
 ```
 
-If you already deployed with the placeholder, redeploying with
-`initialAdminEmail` set creates a **new, separate** admin user under your
+If you already applied with the placeholder, re-applying with
+`initial_admin_email` set creates a **new, separate** admin user under your
 real email (the username is derived from the email, so it doesn't rename or
 update the placeholder user — the old `nobody@amazon.com` user is left
 behind, unused, in the User Pool). Alternatively, create a user manually and
@@ -135,43 +133,45 @@ In your identity provider:
 
 ### 2. Configure Group Claims
 
-The authorizer reads group memberships from the ID token. Configure your IdP to include groups in a claim, then set the matching claim name as `groupClaim` in the `oidcSettings` SSM config (see "3. Configure the Authorizer Lambda" below) — this becomes the `GROUP_CLAIM_NAME` environment variable on the authorizer Lambda automatically (default: `"groups"`).
+The authorizer reads group memberships from the ID token. Configure your IdP to include groups in a claim, then set the matching claim name as `group_claim` in the `oidc_settings` Terraform variable (see "3. Configure the Authorizer Lambda" below) — this becomes the `GROUP_CLAIM_NAME` environment variable on the authorizer Lambda automatically (default: `"groups"`).
 
 | Provider | Claim name | Configuration |
 |----------|-----------|---------------|
 | Okta | `groups` | Add "groups" scope, configure group claim in authorization server |
 | Azure AD | `groups` | Configure token claims in App Registration → Token Configuration |
 | Keycloak | `groups` | Add "groups" mapper to client scope |
-| Auth0 | `https://your-app/groups` | Add a Rule/Action to include roles in token; set `groupClaim` in `oidcSettings` to match |
+| Auth0 | `https://your-app/groups` | Add a Rule/Action to include roles in token; set `group_claim` in `oidc_settings` to match |
 
 ### 3. Configure the Authorizer Lambda
 
 You do **not** set these directly as Lambda environment variables — they're
-derived automatically from the same `oidcSettings` you write to SSM (see
-"Step 5: Deploy Context Ontology Accelerator" in the Okta walkthrough below) and wired onto the authorizer's environment at deploy time via
-`ApiStack`'s CDK props (`issuerUrl`, `jwksUri`, `clientId`, `groupClaimName`
-in `bin/app.ts`). Setting the right value in `oidcSettings` is all that's
-needed — there is no separate authorizer configuration step for a standard
-CDK deploy.
+derived automatically from the `oidc_settings` variable in
+`infra-tf/shared.tfvars` (see "Step 5: Deploy Context Ontology Accelerator"
+in the Okta walkthrough below) and wired onto the authorizer's environment
+at deploy time by the `auth-idp` module (which passes them to the `api`
+module's authorizer Lambda). Setting the right value in `oidc_settings` is
+all that's needed — there is no separate authorizer configuration step for
+a standard Terraform deploy.
 
-| SSM `oidcSettings` field | Resulting Lambda env var | Value |
+| `oidc_settings` field | Resulting Lambda env var | Value |
 |---|---|---|
-| `issuerUrl` | `JWKS_ISSUER` | Your OIDC issuer URL (e.g. `https://login.microsoftonline.com/{tenant}/v2.0`) |
-| `jwksUri` | `JWKS_URI` | (Optional) Explicit JWKS endpoint if not at `{issuer}/.well-known/jwks.json` |
-| `clientId` | `CLIENT_ID` | Your app's client ID (used as expected `aud` claim) |
-| `groupClaim` | `GROUP_CLAIM_NAME` | Token claim containing group list (default: `"groups"`) |
+| `issuer_url` | `JWKS_ISSUER` | Your OIDC issuer URL (e.g. `https://login.microsoftonline.com/{tenant}/v2.0`) |
+| `jwks_uri` | `JWKS_URI` | (Optional) Explicit JWKS endpoint if not at `{issuer}/.well-known/jwks.json` |
+| `client_id` | `CLIENT_ID` | Your app's client ID (used as expected `aud` claim) |
+| `group_claim` | `GROUP_CLAIM_NAME` | Token claim containing group list (default: `"groups"`) |
 
-If you're deploying outside CDK entirely (a non-standard setup), you'd set
-these Lambda environment variables directly on the authorizer function —
-but for `make deploy-dev`, editing the SSM config is the only step required.
+If you're deploying outside Terraform entirely (a non-standard setup),
+you'd set these Lambda environment variables directly on the authorizer
+function — but for the standard flow, editing `shared.tfvars` and running
+`make apply-10-foundation apply-60-api-edge` is the only step required.
 
 ## Configure the Web App
 
-When you deploy with CDK, the web app's runtime configuration
-(`runtime-config.json`) is **generated and injected into S3 automatically** —
-no manual editing required. The `WebStack` builds it from the deployed stack
-outputs (OIDC authority, client ID, API endpoint, and region) so the React app
-discovers its backends without a rebuild:
+When you deploy with Terraform, the web app's runtime configuration
+(`runtime-config.json`) is **generated and uploaded to S3 automatically** —
+no manual editing required. The `web` module builds it from the deployed
+outputs (OIDC authority, client ID, API endpoint, and region) so the React
+app discovers its backends without a rebuild:
 
 ```json
 {
@@ -195,8 +195,8 @@ discovers its backends without a rebuild:
 
 !!! note
     You only need to set these values manually when running the web app outside
-    of a CDK deployment (for example, local development against a remote
-    backend). For standard deployments, `cdk deploy` handles it.
+    of a Terraform deployment (for example, local development against a remote
+    backend). For standard deployments, `terraform apply` handles it.
 
 ## How Role Resolution Works
 
@@ -298,7 +298,7 @@ This walkthrough covers configuring Okta as the external OIDC identity provider 
     Since the application type is **Single-Page Application**, Okta issues a
     public client with no client secret (per OAuth 2.0 PKCE for public clients,
     RFC 8252) — you'll only need the **Client ID**. The direct-OIDC integration
-    (`idpType: "OIDC"`) has no `clientSecret` field in its config; only the
+    (`idp_type = "OIDC"`) has no `client_secret` field in its config; only the
     separate Cognito-federation path (`oidcProviders`, used when federating an
     external OIDC IdP *through* Cognito rather than replacing it) accepts one.
     If Okta's app page shows a client secret, you selected the wrong
@@ -352,33 +352,36 @@ Okta's `default` authorization server cannot include group claims in ID tokens. 
 
 ### Step 5: Deploy Context Ontology Accelerator
 
-Store the following configuration in SSM Parameter Store at `/<prefix>/config` (JSON):
+Set the following block in `infra-tf/shared.tfvars`:
 
-```json
-{
-  "idpType": "OIDC",
-  "oidcSettings": {
-    "issuerUrl": "https://your-org.okta.com/oauth2/aus...",
-    "clientId": "0oa...",
-    "jwksUri": "https://your-org.okta.com/oauth2/aus.../v1/keys",
-    "groupClaim": "groups"
-  },
-  "claimsMappings": [
-    {
-      "groupValue": "Context Ontology Accelerator Admins",
-      "mappedRoles": ["platform-admin"]
-    }
-  ]
+```hcl
+idp_type = "OIDC"
+
+oidc_settings = {
+  issuer_url  = "https://your-org.okta.com/oauth2/aus..."
+  client_id   = "0oa..."
+  jwks_uri    = "https://your-org.okta.com/oauth2/aus.../v1/keys"
+  group_claim = "groups"
 }
+
+initial_claims_mappings = [
+  {
+    group_value  = "Context Ontology Accelerator Admins"
+    mapped_roles = ["platform-admin"]
+  }
+]
 ```
 
 Then deploy:
 
 ```bash
-make deploy-dev
+cd infra-tf
+make apply-10-foundation apply-60-api-edge
 ```
 
-The `IdpAuthenticationStack` reads this config and wires the issuer URL + client ID into the API Gateway authorizer, AgentCore Runtime (Serve + MCP), and the web app's `runtime-config.json` — all automatically.
+The `auth-idp` module reads these values and wires the issuer URL + client
+ID into the API Gateway authorizer, AgentCore Runtime (Serve + MCP), and
+the web app's `runtime-config.json` — all automatically.
 
 ### Step 6: Post-Deploy — Update Okta Settings
 
@@ -386,10 +389,8 @@ If you used placeholder URLs, update them now:
 
 1. Get the CloudFront domain from stack outputs:
    ```bash
-   aws cloudformation describe-stacks \
-     --stack-name coa-dev-web \
-     --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue" \
-     --output text
+   cd infra-tf/stacks/60-api-edge
+   terraform output cloudfront_distribution_domain_name
    ```
 
 2. **Update the Okta Application:**
@@ -412,4 +413,4 @@ If you used placeholder URLs, update them now:
 - **Group claim format:** Okta sends groups as a JSON array by default, which Context Ontology Accelerator handles natively
 - **Token lifetimes:** The MCP client benefits from longer token lifetimes (24h+ ID token). Configure this in the access policy rule under "Token Lifetime"
 - **MCP/CLI flow:** The `http://localhost:9876/oauth/callback` redirect URI enables PKCE-based auth for IDE integrations (Kiro, Claude Desktop, Cursor). Add this to your Okta app's allowed redirect URIs
-- **Single client:** In OIDC mode, Context Ontology Accelerator uses the same Okta client ID for both the web app and MCP/CLI flows. If you need separate token lifetimes or scopes per interface, register a second application in Okta and pass its client ID via `oidcSettings.mcpClientId` (future enhancement)
+- **Single client:** In OIDC mode, Context Ontology Accelerator uses the same Okta client ID for both the web app and MCP/CLI flows. If you need separate token lifetimes or scopes per interface, register a second application in Okta and pass its client ID via `oidc_settings.mcp_client_id` (future enhancement)

@@ -123,7 +123,7 @@ After `make generate`, the Python model will include:
 - `Field(min_length=3, max_length=64)` for length constraints
 - `@field_validator` with `re.match(...)` for pattern constraints
 
-The generated packages are registered as uv workspace members in `pyproject.toml` and bundled into Lambda zips via CDK bundling.
+The generated packages are registered as uv workspace members in `pyproject.toml` and bundled into Lambda zips by the Terraform Lambda modules under `infra-tf/modules/services/`.
 
 ## Two services, one API Gateway
 
