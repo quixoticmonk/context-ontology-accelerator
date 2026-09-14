@@ -145,10 +145,10 @@ locals {
           # authType: NONE. Smithy emits it in the merged spec; this
           # transformation must preserve it verbatim.
           name => {
-            type                              = "apiKey"
-            name                              = "Authorization"
-            in                                = "header"
-            "x-amazon-apigateway-authtype"    = try(scheme["x-amazon-apigateway-authtype"], "custom")
+            type                           = "apiKey"
+            name                           = "Authorization"
+            in                             = "header"
+            "x-amazon-apigateway-authtype" = try(scheme["x-amazon-apigateway-authtype"], "custom")
             "x-amazon-apigateway-authorizer" = merge(scheme["x-amazon-apigateway-authorizer"], {
               authorizerUri         = local.authorizer_invoke_uri
               authorizerCredentials = aws_iam_role.authorizer_invoke.arn

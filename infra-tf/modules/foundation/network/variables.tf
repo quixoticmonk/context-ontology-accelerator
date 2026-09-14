@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 variable "azs" {
-  description = "Availability zone names to place subnets in. Length must be >= 2."
+  description = "Availability zone names to place subnets in when this module creates the VPC. Length must be >= 2 in that path. Ignored (and may be empty) when vpc_name is set — the AZ set is derived from the imported private subnets."
   type        = list(string)
+  default     = []
 
   validation {
-    condition     = length(var.azs) >= 2
-    error_message = "azs must contain at least 2 availability zones."
+    condition     = var.vpc_name != null || length(var.azs) >= 2
+    error_message = "azs must contain at least 2 availability zones when creating a VPC (vpc_name is null)."
   }
 }
 
@@ -27,6 +28,42 @@ variable "connector_ocsp_egress" {
   description = "Enable the connector security group's port-80 egress rule for OCSP certificate revocation checks. Required for the Snowflake driver to avoid a ~5-30s per-responder soft-fail latency; harmless for other engines."
   type        = bool
   default     = true
+}
+
+variable "create_igw" {
+  description = "Provision the internet gateway. Defaults to true when this module creates the VPC and false when it imports one (customers are expected to own IGW in their own VPC)."
+  type        = bool
+  default     = null
+}
+
+variable "create_jdbc_connectivity" {
+  description = "Provision VPC peering, Transit Gateway attachment, and PrivateLink resources when their inputs are set. Defaults to true when this module creates the VPC and false when it imports one (cross-VPC routing in a customer VPC is theirs to own)."
+  type        = bool
+  default     = null
+}
+
+variable "create_nat_gateway" {
+  description = "Provision NAT gateway + EIP. Defaults to true when this module creates the VPC and false when it imports one. Requires create_igw."
+  type        = bool
+  default     = null
+}
+
+variable "create_route_tables" {
+  description = "Provision public + per-AZ private route tables and subnet associations. Defaults to true when this module creates the VPC and false when it imports one — customers own route tables in their own VPC."
+  type        = bool
+  default     = null
+}
+
+variable "create_service_discovery_namespace" {
+  description = "Provision the Cloud Map private DNS namespace ({prefix}-services.local). Required for in-VPC service-to-service DNS (ontology-engine, VKG per-namespace instances). Defaults to true — most BYOVPC deployments still want a namespace inside their VPC. Set to false to consume an externally-managed namespace via SSM."
+  type        = bool
+  default     = true
+}
+
+variable "create_vpc_endpoints" {
+  description = "Provision the S3/DDB gateway endpoint and the AWS-service interface VPC endpoints listed in locals.tf. Defaults to true when this module creates the VPC and false when it imports one. Interface endpoints are attached to the effective private subnets in either case; gateway endpoints require create_route_tables=true because they attach to private route tables."
+  type        = bool
+  default     = null
 }
 
 variable "jdbc_peer_cidrs" {
@@ -88,6 +125,12 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "private_subnet_name_pattern" {
+  description = "Wildcard pattern matched against subnet tag:Name to select private subnets in the imported VPC. Ignored when vpc_name is null. Default '*private*' picks up common naming conventions; override for VPCs whose subnets are tagged differently."
+  type        = string
+  default     = "*private*"
+}
+
 variable "region" {
   description = "AWS region — used to build service names for AOSS control-plane and AOSS-data VPC endpoints (no CDK constant for the AOSS suffix pair)."
   type        = string
@@ -99,7 +142,7 @@ variable "ssm_prefix" {
 }
 
 variable "vpc_cidr" {
-  description = "CIDR block for the created VPC. Ignored when vpc_id is set."
+  description = "CIDR block for the created VPC. Ignored when vpc_name is set."
   type        = string
   default     = "10.0.0.0/16"
 
@@ -109,8 +152,8 @@ variable "vpc_cidr" {
   }
 }
 
-variable "vpc_id" {
-  description = "Existing VPC ID to import instead of creating one. When set, VPC endpoints and JDBC connectivity are NOT provisioned — they must be managed externally."
+variable "vpc_name" {
+  description = "Name tag of the existing VPC to import. When set, the module looks the VPC up via data.aws_vpc filtered on tag:Name = vpc_name (exactly one VPC must match), and reads private subnets from that VPC whose tag:Name matches private_subnet_name_pattern (at least two must match). Networking primitives (IGW, NAT, route tables, VPC endpoints, JDBC connectivity) default to off in this path — customers are expected to manage them in their own VPC. Override per-primitive via the create_* flags."
   type        = string
   default     = null
 }

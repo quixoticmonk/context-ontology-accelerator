@@ -24,8 +24,8 @@ locals {
   group_claim_name = var.idp_type == "OIDC" && var.oidc_settings != null ? coalesce(var.oidc_settings.group_claim, "groups") : "cognito:groups"
 
   # Network handoff
-  vpc_id                   = data.aws_ssm_parameter.vpc_id.value
-  vpc_cidr                 = data.aws_ssm_parameter.vpc_cidr.value
+  vpc_id   = data.aws_ssm_parameter.vpc_id.value
+  vpc_cidr = data.aws_ssm_parameter.vpc_cidr.value
   # aws_ssm_parameter marks .value sensitive. Subnet IDs are not secret,
   # and downstream modules use them in for_each which rejects sensitive
   # values. Explicitly unmark.

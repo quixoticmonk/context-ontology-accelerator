@@ -98,6 +98,70 @@ Common overrides:
 | `initial_admin_email` | `nobody@amazon.com` | Always — pick a real address |
 | `ui_domain_name` et al. | `null` | Serving a real domain (all-or-nothing group) |
 | `lambda_reserved_concurrency` | `5` | Account has reduced Lambda concurrent-executions quota (set to `0`) |
+| `vpc_name` | `null` | Bringing your own VPC (see below) |
+
+## Bring Your Own VPC
+
+Set `vpc_name` to use an existing VPC instead of provisioning one.
+The network module resolves that VPC by `tag:Name = vpc_name` (via
+`data.aws_vpc`) and reads private subnets from it whose `tag:Name`
+matches `private_subnet_name_pattern` (default `*private*`, via
+`data.aws_subnets`).
+
+The customer's VPC must:
+
+- Have a unique `Name` tag matching `vpc_name` — `data.aws_vpc` fails
+  loudly if the filter resolves to more than one VPC.
+- Contain at least two private subnets whose `Name` tag matches
+  `private_subnet_name_pattern`. Override the pattern if your naming
+  convention differs (e.g. `*internal*`).
+- Place those subnets in ≥2 AgentCore-supported AZs
+  (`use1-az1`, `use1-az2`, `use1-az4` in us-east-1). Stack `00-network`
+  emits an advisory check warning if any resolved subnet is in an
+  unsupported AZ — `50-agentcore` will then fail concretely at apply
+  time.
+- Route egress to the internet (via customer NAT or transit egress) so
+  Lambda/ECS can reach AWS APIs and source databases.
+- Either provide the AWS-service VPC endpoints listed in
+  `modules/foundation/network/locals.tf#interface_endpoints`, OR set
+  `create_vpc_endpoints = true` to let this module provision them
+  inside the imported VPC.
+
+Minimal BYOVPC tfvars:
+
+```hcl
+vpc_name = "coa-shared-vpc"
+```
+
+Override the subnet lookup if your VPC uses a different naming
+convention:
+
+```hcl
+vpc_name                    = "coa-shared-vpc"
+private_subnet_name_pattern = "*internal*"
+```
+
+By default, in BYOVPC mode the network module provisions only what
+must live inside the platform's namespace: the five security groups
+(`neptune`, `ecs`, `lambda`, `aoss`, `connector`), the Cloud Map
+private DNS namespace, and — when JDBC peer/TGW CIDRs are set — the
+matching SG egress rules on `lambda` and `connector`. IGW, NAT, route
+tables, VPC endpoints, and JDBC peering/TGW/PrivateLink resources are
+all **off** — customers are expected to manage those in their VPC.
+
+To have the module manage a subset of those primitives inside the
+customer's VPC, flip the corresponding flag in `shared.tfvars` (see
+"Networking feature flags" in `shared.tfvars.example`):
+
+```hcl
+create_vpc_endpoints  = true   # provision AWS-service interface endpoints in the customer VPC
+create_route_tables   = false  # (kept off — customer owns route tables)
+create_nat_gateway    = false  # (kept off — customer's NAT/egress)
+```
+
+Downstream stacks are unchanged: every consumer reads subnet IDs, SG
+IDs, and the AZ list from SSM (`/coa/network/*`), so the BYOVPC path
+is transparent to the rest of the deployment.
 
 ## State
 

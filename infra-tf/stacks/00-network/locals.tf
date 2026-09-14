@@ -11,6 +11,9 @@ locals {
     Project     = var.project_tag
   }
 
+  # ── VPC path selector ────────────────────────────────────────────
+  create_vpc = var.vpc_name == null
+
   # ── AgentCore AZ resolution (mirrors CDK `resolveAgentCoreAzNames`) ─
   # AgentCore Runtime is only offered in a subset of physical zones in
   # some regions. Hardcode zone IDs (stable across accounts) and resolve
@@ -45,6 +48,15 @@ locals {
   # Deploy in the first 2 (matches CDK's `count = 2` default). Downstream
   # services get all of these via SSM — HA services can consume ≥2.
   resolved_azs = slice(local.agentcore_supported_az_names_raw, 0, min(2, length(local.agentcore_supported_az_names_raw)))
+
+  # ── Effective AZs passed to the network module ───────────────────
+  # Create-VPC path: honor the resolver in restricted regions, fall
+  # back to the user-provided list in unrestricted ones. BYOVPC path:
+  # pass an empty list — the module ignores `azs` and reads AZs from
+  # the provided private subnets instead.
+  effective_azs = local.create_vpc ? (
+    local.restricted_zone_ids == null ? var.azs : local.resolved_azs
+  ) : []
 }
 
 data "aws_availability_zones" "this" {
@@ -57,10 +69,28 @@ data "aws_vpc_endpoint_service" "aoss" {
   service_name = "com.amazonaws.${var.region}.aoss"
 }
 
-# Fail-loud at plan time (matches CDK's `throw new Error`).
+# ── AgentCore AZ assertions ────────────────────────────────────────
+# Create-VPC mode: fail plan if the region resolves fewer than 2
+# AgentCore-supported AZs (the CDK's `throw new Error` equivalent).
+# BYOVPC mode: warn if any of the customer's private subnets are in
+# an AZ that AgentCore does not support. This is an advisory check
+# (Terraform `check` blocks warn but do not block apply) — downstream
+# stack 50-agentcore reads the AZ list from SSM and will produce a
+# concrete failure at that layer if AgentCore cannot be provisioned.
+
 check "agentcore_az_count" {
   assert {
-    condition     = local.restricted_zone_ids == null || length(local.resolved_azs) >= 2
-    error_message = "Region ${var.region} resolved only ${length(local.agentcore_supported_az_names_raw)} AgentCore-supported AZ(s) intersected with AOSS: [${join(", ", local.agentcore_supported_az_names_raw)}]. Need ≥2. Supported zone IDs: [${join(", ", local.restricted_zone_ids)}]. Verify with `aws ec2 describe-availability-zones --region ${var.region}`."
+    condition     = !local.create_vpc || local.restricted_zone_ids == null || length(local.resolved_azs) >= 2
+    error_message = "Region ${var.region} resolved only ${length(local.agentcore_supported_az_names_raw)} AgentCore-supported AZ(s) intersected with AOSS: [${join(", ", local.agentcore_supported_az_names_raw)}]. Need ≥2. Supported zone IDs: [${join(", ", coalesce(local.restricted_zone_ids, []))}]. Verify with `aws ec2 describe-availability-zones --region ${var.region}`."
+  }
+}
+
+check "agentcore_az_supported_byovpc" {
+  assert {
+    condition = local.create_vpc || local.restricted_zone_ids == null || alltrue([
+      for az in module.network.private_subnet_azs :
+      contains(local.agentcore_supported_az_names_raw, az)
+    ])
+    error_message = "One or more customer-provided private subnets are in AZs that are not AgentCore-supported. Provided subnet AZs: [${join(", ", module.network.private_subnet_azs)}]. AgentCore-supported AZs in ${var.region}: [${join(", ", local.agentcore_supported_az_names_raw)}]. AgentCore Runtime provisioning in stack 50-agentcore will fail unless the subnets are moved to supported AZs."
   }
 }

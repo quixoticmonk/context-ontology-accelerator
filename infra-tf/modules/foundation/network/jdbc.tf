@@ -2,9 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Cross-network JDBC connectivity — VPC peering, Transit Gateway,
-# PrivateLink. Any combination is supported. Only provisioned when
-# this module creates the VPC (imported VPCs bring their own peering
-# / TGW / PrivateLink managed externally, matching the CDK behavior).
+# PrivateLink. Any combination is supported. Provisioning is gated on
+# `create_jdbc_connectivity` (defaults to true when this module creates
+# the VPC, false when it imports one) — customers bringing their own
+# VPC are expected to own cross-VPC routing themselves. The SG egress
+# rules for JDBC destination CIDRs are NOT gated on this flag (they live
+# on the platform's own connector/lambda SGs and are needed regardless
+# of where the peering/TGW resources come from).
 #
 # Validation on the (config-set, cidrs-set) pairs happens through
 # check blocks below. When jdbc_peer_vpc_id is set but jdbc_peer_cidrs
@@ -37,7 +41,7 @@ check "privatelink_requires_port" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_vpc_peering_connection" "this" {
-  count = local.create_vpc && local.peering_enabled ? 1 : 0
+  count = local.create_jdbc_connectivity && local.peering_enabled ? 1 : 0
 
   vpc_id        = local.vpc_id
   peer_vpc_id   = var.jdbc_peer_vpc_id
@@ -63,11 +67,11 @@ resource "aws_route" "peering" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_ec2_transit_gateway_vpc_attachment" "this" {
-  count = local.create_vpc && local.tgw_enabled ? 1 : 0
+  count = local.create_jdbc_connectivity && local.tgw_enabled ? 1 : 0
 
   transit_gateway_id = var.jdbc_tgw_id
   vpc_id             = local.vpc_id
-  subnet_ids         = [for s in aws_subnet.private : s.id]
+  subnet_ids         = local.private_subnet_ids
 
   tags = {
     Name      = "${var.name_prefix}-jdbc-tgw-attachment"
@@ -91,7 +95,10 @@ resource "aws_route" "tgw" {
 # ═════════════════════════════════════════════════════════════════════
 # `lambda` and `connector` SGs have `allowAllOutbound: false`
 # equivalent behavior (explicit egress rules), so remote-CIDR JDBC
-# traffic on DB ports needs an explicit egress rule added.
+# traffic on DB ports needs an explicit egress rule added. Applied
+# whenever the CIDRs are set, regardless of create_jdbc_connectivity —
+# the platform's Lambdas and connectors need to reach those CIDRs even
+# when the customer's own network owns the peering/TGW.
 
 resource "aws_vpc_security_group_egress_rule" "jdbc_client_egress" {
   for_each = local.jdbc_egress_rules
@@ -111,7 +118,7 @@ resource "aws_vpc_security_group_egress_rule" "jdbc_client_egress" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_security_group" "privatelink" {
-  count = local.create_vpc && local.privatelink_enabled ? 1 : 0
+  count = local.create_jdbc_connectivity && local.privatelink_enabled ? 1 : 0
 
   name        = "${var.name_prefix}-jdbc-privatelink-sg"
   description = "JDBC PrivateLink endpoint - inbound from connector clients"
@@ -127,7 +134,7 @@ resource "aws_security_group" "privatelink" {
 
 # Only connector + lambda SGs may reach the endpoint, on the DB port.
 resource "aws_vpc_security_group_ingress_rule" "privatelink_from_lambda" {
-  count = local.create_vpc && local.privatelink_enabled ? 1 : 0
+  count = local.create_jdbc_connectivity && local.privatelink_enabled ? 1 : 0
 
   security_group_id            = aws_security_group.privatelink[0].id
   referenced_security_group_id = aws_security_group.lambda.id
@@ -140,7 +147,7 @@ resource "aws_vpc_security_group_ingress_rule" "privatelink_from_lambda" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "privatelink_from_connector" {
-  count = local.create_vpc && local.privatelink_enabled ? 1 : 0
+  count = local.create_jdbc_connectivity && local.privatelink_enabled ? 1 : 0
 
   security_group_id            = aws_security_group.privatelink[0].id
   referenced_security_group_id = aws_security_group.connector.id
@@ -153,13 +160,13 @@ resource "aws_vpc_security_group_ingress_rule" "privatelink_from_connector" {
 }
 
 resource "aws_vpc_endpoint" "jdbc_privatelink" {
-  count = local.create_vpc && local.privatelink_enabled ? 1 : 0
+  count = local.create_jdbc_connectivity && local.privatelink_enabled ? 1 : 0
 
   vpc_id              = local.vpc_id
   service_name        = var.jdbc_privatelink_service
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = var.jdbc_privatelink_private_dns
-  subnet_ids          = [for s in aws_subnet.private : s.id]
+  subnet_ids          = local.private_subnet_ids
   security_group_ids  = [aws_security_group.privatelink[0].id]
 
   tags = {

@@ -7,8 +7,8 @@ output "aoss_security_group_id" {
 }
 
 output "aoss_vpc_endpoint_id" {
-  description = "AOSS data-plane VPC endpoint ID. Null when the VPC is imported."
-  value       = local.create_vpc ? aws_vpc_endpoint.interface["aoss_data"].id : null
+  description = "AOSS data-plane VPC endpoint ID. Null when create_vpc_endpoints is false."
+  value       = local.create_vpc_endpoints ? aws_vpc_endpoint.interface["aoss_data"].id : null
 }
 
 output "connector_security_group_id" {
@@ -27,8 +27,8 @@ output "lambda_security_group_id" {
 }
 
 output "nat_gateway_id" {
-  description = "NAT gateway ID. Null when the VPC is imported (no NAT is provisioned by this module)."
-  value       = local.create_vpc ? aws_nat_gateway.this[0].id : null
+  description = "NAT gateway ID. Null when create_nat_gateway is false."
+  value       = local.create_nat_gateway ? aws_nat_gateway.this[0].id : null
 }
 
 output "neptune_security_group_id" {
@@ -37,37 +37,38 @@ output "neptune_security_group_id" {
 }
 
 output "private_route_table_ids" {
-  description = "Private route table IDs keyed by AZ. Null when the VPC is imported."
-  value       = local.create_vpc ? { for az, rt in aws_route_table.private : az => rt.id } : null
+  description = "Private route table IDs keyed by AZ. Empty map when create_route_tables is false."
+  value       = local.private_route_table_ids
+}
+
+output "private_subnet_azs" {
+  description = "Availability zones spanned by the effective private subnets — the input `azs` when this module creates the VPC, or the AZs read from the imported subnets in BYOVPC mode. Sorted for stable ordering."
+  value       = local.private_subnet_azs
 }
 
 output "private_subnet_ids" {
-  description = "Private subnet IDs, sorted by AZ name for stable ordering. Null when the VPC is imported."
-  value = local.create_vpc ? [
-    for az in sort(keys(aws_subnet.private)) : aws_subnet.private[az].id
-  ] : null
+  description = "Effective private subnet IDs — created by this module or provided via `private_subnet_ids` in BYOVPC mode. Sorted by AZ for stable ordering."
+  value       = local.private_subnet_ids
 }
 
 output "public_subnet_ids" {
-  description = "Public subnet IDs, sorted by AZ name for stable ordering. Null when the VPC is imported."
-  value = local.create_vpc ? [
-    for az in sort(keys(aws_subnet.public)) : aws_subnet.public[az].id
-  ] : null
+  description = "Effective public subnet IDs — created by this module or provided via `public_subnet_ids` in BYOVPC mode. Empty list when BYOVPC mode has no public_subnet_ids set."
+  value       = local.public_subnet_ids
 }
 
 output "service_namespace_arn" {
-  description = "Cloud Map private DNS namespace ARN for service discovery."
-  value       = aws_service_discovery_private_dns_namespace.this.arn
+  description = "Cloud Map private DNS namespace ARN for service discovery. Null when create_service_discovery_namespace is false."
+  value       = var.create_service_discovery_namespace ? aws_service_discovery_private_dns_namespace.this[0].arn : null
 }
 
 output "service_namespace_id" {
-  description = "Cloud Map private DNS namespace ID."
-  value       = aws_service_discovery_private_dns_namespace.this.id
+  description = "Cloud Map private DNS namespace ID. Null when create_service_discovery_namespace is false."
+  value       = var.create_service_discovery_namespace ? aws_service_discovery_private_dns_namespace.this[0].id : null
 }
 
 output "service_namespace_name" {
-  description = "Cloud Map private DNS namespace name (e.g. `coa-dev-services.local`)."
-  value       = aws_service_discovery_private_dns_namespace.this.name
+  description = "Cloud Map private DNS namespace name (e.g. `coa-dev-services.local`). Null when create_service_discovery_namespace is false."
+  value       = var.create_service_discovery_namespace ? aws_service_discovery_private_dns_namespace.this[0].name : null
 }
 
 output "vpc_cidr_block" {

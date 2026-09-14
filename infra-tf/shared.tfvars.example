@@ -64,8 +64,36 @@ initial_admin_email = "admin@example.com"
 # ── Lambda tuning ────────────────────────────────────────────────────
 # lambda_reserved_concurrency = 5
 
-# ── VPC import ───────────────────────────────────────────────────────
-# vpc_id = "vpc-0abc123"
+# ── Bring your own VPC (BYOVPC) ──────────────────────────────────────
+# When vpc_name is set, the network module resolves the VPC via
+# data.aws_vpc filtered on tag:Name (exactly one VPC must match), and
+# reads private subnets from that VPC whose tag:Name matches
+# private_subnet_name_pattern (at least two must match, ideally in
+# AgentCore-supported AZs — see the advisory check in stack 00-network).
+# In BYOVPC mode, none of the networking primitives below (IGW, NAT,
+# route tables, VPC endpoints, JDBC connectivity) are provisioned by
+# default — the customer is expected to manage them in their own VPC.
+# The security groups, the Cloud Map namespace, and the SG egress rules
+# for JDBC peer/TGW CIDRs still apply and are created inside the
+# imported VPC.
+#
+# vpc_name                    = "coa-shared-vpc"
+# private_subnet_name_pattern = "*private*"    # override if your naming differs
+
+# ── Networking feature flags ────────────────────────────────────────
+# Each flag defaults to null, which the network module resolves to
+# `vpc_id == null` — so create-VPC deployments get everything, BYOVPC
+# deployments get nothing (except the security groups and Cloud Map
+# namespace, both required for the platform to run). Override any
+# individual flag to have this module manage that primitive inside an
+# imported VPC.
+#
+# create_igw                         = false   # default: true if creating a VPC
+# create_nat_gateway                 = false   # default: true if creating a VPC (requires create_igw)
+# create_route_tables                = false   # default: true if creating a VPC
+# create_vpc_endpoints               = false   # default: true if creating a VPC (gateway endpoints need create_route_tables=true)
+# create_service_discovery_namespace = true    # default: true regardless — required for in-VPC service DNS
+# create_jdbc_connectivity           = false   # default: true if creating a VPC
 
 # ── Data-plane brand tokens ──────────────────────────────────────────
 # graph_base_uri      = "http://coa.amazon.com"
