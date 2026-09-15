@@ -21,6 +21,14 @@ module "storage" {
   ssm_prefix                = local.ssm_prefix
 }
 
+module "kms" {
+  source = "../../modules/foundation/kms"
+
+  name_prefix = local.name_prefix
+  region      = var.region
+  ssm_prefix  = local.ssm_prefix
+}
+
 module "authnz" {
   source = "../../modules/foundation/authnz"
 

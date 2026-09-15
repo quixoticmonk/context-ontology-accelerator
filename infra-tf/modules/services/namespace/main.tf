@@ -5,6 +5,13 @@
 # that don't depend on any specific downstream resource. IAM, DataZone,
 # Lambdas, and the deletion pipeline live in dedicated files.
 
+# AWS-managed KMS key for DynamoDB (kms_key_arn on server_side_encryption
+# is required by CKV_AWS_119 even when using the aws/dynamodb key). Making
+# it explicit vs. relying on the default so intent is auditable.
+data "aws_kms_alias" "dynamodb" {
+  name = "alias/aws/dynamodb"
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
@@ -50,7 +57,8 @@ resource "aws_dynamodb_table" "namespaces" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = local.tags

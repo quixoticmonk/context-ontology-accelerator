@@ -25,6 +25,7 @@ module "sources" {
   env                                = var.env
   lambda_reserved_concurrency        = var.lambda_reserved_concurrency
   lambda_security_group_id           = local.lambda_security_group_id
+  logs_kms_key_arn                   = local.logs_kms_key_arn
   name_prefix                        = local.name_prefix
   namespace_tag_key                  = "${var.resource_prefix}:namespace"
   namespaces_table_arn               = local.namespaces_table_arn

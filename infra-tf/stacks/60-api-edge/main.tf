@@ -107,6 +107,7 @@ module "api" {
     hosted_zone_id      = var.hosted_zone_id
   } : null
   lambda_security_group_id                = local.lambda_security_group_id
+  logs_kms_key_arn                        = local.logs_kms_key_arn
   merged_spec_path                        = "${path.root}/../../artifacts/openapi/merged.json"
   name_prefix                             = local.name_prefix
   namespaces_table_arn                    = local.namespaces_table_arn

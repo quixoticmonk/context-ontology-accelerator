@@ -59,6 +59,9 @@ locals {
   # 50-agentcore now runs before 60-api-edge (see LAYERS in Makefile), so
   # the runtime ARN is always available from SSM by the time we apply.
   serve_runtime_arn = data.aws_ssm_parameter.serve_runtime_arn.value
+
+  # KMS handoff (from foundation stack)
+  logs_kms_key_arn = data.aws_ssm_parameter.logs_kms_key_arn.value
 }
 
 data "aws_ssm_parameter" "vpc_id" { name = "${local.ssm_prefix}/network/vpc-id" }
@@ -85,6 +88,8 @@ data "aws_ssm_parameter" "ontology_api_fn_arn" { name = "${local.ssm_prefix}/ont
 data "aws_ssm_parameter" "data_layer_api_fn_arn" { name = "${local.ssm_prefix}/data-layer/api-fn-arn" }
 
 data "aws_ssm_parameter" "serve_runtime_arn" { name = "${local.ssm_prefix}/serve/runtime-arn" }
+
+data "aws_ssm_parameter" "logs_kms_key_arn" { name = "${local.ssm_prefix}/kms/logs-key-arn" }
 
 # Cognito identifiers (Cognito mode only; empty string when idp_type=OIDC).
 data "aws_ssm_parameter" "user_pool_id" {

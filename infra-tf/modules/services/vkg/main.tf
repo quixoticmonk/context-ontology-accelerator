@@ -20,6 +20,7 @@ data "aws_partition" "current" {}
 resource "aws_cloudwatch_log_group" "this" {
   name              = local.log_group_name
   retention_in_days = 30
+  kms_key_id        = var.logs_kms_key_arn
 
   tags = local.tags
 }

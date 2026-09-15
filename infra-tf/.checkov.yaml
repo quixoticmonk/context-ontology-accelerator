@@ -1,0 +1,71 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Repo-level checkov config for the Terraform infra layer.
+#
+# Suppressions here are the exceptions we've explicitly accepted after
+# review. Each entry MUST carry a rationale. Anything not listed is
+# still enforced.
+
+# ═════════════════════════════════════════════════════════════════════
+#  Global skip-check list
+# ═════════════════════════════════════════════════════════════════════
+skip-check:
+  # CKV2_AWS_34 — "AWS SSM Parameter should be Encrypted" (SecureString).
+  #
+  # RATIONALE:
+  #   Every aws_ssm_parameter in this repo stores non-sensitive
+  #   cross-stack references — ECR repository URLs and ARNs, VPC and
+  #   subnet IDs, DataZone domain IDs, Cloud Map namespace IDs, ECS
+  #   cluster ARNs, Cognito user-pool IDs, service endpoint hostnames.
+  #   These are configuration outputs consumed by downstream stacks
+  #   and Lambda functions; none of them are secrets.
+  #
+  # WHERE SECRETS LIVE:
+  #   Actual sensitive material — JDBC credentials, OIDC client
+  #   secrets, third-party API tokens — is stored in AWS Secrets
+  #   Manager (see modules/services/sources/iam_db.tf and the
+  #   credential-secret onboarding flow). Secrets Manager already
+  #   encrypts with KMS by default and each secret is namespace-tagged
+  #   for tenant-scoped access.
+  #
+  # POLICY MAPPING:
+  #   Corp policy 7.1 requires KMS for services storing SENSITIVE
+  #   data. SSM parameters here do not qualify. This workload is
+  #   non-regulated, so 7.2 (CMK) is not required.
+  #
+  # WHEN TO REMOVE THIS SKIP:
+  #   - This workload is reclassified as Regulated (7.2 applies)
+  #   - An SSM parameter is added that stores sensitive data
+  #     (in which case, move it to Secrets Manager instead of
+  #     flipping the type to SecureString)
+  - CKV2_AWS_34
+
+  # CKV_AWS_173 — "Check encryption settings for Lambda environmental
+  # variables".
+  #
+  # RATIONALE:
+  #   AWS Lambda encrypts function environment variables at rest with
+  #   the AWS-managed `aws/lambda` key by default. That satisfies
+  #   policy 7.1 (baseline KMS) without any explicit configuration.
+  #   The check demands `kms_key_arn` be set explicitly on the
+  #   function, but the encryption is already happening.
+  #
+  #   Env-var contents in this repo are non-sensitive configuration —
+  #   SSM parameter paths, DynamoDB table names, S3 bucket names,
+  #   service endpoint URLs, Bedrock model IDs. Actual credentials
+  #   are always fetched at runtime from Secrets Manager, not baked
+  #   into env vars.
+  #
+  # POLICY MAPPING:
+  #   Corp policy 7.1 is satisfied by default AWS-managed encryption
+  #   on the `aws/lambda` key. This workload is non-regulated so 7.2
+  #   (CMK with least-privilege key policies) does not apply.
+  #
+  # WHEN TO REMOVE THIS SKIP:
+  #   - This workload is reclassified as Regulated (switch to a CMK
+  #     under a Lambda-scoped key policy)
+  #   - A Lambda is added that legitimately carries sensitive values
+  #     in env vars (in which case, prefer moving those values to
+  #     Secrets Manager instead of adding a CMK)
+  - CKV_AWS_173

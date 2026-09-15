@@ -50,6 +50,9 @@ locals {
   db_enrichment_ecr_repository_url = data.aws_ssm_parameter.db_enrichment_ecr_url.value
   preprocessing_ecr_repository_url = data.aws_ssm_parameter.preprocessing_ecr_url.value
   kg_build_ecr_repository_url      = data.aws_ssm_parameter.kg_build_ecr_url.value
+
+  # KMS handoff (from foundation stack)
+  logs_kms_key_arn = data.aws_ssm_parameter.logs_kms_key_arn.value
 }
 
 data "aws_ssm_parameter" "vpc_id" { name = "${local.ssm_prefix}/network/vpc-id" }
@@ -77,3 +80,5 @@ data "aws_ssm_parameter" "smus_project_access_role_arn" { name = "${local.ssm_pr
 data "aws_ssm_parameter" "db_enrichment_ecr_url" { name = "${local.ssm_prefix}/ecr/sources-db-enrichment/url" }
 data "aws_ssm_parameter" "preprocessing_ecr_url" { name = "${local.ssm_prefix}/ecr/sources-preprocessing/url" }
 data "aws_ssm_parameter" "kg_build_ecr_url" { name = "${local.ssm_prefix}/ecr/sources-kg-build/url" }
+
+data "aws_ssm_parameter" "logs_kms_key_arn" { name = "${local.ssm_prefix}/kms/logs-key-arn" }

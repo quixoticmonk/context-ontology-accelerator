@@ -129,6 +129,11 @@ variable "lambda_security_group_id" {
   description = "Lambda function security group ID (from network)."
   type        = string
 }
+variable "logs_kms_key_arn" {
+  description = "CMK ARN for CloudWatch Logs encryption (from modules/foundation/kms, published to <ssm_prefix>/kms/logs-key-arn). Applied to every aws_cloudwatch_log_group in this module."
+  type        = string
+}
+
 
 variable "name_prefix" {
   description = "Physical resource name prefix (<resource_prefix>-<env>)."

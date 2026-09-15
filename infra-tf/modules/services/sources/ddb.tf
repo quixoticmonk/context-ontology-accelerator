@@ -5,6 +5,13 @@
 # GSI). Both PAY_PER_REQUEST, AWS-managed encryption, PITR enabled.
 # Match the CDK DynamoDBTable construct output exactly.
 
+# AWS-managed KMS key for DynamoDB (kms_key_arn on server_side_encryption
+# is required by CKV_AWS_119 even when using the aws/dynamodb key). Making
+# it explicit vs. relying on the default so intent is auditable.
+data "aws_kms_alias" "dynamodb" {
+  name = "alias/aws/dynamodb"
+}
+
 # ═════════════════════════════════════════════════════════════════════
 #  sources
 # ═════════════════════════════════════════════════════════════════════
@@ -78,7 +85,8 @@ resource "aws_dynamodb_table" "sources" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = local.tags
@@ -123,7 +131,8 @@ resource "aws_dynamodb_table" "source_scan_jobs" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = local.tags

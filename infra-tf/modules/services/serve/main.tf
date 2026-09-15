@@ -4,6 +4,13 @@
 # Core resources: AgentCore Memory + Runtime + ECR + security group +
 # session metadata table.
 
+# AWS-managed KMS key for DynamoDB (kms_key_arn on server_side_encryption
+# is required by CKV_AWS_119 even when using the aws/dynamodb key). Making
+# it explicit vs. relying on the default so intent is auditable.
+data "aws_kms_alias" "dynamodb" {
+  name = "alias/aws/dynamodb"
+}
+
 # ═════════════════════════════════════════════════════════════════════
 #  Security group (AgentCore runtime ENIs)
 # ═════════════════════════════════════════════════════════════════════
@@ -152,7 +159,8 @@ resource "aws_dynamodb_table" "session_metadata" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = local.tags

@@ -14,6 +14,13 @@
 # to drive cache invalidation; cache-invalidation itself has no stream
 # (matches the CDK).
 
+# AWS-managed KMS key for DynamoDB (kms_key_arn on server_side_encryption
+# is required by CKV_AWS_119 even when using the aws/dynamodb key). Making
+# it explicit vs. relying on the default so intent is auditable.
+data "aws_kms_alias" "dynamodb" {
+  name = "alias/aws/dynamodb"
+}
+
 # ── Roles ──────────────────────────────────────────────────────────
 resource "aws_dynamodb_table" "roles" {
   name             = local.roles_table_name
@@ -40,7 +47,8 @@ resource "aws_dynamodb_table" "roles" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = {
@@ -108,7 +116,8 @@ resource "aws_dynamodb_table" "resource_role_mappings" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = {
@@ -142,7 +151,8 @@ resource "aws_dynamodb_table" "cache_invalidation" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = {

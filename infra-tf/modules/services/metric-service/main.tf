@@ -7,6 +7,13 @@
 #
 # Lambdas + their IAM live in api_lambdas.tf.
 
+# AWS-managed KMS key for DynamoDB (kms_key_arn on server_side_encryption
+# is required by CKV_AWS_119 even when using the aws/dynamodb key). Making
+# it explicit vs. relying on the default so intent is auditable.
+data "aws_kms_alias" "dynamodb" {
+  name = "alias/aws/dynamodb"
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
@@ -38,7 +45,8 @@ resource "aws_dynamodb_table" "import_jobs" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = local.tags
@@ -88,7 +96,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "osi_logs" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm = "aws:kms"
     }
   }
 }
@@ -168,7 +176,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "osi" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm = "aws:kms"
     }
   }
 }

@@ -22,6 +22,7 @@ resource "aws_ecs_cluster" "db_enrichment" {
 resource "aws_cloudwatch_log_group" "db_enrichment" {
   name              = "/ecs/${var.name_prefix}-sources-db-enrichment-agent"
   retention_in_days = 30
+  kms_key_id        = var.logs_kms_key_arn
 
   tags = local.tags
 
@@ -53,6 +54,7 @@ resource "aws_ecs_cluster" "kg_build" {
 resource "aws_cloudwatch_log_group" "kg_build" {
   name              = "/ecs/${var.name_prefix}-sources-doc-kg-build"
   retention_in_days = 30
+  kms_key_id        = var.logs_kms_key_arn
 
   tags = local.tags
 }

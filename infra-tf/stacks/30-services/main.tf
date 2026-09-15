@@ -38,6 +38,7 @@ module "vkg" {
   event_source_prefix         = local.event_source_prefix
   lambda_reserved_concurrency = var.lambda_reserved_concurrency
   lambda_security_group_id    = local.lambda_security_group_id
+  logs_kms_key_arn            = local.logs_kms_key_arn
   name_prefix                 = local.name_prefix
   ontology_bucket_arn         = local.ontology_bucket_arn
   ontology_bucket_name        = local.ontology_bucket_name
@@ -62,6 +63,7 @@ module "ontology" {
   ecr_repository_url             = local.ontology_ecr_repository_url
   ecs_security_group_id          = local.ecs_security_group_id
   lambda_security_group_id       = local.lambda_security_group_id
+  logs_kms_key_arn               = local.logs_kms_key_arn
   name_prefix                    = local.name_prefix
   namespaces_table_name          = local.namespaces_table_name
   neptune_cluster_arn            = local.neptune_cluster_arn

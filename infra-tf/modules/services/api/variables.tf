@@ -76,6 +76,11 @@ variable "lambda_security_group_id" {
   description = "Lambda security group ID (from network) for authorizer + cache_invalidation Lambdas."
   type        = string
 }
+variable "logs_kms_key_arn" {
+  description = "CMK ARN for CloudWatch Logs encryption (from modules/foundation/kms, published to <ssm_prefix>/kms/logs-key-arn). Applied to every aws_cloudwatch_log_group in this module."
+  type        = string
+}
+
 
 variable "merged_spec_path" {
   description = "Path to the merged OpenAPI spec JSON (control-plane + data-layer, CorsOrigin substituted). Produced by modules/services/api/openapi/Makefile which runs merge.py on the two Smithy-generated specs."

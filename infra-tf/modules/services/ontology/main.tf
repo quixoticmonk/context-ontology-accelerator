@@ -7,6 +7,13 @@
 # SSM parameter writes. ECS/task-def live in ecs.tf, IAM in iam.tf, the API
 # proxy Lambda in api_lambda.tf, and Cloud Map discovery in cloudmap.tf.
 
+# AWS-managed KMS key for DynamoDB (kms_key_arn on server_side_encryption
+# is required by CKV_AWS_119 even when using the aws/dynamodb key). Making
+# it explicit vs. relying on the default so intent is auditable.
+data "aws_kms_alias" "dynamodb" {
+  name = "alias/aws/dynamodb"
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
@@ -36,7 +43,8 @@ resource "aws_dynamodb_table" "this" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
   }
 
   tags = local.tags
@@ -48,6 +56,7 @@ resource "aws_dynamodb_table" "this" {
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = local.log_group
   retention_in_days = 30
+  kms_key_id        = var.logs_kms_key_arn
 
   tags = local.tags
 }

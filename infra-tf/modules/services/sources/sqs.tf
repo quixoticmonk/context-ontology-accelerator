@@ -13,6 +13,7 @@
 resource "aws_sqs_queue" "db_connector_dlq" {
   name                      = "${var.name_prefix}-sources-db-connector-dlq"
   message_retention_seconds = 1209600 # 14 days
+  kms_master_key_id         = "alias/aws/sqs"
 
   tags = local.tags
 }
@@ -21,12 +22,12 @@ resource "aws_sqs_queue" "db_connector_dlq" {
 #  DB Scan Queue + DLQ
 # ═════════════════════════════════════════════════════════════════════
 # Feeds the dbTriggerFn which starts the dbScanStateMachine execution.
-# Encrypted with SQS-managed keys. 90s visibility (Lambda hands off to
+# Encrypted with SSE-KMS (aws/sqs). 90s visibility (Lambda hands off to
 # SFN before it returns). maxReceive 3 before DLQ.
 resource "aws_sqs_queue" "db_scan_dlq" {
   name                      = "${var.name_prefix}-sources-db-scan-dlq"
   message_retention_seconds = 1209600
-  sqs_managed_sse_enabled   = true
+  kms_master_key_id         = "alias/aws/sqs"
 
   tags = local.tags
 }
@@ -34,7 +35,7 @@ resource "aws_sqs_queue" "db_scan_dlq" {
 resource "aws_sqs_queue" "db_scan" {
   name                       = "${var.name_prefix}-sources-db-scan-queue"
   visibility_timeout_seconds = 90
-  sqs_managed_sse_enabled    = true
+  kms_master_key_id          = "alias/aws/sqs"
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.db_scan_dlq.arn
@@ -55,7 +56,7 @@ resource "aws_sqs_queue" "db_scan" {
 resource "aws_sqs_queue" "bulk_review_dlq" {
   name                      = "${var.name_prefix}-sources-bulk-review-dlq"
   message_retention_seconds = 1209600
-  sqs_managed_sse_enabled   = true
+  kms_master_key_id         = "alias/aws/sqs"
 
   tags = local.tags
 }
@@ -63,7 +64,7 @@ resource "aws_sqs_queue" "bulk_review_dlq" {
 resource "aws_sqs_queue" "bulk_review" {
   name                       = "${var.name_prefix}-sources-bulk-review-queue"
   visibility_timeout_seconds = 360 # 6 minutes
-  sqs_managed_sse_enabled    = true
+  kms_master_key_id          = "alias/aws/sqs"
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.bulk_review_dlq.arn
@@ -108,6 +109,7 @@ resource "aws_sqs_queue_policy" "bulk_review" {
 resource "aws_sqs_queue" "doc_ingestion_dlq" {
   name                      = "${var.name_prefix}-sources-doc-ingestion-dlq"
   message_retention_seconds = 1209600
+  kms_master_key_id         = "alias/aws/sqs"
 
   tags = local.tags
 }
@@ -115,6 +117,7 @@ resource "aws_sqs_queue" "doc_ingestion_dlq" {
 resource "aws_sqs_queue" "doc_ingestion" {
   name                       = "${var.name_prefix}-sources-doc-ingestion-queue"
   visibility_timeout_seconds = 900
+  kms_master_key_id          = "alias/aws/sqs"
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.doc_ingestion_dlq.arn

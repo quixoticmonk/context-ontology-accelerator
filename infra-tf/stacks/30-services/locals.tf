@@ -56,6 +56,9 @@ locals {
   # ECR handoff (from stack 25-ecr)
   ontology_ecr_repository_url = data.aws_ssm_parameter.ontology_ecr_url.value
   vkg_ecr_repository_url      = data.aws_ssm_parameter.vkg_ecr_url.value
+
+  # KMS handoff (from foundation stack)
+  logs_kms_key_arn = data.aws_ssm_parameter.logs_kms_key_arn.value
 }
 
 data "aws_ssm_parameter" "vpc_id" { name = "${local.ssm_prefix}/network/vpc-id" }
@@ -80,3 +83,5 @@ data "aws_ssm_parameter" "smus_project_access_role_arn" { name = "${local.ssm_pr
 
 data "aws_ssm_parameter" "ontology_ecr_url" { name = "${local.ssm_prefix}/ecr/ontology-engine/url" }
 data "aws_ssm_parameter" "vkg_ecr_url" { name = "${local.ssm_prefix}/ecr/vkg/url" }
+
+data "aws_ssm_parameter" "logs_kms_key_arn" { name = "${local.ssm_prefix}/kms/logs-key-arn" }
