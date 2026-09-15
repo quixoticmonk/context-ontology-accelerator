@@ -69,3 +69,29 @@ skip-check:
   #     in env vars (in which case, prefer moving those values to
   #     Secrets Manager instead of adding a CMK)
   - CKV_AWS_173
+
+  # CKV_AWS_50 — "X-Ray tracing is enabled for Lambda".
+  #
+  # RATIONALE:
+  #   AWS X-Ray is not the APM choice for this workload. Datadog is
+  #   the target APM/tracing platform; the Datadog Lambda extension
+  #   (or a Datadog agent sidecar for ECS) provides distributed
+  #   tracing, span aggregation, and service dependency mapping
+  #   already, with a single vendor and single-pane-of-glass view
+  #   across the Lambda + ECS surface area.
+  #
+  #   Enabling X-Ray in parallel would:
+  #     - Duplicate tracing work at the runtime layer (both X-Ray SDK
+  #       and Datadog libraries instrumenting the same code paths)
+  #     - Duplicate storage/analysis costs
+  #     - Complicate trace correlation (two separate trace-ID
+  #       namespaces to reconcile)
+  #     - Add IAM surface (xray:PutTraceSegments, PutTelemetryRecords)
+  #       to every Lambda execution role
+  #
+  # WHEN TO REMOVE THIS SKIP:
+  #   - Datadog is dropped as the APM target and X-Ray is adopted
+  #     (or in addition to Datadog for a specific compliance driver)
+  #   - A specific Lambda needs X-Ray for AWS-native service map
+  #     visualization that Datadog cannot provide
+  - CKV_AWS_50

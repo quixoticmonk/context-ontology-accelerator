@@ -70,6 +70,7 @@ resource "aws_api_gateway_account" "this" {
 }
 
 resource "aws_cloudwatch_log_group" "access" {
+  # checkov:skip=CKV_AWS_338:30-day retention is the current operational minimum for this non-regulated workload. Bump to >= 365 if compliance requirements change.
   name              = "${var.name_prefix}-api-access-logs"
   retention_in_days = 30
   kms_key_id        = var.logs_kms_key_arn

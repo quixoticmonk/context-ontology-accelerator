@@ -18,6 +18,7 @@ data "aws_partition" "current" {}
 # ════════════════════════════════════════════════════════════════════
 
 resource "aws_cloudwatch_log_group" "this" {
+  # checkov:skip=CKV_AWS_338:30-day retention is the current operational minimum for this non-regulated workload. Bump to >= 365 if compliance requirements change.
   name              = local.log_group_name
   retention_in_days = 30
   kms_key_id        = var.logs_kms_key_arn
