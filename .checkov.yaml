@@ -95,3 +95,32 @@ skip-check:
   #   - A specific Lambda needs X-Ray for AWS-native service map
   #     visualization that Datadog cannot provide
   - CKV_AWS_50
+
+  # CKV_AWS_272 — "Ensure AWS Lambda function is configured to
+  # validate code-signing".
+  #
+  # RATIONALE:
+  #   Lambda code signing is not currently required for this workload.
+  #   A code-signing config would require a Signer signing profile, a
+  #   signed package flow at build time, and per-function
+  #   `code_signing_config_arn` wiring. None of that infrastructure
+  #   exists here today — introducing it would be a green-field
+  #   supply-chain project, not a compliance quick fix.
+  #
+  #   Supply-chain integrity is currently addressed by:
+  #     - ECR image tag IMMUTABLE (CKV_AWS_51) — image content locked
+  #       to a specific tag once pushed
+  #     - ECR scan-on-push enabled (CKV_AWS_163) — vulnerability scan
+  #       on every image
+  #     - Git-SHA-based image tags — traceable provenance from tag to
+  #       source commit
+  #     - Lambda zip artifacts built in a controlled build environment
+  #       and their content-hash tracked by Terraform (source_code_hash)
+  #
+  # WHEN TO REMOVE THIS SKIP:
+  #   - A formal code-signing pipeline is introduced (AWS Signer
+  #     profile + signed-package build workflow + Lambda code_signing_config
+  #     resources)
+  #   - Compliance framework mandates code signing (e.g., regulated
+  #     financial workload with SLSA level 3+ requirements)
+  - CKV_AWS_272
