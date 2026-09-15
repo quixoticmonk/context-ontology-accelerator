@@ -18,6 +18,7 @@
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_security_group" "neptune" {
+  # checkov:skip=CKV2_AWS_5:Attached to the Neptune cluster in modules/foundation/storage via var.neptune_security_group_id (read from SSM by consuming stacks). Cross-module attachment not visible to checkov's static analysis.
   name        = "${var.name_prefix}-neptune-sg"
   description = "Neptune cluster security group"
   vpc_id      = local.vpc_id
@@ -64,6 +65,7 @@ resource "aws_vpc_security_group_ingress_rule" "neptune_from_lambda" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_security_group" "ecs" {
+  # checkov:skip=CKV2_AWS_5:Attached to every ECS Fargate service (vkg, ontology, sources/db-enrichment, sources/kg-build) via var.ecs_security_group_id. 14 consumers across the repo.
   name        = "${var.name_prefix}-ecs-sg"
   description = "ECS Fargate tasks security group"
   vpc_id      = local.vpc_id
@@ -103,6 +105,7 @@ resource "aws_vpc_security_group_egress_rule" "ecs_to_neptune" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_security_group" "lambda" {
+  # checkov:skip=CKV2_AWS_5:Attached to every Lambda function's vpc_config via var.lambda_security_group_id. 35 consumers across the repo (every aws_lambda_function that runs in-VPC).
   name        = "${var.name_prefix}-lambda-sg"
   description = "Lambda functions security group"
   vpc_id      = local.vpc_id
@@ -200,6 +203,7 @@ resource "aws_vpc_security_group_ingress_rule" "aoss_from_ecs" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_security_group" "connector" {
+  # checkov:skip=CKV2_AWS_5:Attached to Glue Connections and Athena federation connectors in modules/services/sources via var.connector_security_group_id. Used by the federated_catalog role for outbound to source databases.
   name        = "${var.name_prefix}-connector-sg"
   description = "Glue Connection / Athena connector - outbound to source databases"
   vpc_id      = local.vpc_id

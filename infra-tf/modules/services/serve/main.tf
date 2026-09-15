@@ -16,6 +16,7 @@ data "aws_kms_alias" "dynamodb" {
 # ═════════════════════════════════════════════════════════════════════
 
 resource "aws_security_group" "agentcore" {
+  # checkov:skip=CKV2_AWS_5:Attached to the Context Manager AgentCore runtime via network_configuration.security_groups (see aws_bedrockagentcore_runtime.this below). checkov does not recognize the AgentCore attachment site.
   name        = "${var.name_prefix}-agentcore-sg"
   description = "AgentCore Runtime - Context Manager"
   vpc_id      = var.vpc_id

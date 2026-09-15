@@ -34,6 +34,8 @@ locals {
 # the logs.<region>.amazonaws.com service.
 
 data "aws_iam_policy_document" "logs" {
+  # checkov:skip=CKV_AWS_356:KMS key policy statements MUST use `resources = ["*"]` since a key policy is authored FROM the key and can only reference itself. This is the standard AWS key-policy contract, not a real wildcard.
+  # checkov:skip=CKV_AWS_111:Root grant is standard AWS practice for CMK admin/recovery. CloudWatch Logs grant is scoped by kms:EncryptionContext to log groups in this account+region only.
   # Standard root grant (allows IAM policies in this account to
   # further delegate, and enables key deletion via the root user).
   statement {

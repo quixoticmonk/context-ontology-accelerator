@@ -24,6 +24,7 @@ data "aws_subnet" "private" {
 #  Security group (minimal: HTTPS egress only)
 # ════════════════════════════════════════════════════════════════════
 resource "aws_security_group" "mcp" {
+  # checkov:skip=CKV2_AWS_5:Attached to the MCP AgentCore runtime via network_configuration.security_groups (see aws_bedrockagentcore_runtime.mcp below). checkov does not recognize the AgentCore attachment site.
   name        = "${local.ecr_repo_name}-sg"
   description = "AgentCore Runtime - MCP Server (thin proxy)"
   vpc_id      = var.vpc_id
