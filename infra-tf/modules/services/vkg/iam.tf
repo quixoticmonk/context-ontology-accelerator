@@ -135,6 +135,15 @@ resource "aws_iam_role_policy_attachment" "reload_vpc" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+# Reload Lambda policy. The residual `resources = ["*"]` statements
+# are all AWS-service limitations, each with a scoping condition or a
+# read-only shape:
+#   • EcsListServices             — bounded by ecs:cluster condition
+#   • EcsTaskDefinition           — no resource type per SAR; PassRole is bounded
+#   • ServiceDiscoveryList        — API accepts no namespace arg; read-only
+#   • ReloadMetrics               — bounded by cloudwatch:namespace = COA/VKG
+# checkov:skip=CKV_AWS_356:Residual `*` is on actions AWS does not support resource-level for; each has a scoping condition where a condition key exists.
+# checkov:skip=CKV_AWS_111:Write actions on `*` are constrained by cluster/namespace conditions or lack any AWS-supported resource type (per Service Authorization Reference).
 data "aws_iam_policy_document" "reload" {
   # ECS service lifecycle scoped to this cluster's services.
   statement {
@@ -161,6 +170,11 @@ data "aws_iam_policy_document" "reload" {
   }
 
   # Task-definition register/describe have no resource-level scoping.
+  # `ecs:RegisterTaskDefinition` and `ecs:DescribeTaskDefinition` are
+  # listed as "(not applicable)" for resource type in the AWS Service
+  # Authorization Reference; IAM must be `*`. Blast radius is bounded
+  # by the PassVkgRoles statement below — only the vkg-task and
+  # vkg-execution roles can be attached to any registered task def.
   statement {
     sid       = "EcsTaskDefinition"
     actions   = ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"]
@@ -180,17 +194,38 @@ data "aws_iam_policy_document" "reload" {
     }
   }
 
-  # Cloud Map service registration for per-namespace services.
+  # Cloud Map service registration for per-namespace VKG services.
+  # CreateService supports the `servicediscovery:NamespaceArn` condition
+  # key — scoping to the Cloud Map namespace this module provisions
+  # services under prevents the reload Lambda from creating services in
+  # any other Cloud Map namespace.
   statement {
-    sid = "ServiceDiscovery"
-    actions = [
-      "servicediscovery:CreateService",
-      "servicediscovery:ListServices",
-    ]
+    sid       = "ServiceDiscoveryCreate"
+    actions   = ["servicediscovery:CreateService"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "servicediscovery:NamespaceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:servicediscovery:${var.region}:${data.aws_caller_identity.current.account_id}:namespace/${var.service_namespace_id}"]
+    }
+  }
+
+  # ListServices doesn't accept a namespace argument — the AWS-supplied
+  # `servicediscovery:NamespaceArn` condition key isn't populated on
+  # this call, so it cannot be constrained by IAM. Blast radius is
+  # bounded: the returned data is only service metadata within this
+  # account/region.
+  statement {
+    sid       = "ServiceDiscoveryList"
+    actions   = ["servicediscovery:ListServices"]
     resources = ["*"]
   }
 
-  # Application auto-scaling for per-namespace services.
+  # Application auto-scaling for per-namespace services. Scoped to
+  # scalable-targets in this account/region and constrained to the ECS
+  # service namespace so this role can't register autoscaling on
+  # RDS/EMR/DynamoDB/etc. targets.
   statement {
     sid = "AutoScaling"
     actions = [
@@ -198,6 +233,12 @@ data "aws_iam_policy_document" "reload" {
       "application-autoscaling:PutScalingPolicy",
     ]
     resources = ["arn:${data.aws_partition.current.partition}:application-autoscaling:${var.region}:${data.aws_caller_identity.current.account_id}:scalable-target/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "application-autoscaling:service-namespace"
+      values   = ["ecs"]
+    }
   }
 
   # Per-namespace log-group management.

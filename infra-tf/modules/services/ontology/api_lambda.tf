@@ -32,11 +32,18 @@ resource "aws_iam_role_policy_attachment" "api_proxy_vpc" {
 
 # ── Per-function inline permissions (match CDK addToRolePolicy calls) ─
 data "aws_iam_policy_document" "api_proxy" {
-  # DescribeTable — no resource-level ARN in the CDK (resources: ["*"]).
+  # DescribeTable on the two tables the api_proxy actually reads
+  # metadata for — sources (registration lookup) and namespaces
+  # (namespace resolution). `dynamodb:DescribeTable` supports
+  # resource-level scoping (the CDK comment claiming otherwise was
+  # wrong — see AWS Service Authorization Reference).
   statement {
-    sid       = "DynamoDbDescribe"
-    actions   = ["dynamodb:DescribeTable"]
-    resources = ["*"]
+    sid     = "DynamoDbDescribe"
+    actions = ["dynamodb:DescribeTable"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.sources_table_name}",
+      "arn:${data.aws_partition.current.partition}:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.namespaces_table_name}",
+    ]
   }
 
   # Neptune read — scoped to the cluster ARN (carries trailing /*).
@@ -46,11 +53,13 @@ data "aws_iam_policy_document" "api_proxy" {
     resources = [var.neptune_cluster_arn]
   }
 
-  # AOSS collection describe — no resource-level ARN in the CDK.
+  # AOSS collection describe — scoped to the specific collection.
+  # `aoss:BatchGetCollection` supports collection-level scoping (the
+  # CDK comment claiming otherwise was wrong).
   statement {
     sid       = "AossBatchGet"
     actions   = ["aoss:BatchGetCollection"]
-    resources = ["*"]
+    resources = [var.opensearch_collection_arn]
   }
 }
 

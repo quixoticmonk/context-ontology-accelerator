@@ -26,8 +26,17 @@ resource "aws_iam_role" "runtime" {
 # ═════════════════════════════════════════════════════════════════════
 #  Runtime policy — single big doc keyed by sid so diffs are auditable
 # ═════════════════════════════════════════════════════════════════════
-
+# Residual `resources = ["*"]` statements are all AWS-service
+# limitations documented in the AWS Service Authorization Reference:
+#   - EcrAuthToken                : ecr:GetAuthorizationToken has no resource type
+#   - RedshiftDataApi             : redshift-data actions have no resource type
+#   - LakeFormationGetDataAccess  : lakeformation:GetDataAccess has no resource type
+# Every other statement in this document is ARN-scoped or condition-gated.
+# checkov:skip=CKV_AWS_356:Residual wildcard is limited to EcrAuthToken, RedshiftDataApi, and LakeFormationGetDataAccess. All three have no IAM resource type per the AWS Service Authorization Reference.
+# checkov:skip=CKV_AWS_111:Same three statements are read/query actions with no supported resource type; every other write action is ARN-scoped.
 data "aws_iam_policy_document" "runtime" {
+  # checkov:skip=CKV_AWS_356:Residual wildcard is limited to EcrAuthToken, RedshiftDataApi, and LakeFormationGetDataAccess. All three have no IAM resource type per the AWS Service Authorization Reference.
+  # checkov:skip=CKV_AWS_111:Same three statements are read/query actions with no supported resource type; every other write action is ARN-scoped.
   statement {
     sid       = "EcrAuthToken"
     actions   = ["ecr:GetAuthorizationToken"]

@@ -75,6 +75,18 @@ resource "aws_iam_role" "federated_catalog" {
 }
 
 data "aws_iam_policy_document" "federated_catalog" {
+  # Residual `resources = ["*"]` statements in this document are all
+  # AWS-service limitations (see per-statement comments below):
+  #   • GlueManagedConnectorExecution — glue:ManagedConnector has no resource type
+  #   • DecryptCredentialSecret       — bounded by kms:ViaService = secretsmanager.*
+  #   • Ec2NetworkDescribe            — ec2:Describe* is read-only, no resource type
+  #   • Ec2NetworkInterfaceManagement — ENI mutating actions authorize on `*`
+  #                                     per the documented AWSGlueServiceRole contract
+  # ReadCredentialSecret{InAccount,CrossAccount} use `secretsmanager:*:*:secret:*`
+  # gated by aws:ResourceAccount + tag conditions — the wildcard is on
+  # partition/region only, not on the resource-name path.
+  # checkov:skip=CKV_AWS_356:Residual `*` is limited to actions AWS does not support resource-level for; each is either read-only or gated by a service condition.
+  # checkov:skip=CKV_AWS_111:Write actions on `*` here are the ENI mutating set required by the Glue managed-connector contract; behavior is bounded by the ec2:AuthorizedService condition on CreateNetworkInterfacePermission.
   # Spill bucket read/write (Athena federation writes here).
   statement {
     sid = "SpillBucketAccess"

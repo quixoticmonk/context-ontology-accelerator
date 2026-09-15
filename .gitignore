@@ -215,3 +215,6 @@ packages/mcp-proxy/node_modules/
 
 # Benchmark run artifacts (numbers belong in the MR/description, not the tree)
 scripts/serve/eval_results/
+
+.ash
+.ash.yaml

@@ -68,6 +68,12 @@ resource "aws_iam_role" "smus_exec" {
 # `SageMakerStudioAdminIAMPermissiveExecutionPolicy`. Only the
 # permissions SMUS actually calls, and every ARN is scoped to this
 # account + region + prefix where possible.
+#
+# The remaining `resources = ["*"]` in this document belongs to the
+# LakeFormation statement — those four actions do not support
+# resource-level IAM authorization (see the statement's inline note).
+# checkov:skip=CKV_AWS_356:Residual `*` is LakeFormation only; those actions do not support resource-level IAM (Service Authorization Reference).
+# checkov:skip=CKV_AWS_111:LakeFormation grant/revoke are authorized by the LF permission model, not IAM ARN.
 data "aws_iam_policy_document" "smus_exec" {
   statement {
     sid = "DataZoneDomain"
@@ -86,7 +92,14 @@ data "aws_iam_policy_document" "smus_exec" {
       "datazone:UpdateEnvironment",
       "datazone:DeleteEnvironment",
     ]
-    resources = ["*"]
+    # Scoped to DataZone domains in this account + region. CreateDomain
+    # keeps a wildcard resource name (matches the SageMaker section's
+    # `domain/*` pattern in the same file — the domain ID isn't
+    # knowable until create-time). Everything else operates on domains
+    # this account owns.
+    resources = [
+      "arn:${data.aws_partition.current.partition}:datazone:${var.region}:${data.aws_caller_identity.current.account_id}:domain/*",
+    ]
   }
 
   statement {
@@ -140,6 +153,14 @@ data "aws_iam_policy_document" "smus_exec" {
       "lakeformation:GetDataAccess",
       "lakeformation:ListPermissions",
     ]
+    # LakeFormation IAM actions do not support resource-level
+    # scoping — the Service Authorization Reference lists all four of
+    # these as "resource type: (not applicable)". IAM must be `*`;
+    # authorization is enforced by the LakeFormation permission model
+    # (grants/revokes on databases and tables) rather than by ARN.
+    #
+    # checkov:skip=CKV_AWS_356:LakeFormation actions listed here do not support resource-level IAM constraints (per AWS Service Authorization Reference).
+    # checkov:skip=CKV_AWS_111:LakeFormation Grant/Revoke are authorized by the LakeFormation permission model, not by IAM resource ARN.
     resources = ["*"]
   }
 

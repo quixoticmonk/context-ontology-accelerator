@@ -21,6 +21,12 @@ resource "aws_iam_role_policy_attachment" "sources_api_vpc" {
 }
 
 data "aws_iam_policy_document" "sources_api" {
+  # The only `resources = ["*"]` in this document is ReadSourceBucketTags
+  # (s3:GetBucketTagging), where the customer-provided bucket isn't
+  # knowable at synth. That statement is deliberately metadata-only —
+  # the API does NOT get s3:GetObject anywhere on the source bucket.
+  # checkov:skip=CKV_AWS_356:ReadSourceBucketTags wildcard is required because customer source buckets are unknown at synth; s3:GetObject is deliberately not granted.
+  # checkov:skip=CKV_AWS_111:s3:GetBucketTagging is metadata-only; the API cannot read customer bucket contents.
   # DDB read/write on sources + source-scan-jobs + namespaces.
   statement {
     sid = "SourcesAndJobsTables"
