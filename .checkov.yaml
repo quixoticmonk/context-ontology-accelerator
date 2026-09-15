@@ -124,3 +124,64 @@ skip-check:
   #   - Compliance framework mandates code signing (e.g., regulated
   #     financial workload with SLSA level 3+ requirements)
   - CKV_AWS_272
+
+  # CKV_AWS_116 — "Ensure that AWS Lambda function is configured for a
+  # Dead Letter Queue (DLQ)".
+  #
+  # RATIONALE:
+  #   Sync API-Gateway backends do not benefit from DLQs; async
+  #   workers use SQS-native DLQs on their source queues (see
+  #   modules/services/sources/sqs.tf `redrive_policy`).
+  #
+  #   The check flags every Lambda that lacks a `dead_letter_config`
+  #   block, but that pattern only fits async invocations where a
+  #   failure would otherwise be silently lost. This workload's
+  #   Lambdas split into three groups:
+  #     - Sync API-Gateway handlers (namespace_api, roles_api,
+  #       grants_api, metric_api, sources_api, ontology.api_proxy,
+  #       authorizer, stub) — the caller receives the error response
+  #       directly, so a Lambda-level DLQ adds no value
+  #     - Async workers (bulk_review_worker, db_scan_trigger,
+  #       doc_trigger, preprocessing, federation_provisioner,
+  #       cache_invalidation, deletion pipeline functions) — these
+  #       consume from SQS queues that carry their own DLQ via
+  #       `redrive_policy`, so failed events land in the queue-side
+  #       DLQ rather than a Lambda-side one
+  #     - One-shot provisioning Lambdas (cognito_patch, api_cors_patch,
+  #       lakeformation_admin, vkg.reload) — invoked by Step Functions
+  #       or Terraform lifecycle actions with their own error handling
+  #
+  # WHEN TO REMOVE THIS SKIP:
+  #   - A specific Lambda is identified whose failures need Lambda-
+  #     level DLQ capture (async invocation without a source queue,
+  #     e.g., EventBridge-triggered function that must not silently
+  #     drop events)
+  #   - Move that function to an inline `dead_letter_config` block
+  #     and add a `# checkov:skip=CKV_AWS_116:covered-by-source-queue`
+  #     on the remaining ones instead of a repo-wide skip
+  - CKV_AWS_116
+
+  # CKV_AWS_65 — "Ensure container insights are enabled on ECS
+  # cluster".
+  #
+  # RATIONALE:
+  #   Container Insights is currently optional for this workload.
+  #   Enabling it turns on per-task CPU/memory/network metrics
+  #   aggregated to CloudWatch, which is useful but adds a per-hour
+  #   metric-ingestion cost and duplicates signal already captured
+  #   by the target APM stack (Datadog — see the CKV_AWS_50 skip).
+  #
+  #   Datadog's ECS integration collects the same task-level metrics
+  #   plus richer application-level tracing, so paying for Container
+  #   Insights in parallel is duplicated cost with no incremental
+  #   observability.
+  #
+  # WHEN TO REMOVE THIS SKIP:
+  #   - Datadog is dropped as the observability target and Container
+  #     Insights becomes the primary ECS metrics source
+  #   - Regulatory posture requires AWS-native metrics for audit
+  #     (Container Insights writes into a CloudWatch namespace that
+  #     stays inside the account boundary, unlike a SaaS APM)
+  #   - A specific cluster needs CloudWatch metrics for an alarm
+  #     that has to fire from within AWS (e.g., a lifecycle guard)
+  - CKV_AWS_65

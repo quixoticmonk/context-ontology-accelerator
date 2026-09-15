@@ -45,4 +45,12 @@ ENV PYTHONPATH=/app/src
 USER appuser
 EXPOSE 8001
 
+# Health check hits the FastAPI /health endpoint (see main.py line 189).
+# ECS Fargate does not use container-level HEALTHCHECK — it uses the ALB/NLB
+# target group health check — but keeping this here means the same image
+# works when run standalone (docker run, docker-compose, local dev) and
+# satisfies CKV_DOCKER_2 supply-chain hygiene.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "http://localhost:${PORT:-8001}/health" || exit 1
+
 CMD ["sh", "-c", "uvicorn coa_ontology.main:app --host 0.0.0.0 --port ${PORT:-8001}"]

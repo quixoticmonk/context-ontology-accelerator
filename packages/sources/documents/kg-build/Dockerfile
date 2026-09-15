@@ -3,6 +3,7 @@
 # Pin to digest to prevent supply-chain attacks via tag mutation. The pin is for
 # supply-chain integrity only, NOT patch currency — see the apt-get upgrade below.
 # python:3.12-slim, digest resolved from the tag on 2026-09-01.
+# checkov:skip=CKV_DOCKER_2:Batch ECS Fargate task. Runs graph_build to completion and exits; the process exit code is the health signal reported back to the launching Step Function. HEALTHCHECK against a long-running server does not apply to a batch handler.
 FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:e5c9fa26ffb76e11e0f054f30dc2523a2f9693f0c36c0cf1e39b27e152d899fc
 
 WORKDIR /app
