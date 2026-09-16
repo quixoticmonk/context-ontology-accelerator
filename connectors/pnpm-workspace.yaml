@@ -10,3 +10,10 @@
 packages:
   - "cdk-toolkit"
   - "*/cdk"
+
+# Supply chain hardening — mirrors the root workspace so customer copies of
+# these samples inherit the same registry-first, quarantined install behavior.
+# See root pnpm-workspace.yaml for the full rationale and pnpm version notes.
+minimumReleaseAge: 10080
+trustPolicy: no-downgrade
+blockExoticSubdeps: true

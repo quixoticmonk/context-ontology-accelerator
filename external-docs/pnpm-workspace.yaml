@@ -1,1 +1,8 @@
 packages:
+
+# Supply chain hardening — mirrors the root workspace. This is a standalone
+# pnpm workspace (its own lockfile) for the docs site, so the settings must
+# be repeated here. See root pnpm-workspace.yaml for the full rationale.
+minimumReleaseAge: 10080
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
