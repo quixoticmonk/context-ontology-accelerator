@@ -217,4 +217,4 @@ packages/mcp-proxy/node_modules/
 scripts/serve/eval_results/
 
 .ash
-.ash.yaml
+!.ash.yaml
