@@ -6,7 +6,7 @@
 # now comes from the apt-get upgrade below, so a stale pin can no longer hold
 # back an OS security fix.
 # python:3.12-slim, digest resolved from the tag on 2026-09-01.
-FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:e5c9fa26ffb76e11e0f054f30dc2523a2f9693f0c36c0cf1e39b27e152d899fc
+FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 WORKDIR /app
 
@@ -35,6 +35,26 @@ RUN pip install --no-cache-dir /tmp/control-plane-server/ && rm -rf /tmp/control
 # Install ontology-engine dependencies
 COPY packages/ontology-engine/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Strip the unused Pellet reasoner that owlready2 vendors. Tier-1 validation uses
+# HermiT only (sync_reasoner_hermit, see validation/validators/tier1.py); Pellet
+# is never invoked. Its bundled JARs (jena-core, log4j 2.19, httpclient 4.2,
+# xercesImpl, …) carry Critical/High CVEs that have no bearing on our code path —
+# emptying the directory deletes them from the image. HermiT.jar (in ../hermit)
+# is self-contained and untouched. Also upgrade pip to pick up its own fixes.
+#
+# The directory itself MUST survive: owlready2/reasoning.py runs
+# os.listdir(<pkg>/pellet) at *import time* (to build the Pellet classpath), so
+# deleting the whole dir makes `import owlready2` raise FileNotFoundError and
+# breaks HermiT too — surfacing as REASONER_ERROR at runtime. An empty dir makes
+# os.listdir return [] (empty classpath), which is fine since Pellet is unused.
+RUN PELLET_DIR="$(python -c 'import owlready2, os; print(os.path.join(os.path.dirname(owlready2.__file__), "pellet"))')" && \
+    find "$PELLET_DIR" -mindepth 1 -delete && \
+    pip install --no-cache-dir --upgrade pip
+# Fail the build loudly if owlready2 can't import after the Pellet strip (e.g. a
+# future change removes the pellet dir), instead of degrading to REASONER_ERROR
+# at runtime.
+RUN python -c "import owlready2; print('owlready2', owlready2.VERSION, 'OK')"
 
 # Copy application source
 COPY --chown=appuser:appuser packages/ontology-engine/src/ ./src/

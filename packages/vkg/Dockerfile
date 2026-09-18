@@ -4,7 +4,7 @@
 # Inspector flagged against the prior build; the `yum update --security` below
 # runs against current AL2023 repos once this layer rebuilds. Renovate keeps
 # this digest current (dockerfile manager + pinDigests, held to the 17 line).
-FROM public.ecr.aws/amazoncorretto/amazoncorretto:17-al2023@sha256:17d4c3cf7bc84b6417f4c228bb77aeb97fda215b4b26b2ee8a53baace4aaada8
+FROM public.ecr.aws/amazoncorretto/amazoncorretto:17-al2023@sha256:4e8a37e40de3914694a5b1f0b428864081249341166c28849cf0f1b9de29015d
 
 ARG ONTOP_VERSION=5.5.0
 ARG ONTOP_SHA256=430dff312e68e8ad41d26e6113160ca2365c28c4fe911926193000a33299458f
