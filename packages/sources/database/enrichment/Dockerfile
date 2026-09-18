@@ -4,7 +4,7 @@
 # supply-chain integrity only, NOT patch currency — see the apt-get upgrade below.
 # python:3.12-slim, digest resolved from the tag on 2026-09-01.
 # checkov:skip=CKV_DOCKER_2:Batch ECS Fargate task. Runs to completion and exits; the process exit code is the health signal (ECS reports STOPPED with exit code to the state machine that launched it). A HEALTHCHECK against a long-running server does not apply to a batch handler.
-FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:e5c9fa26ffb76e11e0f054f30dc2523a2f9693f0c36c0cf1e39b27e152d899fc
+FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 WORKDIR /app
 

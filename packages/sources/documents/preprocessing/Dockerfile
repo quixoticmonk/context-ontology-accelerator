@@ -1,7 +1,7 @@
 # Pin to digest to prevent supply-chain attacks via tag mutation.
 # public.ecr.aws/lambda/python:3.12 as of 2026-05-13
 # checkov:skip=CKV_DOCKER_2:Lambda container image. HEALTHCHECK is a no-op on the Lambda runtime - the Lambda service owns invocation lifecycle and container readiness (via LAMBDA_RUNTIME_API), not Docker's HEALTHCHECK.
-FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12@sha256:526186b9c1c311888082c3ab95631fe110423bed06e7b0f218ad5243046b4278
+FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12@sha256:3abb572d57e4988765dbd78b72027d2979024a9b46db52cdf67d53b10987577f
 
 # System deps: poppler for PDF text extraction, file-libs for libmagic (file type detection)
 RUN dnf install -y poppler-utils file-libs && dnf clean all

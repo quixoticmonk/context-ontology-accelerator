@@ -89,6 +89,8 @@ PIPELINE_RUN_FIELDS: tuple[str, ...] = (
     "filesSkipped",
     "filesErrored",
     "preprocessingIssues",
+    "preprocessingIssuesS3Key",
+    "preprocessingIssuesTruncated",
 )
 
 # Statuses where a new ingestion request should be rejected (409).
@@ -126,6 +128,8 @@ SOURCE_PIPELINE_RUN_FIELDS: tuple[str, ...] = (
     "filesSkipped",
     "filesErrored",
     "preprocessingIssues",
+    "preprocessingIssuesS3Key",
+    "preprocessingIssuesTruncated",
 )
 
 
@@ -191,6 +195,29 @@ DEFAULT_INFER_ENTITY_CLASSIFICATIONS: str = "true"
 # empty JSON array in env vars so the state-machine → ECS pipe can carry it
 # without needing a new SFN field type.
 DEFAULT_PREFERRED_ENTITY_CLASSIFICATIONS_JSON: str = "[]"
+# Explicit TOPIC vocabulary, empty by default. Topics are the thematic groupings
+# the extractor assigns chunks to (``__Topic__`` nodes, later induced as
+# ``skos:Concept``); entity classifications are what a thing *is*
+# (``__Entity__.class``, induced as ``owl:Class``). Two different axes.
+#
+# Note there is deliberately NO ``infer_topics`` flag: graphrag-toolkit has no
+# topic analogue of ``InferClassificationsConfig``, so "let the model decide" is
+# simply an empty list — the extractor then names topics freely from the chunk
+# text. Adding a flag would imply a corpus-inference pass that does not exist.
+DEFAULT_PREFERRED_TOPICS_JSON: str = "[]"
+
+# Hard API cap on either vocabulary list. Not a modelling limit — a guard against
+# a list so long it crowds the extraction prompt (every entry is injected into
+# each chunk's prompt, so cost and adherence both degrade with length). 15-25
+# entries is the practical sweet spot; 100 is the refusal threshold, well past
+# any vocabulary that still steers the model usefully.
+#
+# NOTE: this check is load-bearing. The Smithy `@length` on EntityClassificationList
+# / TopicList does NOT survive code generation (the generated Pydantic type is a
+# plain `Optional[List[...]]` with no max_items), so the handler is the only place
+# the list length is actually enforced. Per-ENTRY length does generate, as
+# `max_length` on the member.
+MAX_VOCABULARY_ENTRIES: int = 100
 # Table extraction OFF by default. When ON, PDFs route through Textract's
 # AnalyzeDocument(TABLES) instead of unstructured strategy="fast" — preserves
 # row/column structure at materially higher per-page cost. Opt in per source.
@@ -210,6 +237,7 @@ EXTRACTION_DEFAULTS: dict[str, object] = {
     "delete_prev_versions": DEFAULT_DELETE_PREV_VERSIONS.lower() == "true",
     "infer_entity_classifications": DEFAULT_INFER_ENTITY_CLASSIFICATIONS.lower() == "true",
     "preferred_entity_classifications": [],
+    "preferred_topics": [],
     "enable_table_extraction": DEFAULT_ENABLE_TABLE_EXTRACTION.lower() == "true",
     "chunk_size": DEFAULT_CHUNK_SIZE,
     "chunk_overlap": DEFAULT_CHUNK_OVERLAP,
@@ -264,6 +292,31 @@ nobody sends. Recorded here instead so a generated client does not accept 4,000
 characters and then surface an unexplained 403 — and so the decision can be
 revisited with evidence if a real query is ever refused.
 """
+
+
+# Tier-2 engine selection accepted on ``options.strategy``.
+#
+# Lives here because the data-layer Lambda validates it and depends only on
+# ``coa-common`` — importing the generated ``coa_data_layer_server`` enum or
+# context-manager's ``StrategyOption`` would add an undeclared runtime dependency
+# to the Lambda bundle.
+#
+# This is the THIRD copy of the same set (Smithy ``QueryStrategy``, serve's
+# ``StrategyOption``, here), so drift is guarded by a three-way parity test in
+# ``packages/context-manager/tests/unit/test_strategy.py``. An unknown value must be
+# rejected rather than forwarded: it would fall out of
+# ``Orchestrator._EXPLICIT_STRATEGY_OPTIONS`` and silently run the default fallback
+# chain while the caller believed it pinned an engine.
+QUERY_STRATEGIES: frozenset[str] = frozenset(
+    {
+        "best",
+        "ontop",
+        "nl_to_sql",
+        "ontop_first",
+        "nl_to_sql_first",
+        "deep-reasoning",
+    }
+)
 
 
 def validate_query_text(value: object) -> str:
@@ -443,6 +496,25 @@ def sql_ident(name: str) -> str:
     return f'"{escaped}"'
 
 
+def sql_qualified_table(name: str, schema: str | None = None) -> str:
+    """Return a (schema-)qualified SQL-delimited table identifier.
+
+    ``sql_qualified_table("orders", "sales")`` -> ``'"sales"."orders"'`` and
+    ``sql_qualified_table("orders")`` -> ``'"orders"'``.
+
+    Qualifying the table with its source schema keeps two same-named tables from
+    different schemas distinct in the H2 validation database and in the R2RML
+    ``rr:tableName`` that Ontop validates against it. Without the qualifier the
+    ``CREATE TABLE IF NOT EXISTS`` for the second table is silently dropped and
+    its TriplesMap then references columns that do not exist, so the mapping
+    fails to load (COA #149 cause A). Both emit sites (schema.sql DDL and the
+    R2RML writer) MUST use this same form so the identifiers match exactly.
+    """
+    if schema:
+        return f"{sql_ident(schema)}.{sql_ident(name)}"
+    return sql_ident(name)
+
+
 def ontology_vector_index_name(prefix: str, namespace_id: str, default_namespace: str = "default") -> str:
     """Return the OpenSearch index name for ontology embeddings.
 
@@ -576,8 +648,8 @@ GOVERNED_METRICS_ONTOLOGY_ID: str = f"urn:{URN_PREFIX}:vocab#GovernedMetrics"
 # The KEY carries the deployment's resource prefix so two deployments co-located
 # in one AWS account bind independently: a secret onboarded to `scl` is not
 # readable by a `coa` deployment's roles, whose IAM conditions name their own
-# key. (Same reasoning as `eventSourcePrefix` on the deploy-time infrastructure
-# side — the resource being tagged is account-global and therefore shared.)
+# key. (Same reasoning as `eventSourcePrefix` in infra/lib/context.ts — the
+# resource being tagged is account-global and therefore shared.)
 #
 # The VALUE is a whitespace-separated list so one secret can serve several
 # namespaces (a shared read-only reporting credential, say) without a per-
@@ -598,16 +670,15 @@ def namespace_tag_key(prefix: str | None = None) -> str:
     """Resource-tag key binding a resource to one or more namespaces.
 
     ``prefix`` defaults to the deployment's bare resource prefix from
-    ``RESOURCE_TAG_PREFIX`` (deploy-time infrastructure injects the resolved
-    ``resource_prefix``), falling back to :data:`BRAND` (``"coa"``).
+    ``RESOURCE_TAG_PREFIX`` (CDK injects ``resolveContext().prefix``), falling
+    back to :data:`BRAND` (``"coa"``).
 
     Deliberately NOT derived from ``RESOURCE_PREFIX``: that variable means
-    different things in different runtimes — deploy-time infrastructure injects
-    ``{prefix}-{env}-`` (``coa-dev-``) into compute, while the integ runner sets
-    the bare prefix (``coa``) for SSM paths. A tag key must be one exact string
-    shared by the registration check, the IAM conditions, and whoever tags the
-    secret, so it gets its own unambiguous variable rather than a guess at
-    which form arrived.
+    different things in different runtimes — CDK injects ``{prefix}-{env}-``
+    (``scl-dev-``) into compute, while the integ runner sets the bare prefix
+    (``scl``) for SSM paths. A tag key must be one exact string shared by the
+    registration check, the IAM conditions, and whoever tags the secret, so it
+    gets its own unambiguous variable rather than a guess at which form arrived.
     """
     resolved = (prefix if prefix is not None else os.environ.get("RESOURCE_TAG_PREFIX", "")) or BRAND
     return f"{resolved.strip().rstrip('-')}:namespace"
