@@ -178,7 +178,20 @@ locals {
           ResultSelector = { "Payload.$" = "$.Payload" }
           ResultPath     = "$.discoveryResult"
           Retry = [{
-            ErrorEquals     = ["Lambda.TooManyRequestsException", "Lambda.SdkClientException"]
+            # Retry only failures a re-run can fix: our transient
+            # classification plus Lambda infra faults.
+            # PermanentScanError (bad config, denied auth, missing
+            # source, unsupported type) is absent, so it falls
+            # straight through to the SCAN_FAILED catch instead of
+            # burning 3 retries (~15s). AWS Lambda reports the raised
+            # exception's class name as the Step Functions error name.
+            ErrorEquals = [
+              "TransientScanError",
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException",
+              "Lambda.TooManyRequestsException",
+            ]
             MaxAttempts     = 3
             BackoffRate     = 2
             IntervalSeconds = 5

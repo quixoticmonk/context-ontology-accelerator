@@ -236,6 +236,20 @@ locals {
                 { Name = "ENABLE_PROPOSITION_EXTRACTION", "Value.$" = "$.extraction_config.enable_proposition_extraction" },
                 { Name = "INFER_ENTITY_CLASSIFICATIONS", "Value.$" = "$.extraction_config.infer_entity_classifications" },
                 { Name = "PREFERRED_ENTITY_CLASSIFICATIONS", "Value.$" = "$.extraction_config.preferred_entity_classifications" },
+                # Preferred TOPIC vocabulary — the thematic groupings
+                # chunks are assigned to (__Topic__ nodes), as distinct
+                # from the entity-class list above. Same JSON-string
+                # transport for the same reason: a container-override
+                # JsonPath cannot carry an array. Empty JSON array "[]"
+                # is the default and means "let the model name topics",
+                # which is the behaviour of every ingest before this
+                # field existed. There is no INFER_TOPICS counterpart —
+                # graphrag-toolkit has no topic equivalent of the
+                # classification inference pass. The trigger Lambda
+                # re-merges EXTRACTION_DEFAULTS into every message
+                # before StartExecution so sources created before this
+                # field shipped still work.
+                { Name = "PREFERRED_TOPICS", "Value.$" = "$.extraction_config.preferred_topics" },
                 { Name = "ENABLE_TABLE_EXTRACTION", "Value.$" = "$.extraction_config.enable_table_extraction" },
                 { Name = "CHUNK_SIZE", "Value.$" = "$.extraction_config.chunk_size" },
                 { Name = "CHUNK_OVERLAP", "Value.$" = "$.extraction_config.chunk_overlap" },
