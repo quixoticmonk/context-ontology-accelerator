@@ -41,6 +41,12 @@ variable "event_source_prefix" {
   default = ""
 }
 
+variable "graph_base_uri" {
+  description = "Base URI for the deployed brand's named-graph naming scheme (writers append /{namespace}). Serve and metric-service must resolve to the same value or metric writes and reads see different named graphs — aligned via `local.brand_env.GRAPH_BASE_URI` and mirrors stack 50-agentcore's own default."
+  type        = string
+  default     = "http://coa.amazon.com"
+}
+
 variable "hosted_zone_id" {
   type    = string
   default = null

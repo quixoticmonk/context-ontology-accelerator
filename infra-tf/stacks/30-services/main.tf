@@ -12,6 +12,7 @@ module "metric_service" {
   allowed_origin               = local.allowed_origin
   aoss_security_group_id       = local.aoss_security_group_id
   bedrock_embed_model_id       = var.bedrock_embed_model_id
+  brand_env                    = local.brand_env
   lambda_security_group_id     = local.lambda_security_group_id
   metric_service_zip_path      = "${path.root}/../../artifacts/lambdas/metric-service.zip"
   name_prefix                  = local.name_prefix

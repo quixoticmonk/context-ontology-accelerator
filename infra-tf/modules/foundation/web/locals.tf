@@ -85,7 +85,7 @@ locals {
     ]),
   ))
 
-  content_security_policy = join("; ", [
+  content_security_policy = var.content_security_policy != "" ? var.content_security_policy : join("; ", [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",

@@ -62,8 +62,14 @@ locals {
   # vars are merged on top at each aws_lambda_function.
   common_env = merge(
     {
-      NEPTUNE_ENDPOINT    = "https://${var.neptune_endpoint}:8182"
-      NDB_GRAPH_URI_BASE  = "https://ontology-workbench.local"
+      NEPTUNE_ENDPOINT = "https://${var.neptune_endpoint}:8182"
+      # Same base URI serve reads from. Both writers (this module,
+      # ontology-engine) and readers (serve) must resolve to the same
+      # value or metric writes and reads see different named graphs —
+      # the CDK DEFAULT_GRAPH_URI_BASE consolidation. Sourced from
+      # local.brand_env at the root so a single change flows to every
+      # module that reads GRAPH_BASE_URI.
+      NDB_GRAPH_URI_BASE  = var.brand_env.GRAPH_BASE_URI
       OPENSEARCH_ENDPOINT = var.opensearch_endpoint
       OSS_INDEX_PREFIX    = var.opensearch_collection_name
       BEDROCK_MODEL_ID    = var.bedrock_embed_model_id

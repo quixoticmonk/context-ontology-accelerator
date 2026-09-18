@@ -18,6 +18,11 @@ variable "bedrock_embed_model_id" {
   default     = "us.cohere.embed-v4:0"
 }
 
+variable "brand_env" {
+  description = "Brand-specific env map (GRAPH_BASE_URI + EVENT_SOURCE_PREFIX). GRAPH_BASE_URI feeds NDB_GRAPH_URI_BASE on both Lambdas so metric writes land on the same named-graph base URI that serve reads from — the CDK DEFAULT_GRAPH_URI_BASE consolidation. EVENT_SOURCE_PREFIX is accepted for symmetry with peer modules; metric-service does not currently emit EventBridge events."
+  type        = map(string)
+}
+
 variable "component" {
   description = "Component tag applied to every resource in this module."
   type        = string

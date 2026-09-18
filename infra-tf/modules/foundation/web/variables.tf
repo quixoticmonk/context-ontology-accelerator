@@ -101,6 +101,12 @@ variable "cognito_hosted_ui_origin" {
   default     = ""
 }
 
+variable "content_security_policy" {
+  description = "Optional full-override Content-Security-Policy header value. When set (non-empty), the derived CSP is skipped entirely and this string is served as-is on the SPA's index response — matches the CDK's `content_security_policy` context knob, which existed so operators could extend the policy without patching source. Empty string keeps the derived policy in locals.tf."
+  type        = string
+  default     = ""
+}
+
 variable "api_cors_patch_zip_path" {
   description = "Path to the built api-cors-patch Lambda zip. Required if `api_rest_api_id` is set."
   type        = string

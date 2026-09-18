@@ -26,6 +26,15 @@ locals {
     var.resource_prefix,
   )
 
+  # Brand env: shared with stack 50-agentcore's serve wiring. Emitted
+  # here so the metric-service (writer) and serve (reader in
+  # 50-agentcore) resolve to the same named-graph base URI — CDK's
+  # DEFAULT_GRAPH_URI_BASE consolidation.
+  brand_env = {
+    GRAPH_BASE_URI      = var.graph_base_uri
+    EVENT_SOURCE_PREFIX = local.event_source_prefix
+  }
+
   # sources table name is derived by convention — sources stack has not
   # applied at this point in the sequence, so we cannot read from SSM.
   sources_table_name_by_convention = "${local.name_prefix}-sources"
