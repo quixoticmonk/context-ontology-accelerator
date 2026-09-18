@@ -3,9 +3,10 @@
 #
 # Reload Lambda code bundle for the VKG module.
 #
-# Source: infra/lambda/vkg-reload/index.py. The handler imports only the
-# stdlib plus boto3 (provided by the Lambda Python 3.12 runtime), so there
-# are NO pip dependencies to install — the zip is just index.py.
+# Source: infra-tf/modules/services/vkg/lambdas/reload/index.py, vendored
+# into this module. The handler imports only the stdlib plus boto3
+# (provided by the Lambda Python 3.12 runtime), so there are NO pip
+# dependencies to install — the zip is just index.py.
 #
 # Output: infra-tf/artifacts/lambdas/vkg-reload.zip
 #
@@ -21,7 +22,9 @@ REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../../../../../..)
 ARTIFACTS := $(REPO_ROOT)/infra-tf/artifacts/lambdas
 OUT_DIR   := $(ARTIFACTS)/vkg-reload
 ZIP       := $(ARTIFACTS)/vkg-reload.zip
-SRC       := $(REPO_ROOT)/infra/lambda/vkg-reload/index.py
+# Vendored alongside this Makefile after CDK removal (was
+# $(REPO_ROOT)/infra/lambda/vkg-reload/index.py; that tree is gone).
+SRC       := $(REPO_ROOT)/infra-tf/modules/services/vkg/lambdas/reload/index.py
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build

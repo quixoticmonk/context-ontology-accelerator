@@ -55,10 +55,11 @@ resource "aws_ecs_task_definition" "this" {
   runtime_platform {
     # ARM64 across the module: matches the CDK task-def template
     # (which is also ARM64) AND matches the reload Lambda's
-    # `_register_task_definition()` in infra/lambda/vkg-reload/index.py,
-    # which hardcodes ARM64 for the per-namespace task defs it creates
-    # at runtime. Also matches the image Makefile's --platform linux/arm64.
-    # All three must agree, or ECS fails to start tasks with an
+    # `_register_task_definition()` in
+    # modules/services/vkg/lambdas/reload/index.py, which hardcodes
+    # ARM64 for the per-namespace task defs it creates at runtime. Also
+    # matches the image Makefile's --platform linux/arm64. All three
+    # must agree, or ECS fails to start tasks with an
     # architecture-mismatch error.
     cpu_architecture        = "ARM64"
     operating_system_family = "LINUX"
@@ -160,6 +161,15 @@ resource "aws_lambda_function" "reload" {
       PRIVATE_SUBNET_IDS     = join(",", var.private_subnet_ids)
       ECS_SECURITY_GROUP_ID  = var.ecs_security_group_id
       VKG_IMAGE_PARAM_NAME   = aws_ssm_parameter.container_image.name
+      # Per-namespace task sizing + Ontop heap. The reload handler reads
+      # these to size the ECS task definitions it registers at runtime,
+      # keeping per-namespace VKG tasks in lockstep with the CDK-style
+      # task-def template above (#149 causes B/C). Sourced from the same
+      # module inputs and local.ontop_java_args the template uses, so a
+      # single change flows to both paths.
+      VKG_TASK_CPU        = tostring(var.cpu)
+      VKG_TASK_MEMORY     = tostring(var.memory_limit_mib)
+      VKG_ONTOP_JAVA_ARGS = local.ontop_java_args
     }
   }
 
