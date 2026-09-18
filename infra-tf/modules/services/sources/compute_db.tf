@@ -166,7 +166,13 @@ resource "aws_ecs_task_definition" "db_enrichment" {
       # back to us-east-1 and Bedrock calls target the wrong region.
       { name = "AWS_DEFAULT_REGION", value = var.region },
       { name = "BEDROCK_REGION", value = var.region },
-      { name = "GUARDRAIL_SSM_PARAM", value = "${var.ssm_prefix}/bedrock/guardrail-id" },
+      # Without this the enrichment task's Bedrock calls run UNGUARDED —
+      # table_enricher._resolve_guardrail_id() reads this param name to
+      # look up the guardrail id. Same param the doc pipeline reads
+      # (#111 AC5). The `retrieval-guardrail-id` SSM parameter is created
+      # by modules/foundation/guardrail alongside the older
+      # `guardrail-id` param.
+      { name = "GUARDRAIL_SSM_PARAM", value = "${var.ssm_prefix}/bedrock/retrieval-guardrail-id" },
       { name = "BEDROCK_CHAT_MODEL_ID", value = var.bedrock_chat_model_id },
     ]
   }])

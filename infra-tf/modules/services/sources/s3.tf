@@ -151,10 +151,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "sources_data" {
 resource "aws_s3_bucket_cors_configuration" "sources_data" {
   bucket = aws_s3_bucket.sources_data.id
 
+  # See modules/foundation/storage/s3.tf ontology_artifacts CORS for the
+  # rationale — allow-all headers is required for the browser to receive
+  # the CORS response on a presigned PUT preflight; document uploads to
+  # <ns>/raw/* otherwise fail as an opaque "Failed to fetch" in the UI.
   cors_rule {
     allowed_methods = ["PUT"]
     allowed_origins = [var.allowed_origin]
-    allowed_headers = ["Content-Type"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag", "Content-Length", "Content-Type"]
     max_age_seconds = 3600
   }
 }

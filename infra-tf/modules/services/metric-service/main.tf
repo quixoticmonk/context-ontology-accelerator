@@ -199,10 +199,15 @@ resource "aws_s3_bucket_logging" "osi" {
 resource "aws_s3_bucket_cors_configuration" "osi" {
   bucket = aws_s3_bucket.osi.id
 
+  # See modules/foundation/storage/s3.tf ontology_artifacts CORS for the
+  # rationale — allow-all headers is required for the browser to receive
+  # the CORS response on a presigned PUT preflight; without it OSI import
+  # fails as an opaque "Failed to fetch" in the UI.
   cors_rule {
-    allowed_headers = ["Content-Type"]
+    allowed_headers = ["*"]
     allowed_methods = ["PUT", "GET"]
     allowed_origins = [var.allowed_origin]
+    expose_headers  = ["ETag", "Content-Length", "Content-Type"]
     max_age_seconds = 3600
   }
 }

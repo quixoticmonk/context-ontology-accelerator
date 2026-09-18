@@ -69,9 +69,20 @@ locals {
     local.api_origin == null ? ["https:"] : [],
   ))
 
+  # Hosted-UI domain is a DIFFERENT host from the issuer (`cognito_origin`)
+  # and is where OIDC silent-renew iframes point. Allowlisting only the
+  # issuer blocks `automaticSilentRenew: true` — the iframe loads
+  # `<prefix>.auth.<region>.amazoncognito.com/oauth2/authorize`, which the
+  # browser then refuses (#130). Both entries stay in the list so silent
+  # renew works whether the app uses the issuer's discovery-doc endpoint or
+  # the hosted-UI authorize endpoint directly.
   frame_src = distinct(concat(
     ["'self'"],
-    compact([local.auth_origin, local.cognito_origin]),
+    compact([
+      local.auth_origin,
+      local.cognito_origin,
+      var.cognito_hosted_ui_origin != "" ? var.cognito_hosted_ui_origin : null,
+    ]),
   ))
 
   content_security_policy = join("; ", [

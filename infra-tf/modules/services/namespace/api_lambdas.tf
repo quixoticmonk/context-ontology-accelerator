@@ -187,11 +187,20 @@ data "aws_iam_policy_document" "namespace_api_policy" {
     resources = [aws_sfn_state_machine.namespace_deletion.arn]
   }
 
-  # VKG health resolution (ecs:DescribeServices scoped by ecs:cluster).
+  # Read-time VKG health resolution (GetNamespace -> resolve_vkg_health)
+  # calls ecs:DescribeServices, then ecs:ListTasks + ecs:DescribeTasks to
+  # read the container's functional-probe healthStatus (a running task is
+  # not necessarily able to translate — #170). All scoped to the VKG
+  # cluster via the ecs:cluster condition, mirroring the deletion pipeline
+  # grant.
   dynamic "statement" {
     for_each = var.vkg_cluster_arn != null ? [1] : []
     content {
-      actions   = ["ecs:DescribeServices"]
+      actions = [
+        "ecs:DescribeServices",
+        "ecs:ListTasks",
+        "ecs:DescribeTasks",
+      ]
       resources = ["*"]
 
       condition {

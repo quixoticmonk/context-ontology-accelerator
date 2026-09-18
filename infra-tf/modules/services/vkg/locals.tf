@@ -35,6 +35,17 @@ locals {
   #    vkg-{ns}.<namespace>:port) ──────────────────────────────────────
   vkg_endpoint = "http://vkg.${var.service_namespace_name}:${var.container_port}"
 
+  # ── Ontop JVM args ─────────────────────────────────────────────────
+  # The Ontop launcher reads ONTOP_JAVA_ARGS (NOT JAVA_OPTS — see
+  # packages/vkg/entrypoint.sh; #149 cause C). When not overridden,
+  # derive the heap from memory_limit_mib so bumping memory alone scales
+  # the heap in step, leaving headroom for the JVM, H2, and the Python
+  # facade. Floors of 512m/256m match the CDK derivation.
+  ontop_java_args = coalesce(
+    var.ontop_java_args,
+    "-Xmx${max(512, floor(var.memory_limit_mib * 3 / 4))}m -Xms${max(256, floor(var.memory_limit_mib / 4))}m",
+  )
+
   # ── Common tags ────────────────────────────────────────────────────
   tags = {
     Component = var.component

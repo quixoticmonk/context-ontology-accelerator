@@ -192,10 +192,18 @@ resource "aws_s3_bucket" "ontology_artifacts" {
 resource "aws_s3_bucket_cors_configuration" "ontology_artifacts" {
   bucket = aws_s3_bucket.ontology_artifacts.id
 
+  # allowed_headers must be "*": the browser preflights every presigned
+  # fetch and S3 only echoes Access-Control-Allow-Origin when every
+  # requested header is allowed. Restricting to Content-Type made the
+  # proposal-artifact GET fail as an opaque "CORS error" in the UI even
+  # though the object itself was reachable (reproduced on a v0.3.1
+  # ap-northeast-1 deploy loading an induction proposal). exposed_headers
+  # lets the fetch read ETag/Content-Length/Content-Type off the response.
   cors_rule {
-    allowed_headers = ["Content-Type"]
+    allowed_headers = ["*"]
     allowed_methods = ["GET", "HEAD", "PUT"]
     allowed_origins = [var.allowed_origin]
+    expose_headers  = ["ETag", "Content-Length", "Content-Type"]
     max_age_seconds = 3600
   }
 }

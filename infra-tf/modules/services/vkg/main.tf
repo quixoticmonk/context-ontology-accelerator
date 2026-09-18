@@ -74,7 +74,10 @@ resource "aws_ecs_task_definition" "this" {
         { name = "ONTOLOGY_BUCKET", value = var.ontology_bucket_name },
         { name = "ONTOLOGY_PREFIX", value = "ontologies/" },
         { name = "ENDPOINT_PORT", value = tostring(var.container_port) },
-        { name = "JAVA_OPTS", value = "-Xmx1024m -Xms512m" },
+        # ONTOP_JAVA_ARGS, NOT JAVA_OPTS — the Ontop launcher ignores
+        # JAVA_OPTS entirely (#149 cause C). Derived in locals.tf from
+        # memory_limit_mib so raising memory alone scales the heap.
+        { name = "ONTOP_JAVA_ARGS", value = local.ontop_java_args },
       ]
 
       portMappings = [

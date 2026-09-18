@@ -795,7 +795,7 @@ data "aws_iam_policy_document" "db_enrichment_task" {
     sid     = "GuardrailIdSsm"
     actions = ["ssm:GetParameter"]
     resources = [
-      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/bedrock/guardrail-id",
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/bedrock/retrieval-guardrail-id",
     ]
   }
 
