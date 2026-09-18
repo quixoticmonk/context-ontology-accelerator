@@ -63,7 +63,12 @@ resource "aws_lambda_function" "db_connector" {
       MAX_TABLES_PER_SOURCE      = "10000"
       ATHENA_SPILL_BUCKET        = var.athena_spill_bucket_name
       RESOURCE_PREFIX            = "${var.name_prefix}-"
-      LF_GRANTOR_ROLE_ARN        = aws_iam_role.federation_provisioner.arn
+      # Re-scan backup blob (pre-rescan asset forms + change-set) is
+      # written here before a merge overwrites live assets, and read
+      # back by the bulk-review worker on approve/reject. Same bucket
+      # as the API/worker.
+      BUCKET_NAME         = aws_s3_bucket.sources_data.bucket
+      LF_GRANTOR_ROLE_ARN = aws_iam_role.federation_provisioner.arn
       # CONSUMER_QUERY_ROLE_ARN wired in sub-turn 4 when the serve
       # module's SSM param is guaranteed present at deploy order.
     }
@@ -260,12 +265,20 @@ resource "aws_lambda_function" "bulk_review_worker" {
 
   environment {
     variables = {
-      SOURCES_TABLE           = aws_dynamodb_table.sources.name
+      SOURCES_TABLE = aws_dynamodb_table.sources.name
+      # Scan-history store — the worker appends a REVIEW audit row here
+      # on each terminal approve/reject so the console shows real
+      # history.
+      SOURCE_SCAN_JOBS_TABLE  = aws_dynamodb_table.source_scan_jobs.name
       NAMESPACES_TABLE        = var.namespaces_table_name
       SMUS_DOMAIN_ID          = var.smus_domain_id
       PROJECT_ACCESS_ROLE_ARN = var.smus_project_access_role_arn
       BULK_REVIEW_PARALLELISM = "10"
       REVIEW_QUEUE_URL        = aws_sqs_queue.bulk_review.url
+      # Re-scan finalize: the worker reads the pre-rescan backup blob
+      # to delete removed items (approve) or restore the pre-rescan
+      # state (reject). Same bucket discovery wrote the backup to.
+      BUCKET_NAME = aws_s3_bucket.sources_data.bucket
     }
   }
 

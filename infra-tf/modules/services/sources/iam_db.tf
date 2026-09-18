@@ -990,6 +990,21 @@ data "aws_iam_policy_document" "bulk_review_worker" {
     ]
   }
 
+  # Scan-history audit: on each terminal approve/reject the worker
+  # appends a REVIEW row to source-scan-jobs so the console's Scan
+  # History tab shows real events.
+  statement {
+    sid = "SourceScanJobsTableAccess"
+    actions = [
+      "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+      "dynamodb:Query", "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      aws_dynamodb_table.source_scan_jobs.arn,
+      "${aws_dynamodb_table.source_scan_jobs.arn}/index/*",
+    ]
+  }
+
   statement {
     sid       = "NamespacesRead"
     actions   = ["dynamodb:GetItem", "dynamodb:Query"]
@@ -1013,6 +1028,26 @@ data "aws_iam_policy_document" "bulk_review_worker" {
       "sqs:SendMessage",
     ]
     resources = [aws_sqs_queue.bulk_review.arn]
+  }
+
+  # Re-scan finalize reads/writes the pre-rescan backup blob (delete
+  # removed on approve; restore modified + delete added on reject).
+  # Object-level R/W plus bucket-level ListBucket so the read helper's
+  # "absent backup blob = normal state" branch can distinguish
+  # NoSuchKey from AccessDenied — a no-drift re-scan writes no backup
+  # yet still lands the source in RESCAN_REVIEW.
+  statement {
+    sid = "SourcesBucketRescanBackup"
+    actions = [
+      "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+    ]
+    resources = ["${aws_s3_bucket.sources_data.arn}/*"]
+  }
+
+  statement {
+    sid       = "SourcesBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.sources_data.arn]
   }
 }
 

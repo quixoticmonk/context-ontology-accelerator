@@ -10,21 +10,26 @@ locals {
     "/namespaces/{namespaceId}"        = local.namespace_api_fn_arn
     "/namespaces/{namespaceId}/status" = local.namespace_api_fn_arn
 
-    "/namespaces/{namespaceId}/sources"                                                           = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}"                                                = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/rescan"                                         = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/tables"                                         = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}"                               = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/approve"                                        = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/reject"                                         = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/review"                        = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/metadata"                      = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/keys"                          = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources"                                      = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}"                           = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/rescan"                    = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables"                    = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}"          = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/approve"                   = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/reject"                    = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/review"   = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/metadata" = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/keys"     = local.sources_fn_arn
+    # Re-scan: keep (decline) a table/column the re-scan flagged as removed.
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/keep"                          = local.sources_fn_arn
     "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/columns/{columnName}/review"   = local.sources_fn_arn
     "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/columns/{columnName}/metadata" = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}"                                   = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/metadata"                                       = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/upload-urls"                                               = local.sources_fn_arn
+    # Scan history: list a source's scan + steward-review events. Without an
+    # entry here the route falls back to the not-implemented stub (501).
+    "/namespaces/{namespaceId}/sources/{sourceId}/scan"         = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}" = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/metadata"     = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/upload-urls"             = local.sources_fn_arn
 
     "/roles"                                     = local.namespace_platform_fn_arn
     "/namespaces/{namespaceId}/roles"            = local.namespace_roles_fn_arn

@@ -169,7 +169,13 @@ locals {
             FunctionName = aws_lambda_function.db_connector.arn
             "Payload.$"  = "$"
           }
-          ResultSelector = { "discoveryResult.$" = "$.Payload" }
+          # Keep the Lambda envelope's `Payload` key intact under
+          # $.discoveryResult so downstream states can read
+          # $.discoveryResult.Payload.<field> — mirrors CDK exactly and
+          # what the rescan routing on DbEnrichment expects. Renaming
+          # the key would silently break that JSONPath and fail every
+          # re-scan the moment application code lands.
+          ResultSelector = { "Payload.$" = "$.Payload" }
           ResultPath     = "$.discoveryResult"
           Retry = [{
             ErrorEquals     = ["Lambda.TooManyRequestsException", "Lambda.SdkClientException"]
@@ -221,6 +227,22 @@ locals {
                   { Name = "SCAN_JOB_SK", "Value.$" = "$.scanJobSK" },
                   { Name = "NAMESPACE_ID", "Value.$" = "$.namespaceId" },
                   { Name = "SCAN_TYPE", "Value.$" = "$.scanType" },
+                  # Re-scan marker (string "true"/"false", always
+                  # present in the execution input via the trigger).
+                  # Routes the terminal source status to RESCAN_REVIEW
+                  # when a re-scan of an approved source completes,
+                  # instead of PENDING_REVIEW.
+                  { Name = "IS_RESCAN", "Value.$" = "$.isRescan" },
+                  # No-drift signal from discovery (string "true"/
+                  # "false", always present in its result). When a
+                  # re-scan reports "false" — no drift and no carried-
+                  # forward orphaned tables — enrichment returns the
+                  # source straight to APPROVED instead of parking it
+                  # in RESCAN_REVIEW. Path matches CDK's:
+                  # DbDiscovery's ResultSelector keeps the Payload key
+                  # intact so reviewNeeded lives at
+                  # $.discoveryResult.Payload.reviewNeeded.
+                  { Name = "RESCAN_REVIEW_NEEDED", "Value.$" = "$.discoveryResult.Payload.reviewNeeded" },
                 ]
               }]
             }

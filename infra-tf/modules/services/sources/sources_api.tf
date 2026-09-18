@@ -148,6 +148,38 @@ data "aws_iam_policy_document" "sources_api" {
     resources = ["${aws_s3_bucket.sources_data.arn}/*/raw/*"]
   }
 
+  # Re-scan backup blob: the tables API reads the pre-rescan pre-image
+  # to render the old-vs-new diff panel and the removed-item sets
+  # under RESCAN_REVIEW, and rewrites it when a steward keeps a
+  # flagged removal. Without GetObject here the diff read fails closed
+  # (rescan_diff_backup_read_failed) and the diff panel never renders.
+  statement {
+    sid       = "RescanBackupReadWrite"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.sources_data.arn}/*/rescan-backup/*"]
+  }
+
+  # S3 reports a missing key as NoSuchKey only to a caller that also
+  # holds ListBucket on the bucket; without it, GetObject on an absent
+  # key returns AccessDenied instead. An absent backup blob is a
+  # NORMAL state — a re-scan that finds no drift writes none, yet
+  # still lands the source in RESCAN_REVIEW — so the read helper's
+  # absent-key branch has to be able to fire. Lacking this grant, that
+  # branch is unreachable in a deployed environment and the tables
+  # page 500s for every no-drift re-scan.
+  #
+  # Scoped to the bucket ARN with no s3:prefix condition: the
+  # condition governs ListObjects calls, and GetObject's 403-vs-404
+  # choice is not guaranteed to honour it, so a prefix-scoped grant
+  # risks looking like a fix while leaving the 500 in place. The grant
+  # conveys only "may list this bucket", which the two other roles
+  # touching this bucket already hold.
+  statement {
+    sid       = "SourcesBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.sources_data.arn]
+  }
+
   # Namespace-binding check for JDBC credential secrets at registration.
   # Metadata only — deliberately NOT GetSecretValue. The API reads the
   # secret's TAGS to require a `{prefix}:namespace` tag listing the
