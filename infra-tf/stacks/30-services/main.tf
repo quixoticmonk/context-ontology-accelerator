@@ -99,6 +99,12 @@ resource "aws_ssm_parameter" "metric_import_worker_fn_arn" {
   value = module.metric_service.import_worker_fn_arn
 }
 
+resource "aws_ssm_parameter" "metric_import_dlq_recovery_fn_arn" {
+  name  = "${local.ssm_prefix}/metric/import-dlq-recovery-fn-arn"
+  type  = "String"
+  value = module.metric_service.import_dlq_recovery_fn_arn
+}
+
 resource "aws_ssm_parameter" "metric_import_dlq_arn" {
   name  = "${local.ssm_prefix}/metric/import-dlq-arn"
   type  = "String"

@@ -24,6 +24,7 @@ locals {
     data.aws_ssm_parameter.sources_federation_provisioner_fn_arn.value,
     data.aws_ssm_parameter.metric_api_fn_arn.value,
     data.aws_ssm_parameter.metric_import_worker_fn_arn.value,
+    data.aws_ssm_parameter.metric_import_dlq_recovery_fn_arn.value,
     data.aws_ssm_parameter.aoss_proxy_fn_arn.value,
   ]
 
@@ -40,6 +41,7 @@ data "aws_ssm_parameter" "sources_doc_trigger_fn_arn" { name = "${local.ssm_pref
 data "aws_ssm_parameter" "sources_federation_provisioner_fn_arn" { name = "${local.ssm_prefix}/sources/federation-provisioner-fn-arn" }
 data "aws_ssm_parameter" "metric_api_fn_arn" { name = "${local.ssm_prefix}/metric/api-fn-arn" }
 data "aws_ssm_parameter" "metric_import_worker_fn_arn" { name = "${local.ssm_prefix}/metric/import-worker-fn-arn" }
+data "aws_ssm_parameter" "metric_import_dlq_recovery_fn_arn" { name = "${local.ssm_prefix}/metric/import-dlq-recovery-fn-arn" }
 data "aws_ssm_parameter" "aoss_proxy_fn_arn" { name = "${local.ssm_prefix}/serve/aoss-proxy-fn-arn" }
 
 data "aws_ssm_parameter" "sources_db_scan_state_machine_arn" { name = "${local.ssm_prefix}/sources/db-scan-state-machine-arn" }

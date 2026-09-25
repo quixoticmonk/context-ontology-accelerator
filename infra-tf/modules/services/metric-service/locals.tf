@@ -10,8 +10,9 @@ locals {
   osi_logs_bucket_name   = "${var.name_prefix}-metric-logs-${data.aws_caller_identity.current.account_id}"
 
   # ── Lambda function names ─────────────────────────────────────────
-  fn_metric_api    = "${var.name_prefix}-metric-api"
-  fn_import_worker = "${var.name_prefix}-metric-import-worker"
+  fn_metric_api          = "${var.name_prefix}-metric-api"
+  fn_import_worker       = "${var.name_prefix}-metric-import-worker"
+  fn_import_dlq_recovery = "${var.name_prefix}-metric-import-dlq-recovery"
 
   # ── Common tags ────────────────────────────────────────────────────
   tags = {
@@ -96,6 +97,9 @@ locals {
     {
       IMPORT_QUEUE_URL  = aws_sqs_queue.import.url
       IMPORT_JOBS_TABLE = aws_dynamodb_table.import_jobs.name
+      # Longer than the 15-minute worker timeout, so a timed-out owner
+      # cannot overlap Neptune writes with a retrying delivery.
+      IMPORT_OFFSET_LEASE_SECONDS = "960"
     },
   )
 }

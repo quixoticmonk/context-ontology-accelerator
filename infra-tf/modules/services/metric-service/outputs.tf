@@ -35,3 +35,8 @@ output "import_worker_fn_arn" {
   description = "Import worker Lambda function ARN."
   value       = aws_lambda_function.import_worker.arn
 }
+
+output "import_dlq_recovery_fn_arn" {
+  description = "Import DLQ recovery Lambda function ARN. Triggered off the metric-import DLQ; deliberately out-of-VPC (see api_lambdas.tf section header)."
+  value       = aws_lambda_function.import_dlq_recovery.arn
+}

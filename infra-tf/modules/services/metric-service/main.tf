@@ -55,13 +55,17 @@ resource "aws_dynamodb_table" "import_jobs" {
 # ═════════════════════════════════════════════════════════════════════
 #  SQS — import queue + DLQ
 # ═════════════════════════════════════════════════════════════════════
-# DLQ: 14-day retention, SQS-managed SSE. Queue: 15-minute visibility
-# timeout (matches worker timeout), 4-day retention, redrive to DLQ
-# after 3 receives. Matches CDK ImportQueue / ImportDLQ.
+# DLQ: 14-day retention, SQS-managed SSE, 3-minute visibility timeout
+# (Lambda-with-SQS guidance requires ≥ 6× the 30-second recovery
+# handler timeout so the DLQ recovery Lambda cannot get a concurrent
+# delivery while throttled). Queue: 15-minute visibility timeout
+# (matches the import worker's timeout), 4-day retention, redrive to
+# DLQ after 6 receives. Matches CDK ImportQueue / ImportDLQ.
 resource "aws_sqs_queue" "import_dlq" {
-  name                      = local.import_dlq_name
-  message_retention_seconds = 1209600 # 14 days
-  sqs_managed_sse_enabled   = true
+  name                       = local.import_dlq_name
+  message_retention_seconds  = 1209600 # 14 days
+  visibility_timeout_seconds = 180     # 3 minutes — see DLQ recovery Lambda comment
+  sqs_managed_sse_enabled    = true
 
   tags = local.tags
 }
@@ -74,7 +78,7 @@ resource "aws_sqs_queue" "import" {
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.import_dlq.arn
-    maxReceiveCount     = 3
+    maxReceiveCount     = 6
   })
 
   tags = local.tags

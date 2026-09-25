@@ -215,11 +215,21 @@ data "aws_iam_policy_document" "import_worker_policy" {
     resources = local.bedrock_invoke_resources
   }
 
-  # S3: read staged OSI objects
+  # S3: scoped access to namespace-scoped import sources and checkpoints.
+  # The prior grant was bucket-wide read; that was tightened when the
+  # DLQ recovery Lambda landed (CDK metric-service-stack.ts). The
+  # /imports/* prefix is retained for in-flight legacy jobs whose source
+  # keys predate the dedicated imports/jobs sub-prefix.
   statement {
-    sid       = "OsiObjectRead"
-    actions   = ["s3:GetObject", "s3:ListBucket"]
-    resources = [aws_s3_bucket.osi.arn, "${aws_s3_bucket.osi.arn}/*"]
+    sid       = "OsiImportSourceRead"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${aws_s3_bucket.osi.arn}/*/imports/*"]
+  }
+
+  statement {
+    sid       = "OsiImportCheckpointWrite"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.osi.arn}/*/imports/checkpoints/*"]
   }
 
   # SMUS catalog: read-only on sources + namespaces tables
@@ -320,5 +330,108 @@ resource "aws_lambda_function" "import_worker" {
 resource "aws_lambda_event_source_mapping" "import_worker" {
   event_source_arn = aws_sqs_queue.import.arn
   function_name    = aws_lambda_function.import_worker.arn
+  batch_size       = 1
+}
+
+# ═════════════════════════════════════════════════════════════════════
+#  3. Import DLQ Recovery Lambda
+# ═════════════════════════════════════════════════════════════════════
+#
+# Triggered off the metric-import DLQ (batch size 1). Reads the failed
+# job's state from the ImportJobs table, decides whether to redrive
+# (re-enqueue on the import queue after a delay) or leave it terminal,
+# and updates the job accordingly.
+#
+# DELIBERATELY OUT OF VPC — matches CDK ImportDlqRecoveryFn. This Lambda
+# only calls SQS + DynamoDB, and it must NOT share the import worker's
+# ENI cold-start failure mode (that failure is exactly the class of
+# events the DLQ collects). Placing recovery in the same VPC as the
+# worker would tie the recovery path's availability to the worker's,
+# which defeats the recovery path.
+
+resource "aws_iam_role" "import_dlq_recovery" {
+  name               = "${local.fn_import_dlq_recovery}-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+  tags               = local.tags
+}
+
+# Basic execution role only — no AWSLambdaVPCAccessExecutionRole, since
+# this Lambda has no vpc_config. Logs still go to CloudWatch via the
+# AWSLambdaBasicExecutionRole managed policy.
+data "aws_iam_policy" "lambda_basic" {
+  arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "import_dlq_recovery_basic" {
+  role       = aws_iam_role.import_dlq_recovery.name
+  policy_arn = data.aws_iam_policy.lambda_basic.arn
+}
+
+data "aws_iam_policy_document" "import_dlq_recovery_policy" {
+  # Read the failed job's row and update its status (no GSI reads).
+  statement {
+    sid       = "ImportJobsUpdate"
+    actions   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.import_jobs.arn]
+  }
+
+  # Redrive: put the message back on the primary import queue with a
+  # delay (IMPORT_REDRIVE_DELAY_SECONDS).
+  statement {
+    sid       = "ImportQueueRedrive"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.import.arn]
+  }
+
+  # Consume actions on the DLQ event source (poller-side).
+  statement {
+    sid = "ImportDlqConsume"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:GetQueueUrl",
+    ]
+    resources = [aws_sqs_queue.import_dlq.arn]
+  }
+}
+
+resource "aws_iam_policy" "import_dlq_recovery" {
+  name   = "${local.fn_import_dlq_recovery}-policy"
+  policy = data.aws_iam_policy_document.import_dlq_recovery_policy.json
+  tags   = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "import_dlq_recovery" {
+  role       = aws_iam_role.import_dlq_recovery.name
+  policy_arn = aws_iam_policy.import_dlq_recovery.arn
+}
+
+resource "aws_lambda_function" "import_dlq_recovery" {
+  function_name    = local.fn_import_dlq_recovery
+  role             = aws_iam_role.import_dlq_recovery.arn
+  runtime          = "python3.12"
+  handler          = "coa_metrics.api.import_dlq_handler.handler"
+  filename         = var.metric_service_zip_path
+  source_code_hash = local.lambda_zip_hash
+  timeout          = 30
+  memory_size      = 256
+
+  # No vpc_config — see the section header above for why.
+
+  environment {
+    variables = {
+      IMPORT_QUEUE_URL             = aws_sqs_queue.import.url
+      IMPORT_JOBS_TABLE            = aws_dynamodb_table.import_jobs.name
+      IMPORT_REDRIVE_DELAY_SECONDS = "60"
+    }
+  }
+
+  tags = local.tags
+}
+
+resource "aws_lambda_event_source_mapping" "import_dlq_recovery" {
+  event_source_arn = aws_sqs_queue.import_dlq.arn
+  function_name    = aws_lambda_function.import_dlq_recovery.arn
   batch_size       = 1
 }
