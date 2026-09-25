@@ -357,6 +357,29 @@ hosted_zone_id      = "Z0123456789ABCDEFGHIJ"
 !!! warning "Multi-region deployments"
     S3 buckets and IAM roles are globally scoped, not region-isolated. Deploying the same `resource_prefix` + `env` to a second region **will collide** with an existing deployment. Use a distinct `resource_prefix` per region (e.g., `coa-w2` for `us-west-2`) — do not rely on region alone to disambiguate.
 
+#### Tier-1 metric execution timeout
+
+Tier 1 executes the curated SQL attached to a matched metric. Each statement has an
+explicit **35-second** timeout by default, rather than inheriting a database
+client's shorter method default. Increase it when valid metric queries over a
+large warehouse consistently time out.
+
+The serve container's `TIER1_METRIC_TIMEOUT_S` env var is set in
+`infra-tf/modules/services/serve/locals.tf` (see the `RESOLVE_TIMEOUT_S` neighbour
+for the same pattern). The Terraform equivalent of the CDK context knob is to
+override it directly:
+
+```hcl
+# infra-tf/shared.tfvars — raise the Tier-1 metric budget to 75 seconds
+tier1_metric_timeout_s = "75"
+```
+
+…and thread it through the serve module as an optional input if you need it
+per-deployment. The value must be an integer from **1 through 300 seconds**;
+values outside that range fall back to the default rather than erroring, and any
+increase materially above ~60 s is worth reviewing against Neptune / warehouse
+read budgets that the resolver runs against downstream.
+
 #### Database scan enrichment timeout
 
 A database source scan runs an enrichment step (an ECS Fargate task that calls Bedrock once per discovered table). It is bounded by a deadline; when the deadline is hit the scan fails cleanly to `SCAN_FAILED` so the source can be deleted or re-scanned, rather than being stranded mid-scan. The default deadline is **120 minutes**, sized to comfortably cover a large source (roughly 2,000 tables at ~30–35 s per table with ten tables enriched in parallel).
