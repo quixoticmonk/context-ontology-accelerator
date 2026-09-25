@@ -55,7 +55,11 @@ locals {
     DEEP_REASONING_PER_TOOL_TIMEOUT_S  = "45"
     DEEP_REASONING_SYNTHESIS_RESERVE_S = "25"
     RESOLVE_TIMEOUT_S                  = "170"
-    ALLOW_NO_GUARDRAIL                 = var.env != "prod" ? "true" : "false"
+    # Tier-1 curated metrics execute synchronously. Keep their SQL budget
+    # explicit and operator-configurable instead of inheriting the
+    # CompositeQueryExecutor's 10-second method default.
+    TIER1_METRIC_TIMEOUT_S = "35"
+    ALLOW_NO_GUARDRAIL     = var.env != "prod" ? "true" : "false"
     # Reader path: matches the writers (metric-service NDB_GRAPH_URI_BASE,
     # ontology-engine neptune_db_graph). Serve reads these graphs, so a
     # reader-only override would match nothing — always derive from the
