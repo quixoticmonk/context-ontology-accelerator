@@ -16,6 +16,11 @@ output "connector_security_group_id" {
   value       = aws_security_group.connector.id
 }
 
+output "discovery_ocsp_security_group_id" {
+  description = "Snowflake discovery OCSP security group ID. Attached as a second SG on the sources-db-connector Lambda to allow port-80 OCSP egress WITHOUT granting it to every other Lambda on the shared lambda SG."
+  value       = aws_security_group.discovery_ocsp.id
+}
+
 output "ecs_security_group_id" {
   description = "ECS Fargate task security group ID."
   value       = aws_security_group.ecs.id

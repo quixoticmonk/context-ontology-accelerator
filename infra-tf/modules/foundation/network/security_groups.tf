@@ -307,3 +307,36 @@ resource "aws_vpc_security_group_egress_rule" "connector_ocsp" {
 
   tags = { Component = var.component }
 }
+
+# Dedicated OCSP egress SG for the direct-JDBC Snowflake discovery Lambda
+# (sources-db-connector). Its Snowflake driver runs port-80 OCSP revocation
+# checks against public responders, but the shared lambda SG must NOT carry
+# a blanket port-80 egress — every other platform Lambda calls only
+# private endpoints and would gain unnecessary internet exposure. So the
+# same peers as `connector_ocsp` land here on a distinct SG that the
+# sources module attaches as a SECOND SG on the discovery Lambda. Governed
+# by the same `connector_ocsp_egress` flag so both execution paths cannot
+# drift.
+resource "aws_security_group" "discovery_ocsp" {
+  name        = "${var.name_prefix}-discovery-ocsp-sg"
+  description = "Snowflake discovery OCSP egress security group"
+  vpc_id      = local.vpc_id
+
+  tags = {
+    Name      = "${var.name_prefix}-discovery-ocsp-sg"
+    Component = var.component
+  }
+}
+
+resource "aws_vpc_security_group_egress_rule" "discovery_ocsp" {
+  for_each = var.connector_ocsp_egress ? local.connector_https_egress : {}
+
+  security_group_id = aws_security_group.discovery_ocsp.id
+  cidr_ipv4         = each.value
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  description       = "Snowflake OCSP for direct discovery to ${each.value}"
+
+  tags = { Component = var.component }
+}

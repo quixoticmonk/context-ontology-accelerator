@@ -43,8 +43,11 @@ resource "aws_lambda_function" "db_connector" {
   memory_size      = 1024
 
   vpc_config {
-    subnet_ids         = var.private_subnet_ids
-    security_group_ids = [var.lambda_security_group_id]
+    subnet_ids = var.private_subnet_ids
+    # Dedicated OCSP SG (from network module) piggybacks on the shared
+    # lambda SG so the Snowflake driver can reach port-80 OCSP responders
+    # without leaking that egress path to every other platform Lambda.
+    security_group_ids = [var.lambda_security_group_id, var.discovery_ocsp_security_group_id]
   }
 
   dead_letter_config {

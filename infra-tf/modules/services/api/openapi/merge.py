@@ -17,8 +17,11 @@ Inputs:
 
 Merge semantics (matches CDK ApiStack):
   - path.method entries from both specs are combined; when a path
-    exists in both, entries at the method level are merged (data-layer
-    methods overlay control-plane's)
+    exists in both specs, methods from both are unioned. A path+method
+    defined by BOTH specs is a modelling error, not a conflict to
+    resolve silently — API Gateway takes one integration per path, so
+    a plain object spread would publish the losing operation's contract
+    in front of the winning operation's handler. Fail loudly instead.
   - components.schemas are combined
   - info.description is replaced with a static description
 """
@@ -39,15 +42,37 @@ def read_spec(path: Path, replacements: dict[str, str]) -> dict:
 
 
 def merge_specs(cp_spec: dict, dl_spec: dict) -> dict:
-    """Merge data-layer spec into control-plane. Data-layer wins on conflicts."""
+    """Merge data-layer spec into control-plane.
+
+    Fails with exit code 1 if both specs define the same path+method,
+    matching the CDK `mergeOpenApiPaths` guard: a shared path+method
+    resolves to a single API Gateway integration, so the losing
+    operation's contract would be published in front of the winning
+    operation's handler — an API whose documentation contradicts its
+    behaviour, with a green build. Give the duplicate its own path or
+    remove it from its service.
+    """
     merged = json.loads(json.dumps(cp_spec))  # deep copy
 
     merged.setdefault("paths", {})
     for path, methods in (dl_spec.get("paths") or {}).items():
-        if path in merged["paths"]:
-            merged["paths"][path] = {**merged["paths"][path], **methods}
-        else:
+        existing = merged["paths"].get(path)
+        if existing is None:
             merged["paths"][path] = methods
+            continue
+
+        clashes = sorted(m for m in methods if m in existing)
+        if clashes:
+            print(
+                f"OpenAPI merge conflict on \"{path}\": [{', '.join(clashes)}] "
+                "defined by both specs. A path+method resolves to a single "
+                "API Gateway integration, so give the duplicate operation "
+                "its own path or remove it from its service.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        merged["paths"][path] = {**existing, **methods}
 
     if "schemas" in (dl_spec.get("components") or {}):
         merged.setdefault("components", {}).setdefault("schemas", {}).update(

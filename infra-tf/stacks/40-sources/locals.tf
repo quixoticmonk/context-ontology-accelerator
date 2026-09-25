@@ -22,12 +22,13 @@ locals {
   allowed_origin        = local.custom_domain_enabled ? "https://${var.ui_domain_name}" : "*"
 
   # Network handoff
-  vpc_id                      = data.aws_ssm_parameter.vpc_id.value
-  private_subnet_ids          = nonsensitive(split(",", data.aws_ssm_parameter.private_subnet_ids.value))
-  lambda_security_group_id    = data.aws_ssm_parameter.lambda_security_group_id.value
-  ecs_security_group_id       = data.aws_ssm_parameter.ecs_security_group_id.value
-  aoss_security_group_id      = data.aws_ssm_parameter.aoss_security_group_id.value
-  connector_security_group_id = data.aws_ssm_parameter.connector_security_group_id.value
+  vpc_id                           = data.aws_ssm_parameter.vpc_id.value
+  private_subnet_ids               = nonsensitive(split(",", data.aws_ssm_parameter.private_subnet_ids.value))
+  lambda_security_group_id         = data.aws_ssm_parameter.lambda_security_group_id.value
+  ecs_security_group_id            = data.aws_ssm_parameter.ecs_security_group_id.value
+  aoss_security_group_id           = data.aws_ssm_parameter.aoss_security_group_id.value
+  connector_security_group_id      = data.aws_ssm_parameter.connector_security_group_id.value
+  discovery_ocsp_security_group_id = data.aws_ssm_parameter.discovery_ocsp_security_group_id.value
 
   # Storage handoff
   ontology_bucket_arn        = data.aws_ssm_parameter.ontology_bucket_arn.value
@@ -61,6 +62,7 @@ data "aws_ssm_parameter" "lambda_security_group_id" { name = "${local.ssm_prefix
 data "aws_ssm_parameter" "ecs_security_group_id" { name = "${local.ssm_prefix}/network/ecs-security-group-id" }
 data "aws_ssm_parameter" "aoss_security_group_id" { name = "${local.ssm_prefix}/network/aoss-security-group-id" }
 data "aws_ssm_parameter" "connector_security_group_id" { name = "${local.ssm_prefix}/network/connector-security-group-id" }
+data "aws_ssm_parameter" "discovery_ocsp_security_group_id" { name = "${local.ssm_prefix}/network/discovery-ocsp-security-group-id" }
 
 data "aws_ssm_parameter" "ontology_bucket_arn" { name = "${local.ssm_prefix}/storage/ontology-bucket-arn" }
 data "aws_ssm_parameter" "opensearch_collection_name" { name = "${local.ssm_prefix}/opensearch/collection-name" }
