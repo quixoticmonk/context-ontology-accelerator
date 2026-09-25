@@ -12,7 +12,6 @@ module "data_layer" {
   allowed_origin             = local.allowed_origin
   data_layer_zip_path        = "${path.root}/../../artifacts/lambdas/data-layer.zip"
   lambda_security_group_id   = local.lambda_security_group_id
-  metric_api_fn_arn          = local.metric_api_fn_arn
   name_prefix                = local.name_prefix
   namespaces_table_name      = local.namespaces_table_name
   ontology_engine_api_fn_arn = local.ontology_engine_api_fn_arn

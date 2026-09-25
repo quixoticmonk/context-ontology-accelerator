@@ -162,13 +162,24 @@ data "aws_iam_policy_document" "osi_logs" {
 }
 
 # OSI staging bucket. S3-managed SSE, public access blocked, TLS-only,
-# CORS for browser PUT/GET, 1-day expiration on uploaded/exported
-# files. Matches CDK OsiBucket.
+# CORS for browser PUT/GET, versioning enabled with 30-day retention on
+# current and noncurrent versions. Matches CDK OsiBucket. Versioning +
+# 30-day retention keeps pinned sources and checkpoints beyond the 4-day
+# source queue and 14-day DLQ recovery windows so an operator can replay
+# a failed import without re-uploading its source blob.
 resource "aws_s3_bucket" "osi" {
   bucket        = local.osi_bucket_name
   force_destroy = true
 
   tags = local.tags
+}
+
+resource "aws_s3_bucket_versioning" "osi" {
+  bucket = aws_s3_bucket.osi.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "osi" {
@@ -215,14 +226,25 @@ resource "aws_s3_bucket_cors_configuration" "osi" {
 resource "aws_s3_bucket_lifecycle_configuration" "osi" {
   bucket = aws_s3_bucket.osi.id
 
+  # aws_s3_bucket_lifecycle_configuration and aws_s3_bucket_versioning
+  # both touch the same S3 API surface; the provider recommends
+  # explicit ordering to avoid a race on eventual consistency.
+  depends_on = [aws_s3_bucket_versioning.osi]
+
   rule {
     id     = "expire-staging-objects"
     status = "Enabled"
 
     filter {}
 
+    # Keep pinned sources and checkpoints beyond the 4-day source queue
+    # and 14-day DLQ recovery windows.
     expiration {
-      days = 1
+      days = 30
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
     }
   }
 }

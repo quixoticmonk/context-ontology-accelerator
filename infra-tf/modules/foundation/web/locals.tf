@@ -49,9 +49,16 @@ locals {
   # boto3's default) and path-style are allowed. Without these, connect-src
   # blocks the presigned upload and OSI import via the UI fails with
   # "Failed to fetch" (issue 103).
+  #
+  # us-east-1 (and some boto3/botocore versions) presign S3 URLs against the
+  # legacy global host `<bucket>.s3.amazonaws.com`, which has no region segment
+  # and so matches neither regional form above. Allowlist it too, or the
+  # browser blocks the presigned proposal fetch (issue 211).
   s3_origins = [
     "https://*.s3.${local.region}.amazonaws.com",
     "https://s3.${local.region}.amazonaws.com",
+    "https://*.s3.amazonaws.com",
+    "https://s3.amazonaws.com",
   ]
 
   connect_src = distinct(concat(

@@ -23,12 +23,6 @@ variable "lambda_security_group_id" {
   type        = string
 }
 
-variable "metric_api_fn_arn" {
-  description = "Metric-service API Lambda ARN (from metric-service module). Data-layer proxies metric-catalog queries straight through to it, bypassing the Context Manager. Null skips both the env var and the invoke grant."
-  type        = string
-  default     = null
-}
-
 variable "name_prefix" {
   description = "Physical resource name prefix (resource_prefix-env)."
   type        = string

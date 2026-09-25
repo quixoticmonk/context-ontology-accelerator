@@ -5,8 +5,8 @@
 #
 # Provisions:
 #   - Data Layer API Lambda (thin adapter to Context Manager via the
-#     serve AgentCore Runtime, plus direct-through proxies to the
-#     ontology-engine and metric-service Lambdas)
+#     serve AgentCore Runtime, plus a direct-through proxy to the
+#     ontology-engine Lambda)
 #   - Per-function IAM execution role (VPC access + scoped invoke grants)
 #   - SSM parameter publishing the Lambda ARN for the API module
 #
@@ -50,7 +50,8 @@ resource "aws_iam_role_policy_attachment" "api_vpc" {
 #   - serve AgentCore Runtime: bedrock-agentcore:InvokeAgentRuntime on
 #     the runtime ARN plus a wildcard suffix (the real invocation
 #     targets runtime/{id}/runtime-endpoint/{qualifier}).
-#   - ontology + metric Lambdas: lambda:InvokeFunction, direct-through.
+#   - ontology-engine Lambda: lambda:InvokeFunction, direct-through
+#     schema queries that bypass the Context Manager.
 data "aws_iam_policy_document" "api_policy" {
   # Callers pass "" on the first pass (before 50-agentcore has applied),
   # so guard on non-empty too — an empty ARN produces "/*" which fails
@@ -69,7 +70,7 @@ data "aws_iam_policy_document" "api_policy" {
     for_each = length(local.invoke_lambda_arns) > 0 ? [1] : []
 
     content {
-      sid       = "InvokeDiscoveryLambdas"
+      sid       = "InvokeOntologyProxy"
       actions   = ["lambda:InvokeFunction"]
       resources = local.invoke_lambda_arns
     }

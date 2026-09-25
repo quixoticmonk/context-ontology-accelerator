@@ -21,8 +21,10 @@ locals {
   # Namespace handoff
   namespaces_table_name = data.aws_ssm_parameter.namespaces_table_name.value
 
-  # Stack-30 handoff (metric + ontology Lambda ARNs)
-  metric_api_fn_arn          = data.aws_ssm_parameter.metric_api_fn_arn.value
+  # Stack-30 handoff (ontology Lambda ARN). Metric-service used to be
+  # wired here too, but the data-layer handler now serves metric-catalog
+  # queries in-process — the metric SSM param is still consumed by MCP
+  # (stack 50) and the API edge (stack 60).
   ontology_engine_api_fn_arn = data.aws_ssm_parameter.ontology_api_fn_arn.value
 
   # Stack-60 handoff (serve AgentCore Runtime ARN)
@@ -35,7 +37,6 @@ data "aws_ssm_parameter" "lambda_security_group_id" { name = "${local.ssm_prefix
 
 data "aws_ssm_parameter" "namespaces_table_name" { name = "${local.ssm_prefix}/namespace/namespaces-table-name" }
 
-data "aws_ssm_parameter" "metric_api_fn_arn" { name = "${local.ssm_prefix}/metric/api-fn-arn" }
 data "aws_ssm_parameter" "ontology_api_fn_arn" { name = "${local.ssm_prefix}/ontology-engine/api-fn-arn" }
 
 data "aws_ssm_parameter" "serve_runtime_arn" { name = "${local.ssm_prefix}/serve/runtime-arn" }
