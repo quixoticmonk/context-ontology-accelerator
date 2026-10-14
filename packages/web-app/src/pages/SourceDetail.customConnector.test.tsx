@@ -24,6 +24,8 @@ vi.mock("@api-hooks", () => ({
   // component imports or the render throws before reaching the assertion.
   useListSourceScanJobs: () => ({ data: undefined }),
   useKeepRescanRemoval: () => ({ mutate: vi.fn(), isPending: false }),
+  usePutSourceRescanSchedule: () => ({ mutate: vi.fn(), isPending: false }),
+  usePutSourceEventRescan: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@coa/control-plane-client", () => ({
@@ -195,6 +197,38 @@ describe("SourceDetail — degraded scan annotation", () => {
       screen.getByText(/could not read 40 of the tables/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/2 of 40 shown/i)).toBeInTheDocument();
+  });
+
+  it("shows the scan's filter warnings when a filter had no effect", () => {
+    setSource();
+    mockGetSourceScanJob.mockReturnValue({
+      data: {
+        status: "COMPLETED",
+        filterWarnings: [
+          "table_exclude_filter matched nothing, so it had no effect.",
+        ],
+      },
+    });
+    render(<SourceDetail />, { wrapper });
+
+    expect(
+      screen.getByText(/A filter had no effect on the last scan/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "table_exclude_filter matched nothing, so it had no effect.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no filter warning when the scan reports none", () => {
+    setSource();
+    mockGetSourceScanJob.mockReturnValue({ data: { status: "COMPLETED" } });
+    render(<SourceDetail />, { wrapper });
+
+    expect(
+      screen.queryByText(/A filter had no effect/i),
+    ).not.toBeInTheDocument();
   });
 
   it("uses the singular form for a single failed table", () => {
