@@ -248,3 +248,35 @@ variable "vpc_id" {
   description = "VPC ID."
   type        = string
 }
+
+# ── Optional serve runtime knobs (upstream parity, v0.3.5) ──────────────
+# Each defaults to null; when null, the env var is NOT emitted and the
+# runtime's own compiled-in default governs. Set a non-null value to pin
+# the behaviour from the deploy, which is the only way to turn off the
+# retrieval expansion (on by default upstream) without an image rebuild.
+
+variable "serve_nl2sql_graph_expand" {
+  description = "Pin SERVE_NL2SQL_GRAPH_EXPAND on the serve runtime. null (default) → env var not emitted, runtime default applies (upstream: ON). Set `false` to turn off FK-hop expansion of the retrieved tables for the flat NL→SQL path on this deployment."
+  type        = bool
+  default     = null
+}
+
+variable "serve_nl2sql_graph_expand_max_tables" {
+  description = "Pin SERVE_NL2SQL_GRAPH_EXPAND_MAX_TABLES. null (default) → runtime default (8) applies. Budget for walked tables appended to the flat NL→SQL schema context; raise when the missing join table is plausibly further down the FK ordering."
+  type        = number
+  default     = null
+  validation {
+    condition     = var.serve_nl2sql_graph_expand_max_tables == null || (var.serve_nl2sql_graph_expand_max_tables >= 0 && var.serve_nl2sql_graph_expand_max_tables <= 200)
+    error_message = "serve_nl2sql_graph_expand_max_tables must be between 0 and 200 (the graph tool's MAX_NODE_LIMIT hard ceiling)."
+  }
+}
+
+variable "serve_vkg_translation_timeout_s" {
+  description = "Pin SERVE_VKG_TRANSLATION_TIMEOUT_S. null (default) → runtime default (60s) applies. Whole-translation budget for the NL→SPARQL route (T-Box build, LLM call, validation, retries). Raise on wide namespaces where translation p90 approaches 60s. Clamped 10..600 by the runtime."
+  type        = number
+  default     = null
+  validation {
+    condition     = var.serve_vkg_translation_timeout_s == null || (var.serve_vkg_translation_timeout_s >= 10 && var.serve_vkg_translation_timeout_s <= 600)
+    error_message = "serve_vkg_translation_timeout_s must be between 10 and 600 seconds (matches the runtime clamp)."
+  }
+}

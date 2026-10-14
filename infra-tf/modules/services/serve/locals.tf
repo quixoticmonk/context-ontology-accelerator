@@ -35,8 +35,26 @@ locals {
 
   aoss_proxy_zip_hash = try(filebase64sha256(var.aoss_proxy_zip_path), null)
 
+  # ── Optional serve env knobs (presence-checked merge) ────────────────
+  # Three retrieval / timeout levers from upstream serve-stack. Unset →
+  # the Python runtime's own compiled-in default applies, and the env var
+  # is not emitted at all (keeps the code the single source of truth for
+  # "default"). Set → the operator-chosen value lands, clamped by the
+  # runtime (not here).
+  serve_optional_env = merge(
+    var.serve_nl2sql_graph_expand != null ? {
+      SERVE_NL2SQL_GRAPH_EXPAND = tostring(var.serve_nl2sql_graph_expand)
+    } : {},
+    var.serve_nl2sql_graph_expand_max_tables != null ? {
+      SERVE_NL2SQL_GRAPH_EXPAND_MAX_TABLES = tostring(var.serve_nl2sql_graph_expand_max_tables)
+    } : {},
+    var.serve_vkg_translation_timeout_s != null ? {
+      SERVE_VKG_TRANSLATION_TIMEOUT_S = tostring(var.serve_vkg_translation_timeout_s)
+    } : {},
+  )
+
   # Environment variables for the AgentCore Runtime container.
-  runtime_env = merge(var.brand_env, {
+  runtime_env = merge(var.brand_env, local.serve_optional_env, {
     ENVIRONMENT                        = var.env
     SSM_PREFIX                         = var.ssm_prefix
     LOG_LEVEL                          = "INFO"
