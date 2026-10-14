@@ -93,7 +93,14 @@ locals {
   ))
 
   content_security_policy = var.content_security_policy != "" ? var.content_security_policy : join("; ", [
-    "default-src 'self'",
+    # `default-src 'none'`: every fetch directive the SPA uses is declared
+    # explicitly below, so the fallback only catches types it never loads
+    # (media, manifest, …). `form-action 'none'`: the SPA never performs a
+    # native form submission — forms are handled in JS and OIDC uses
+    # redirects, not form_post. `base-uri 'none'`: index.html has no <base>
+    # element. `upgrade-insecure-requests`: force any accidentally-added
+    # http:// subresource to https:// before the browser emits the request.
+    "default-src 'none'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
@@ -101,9 +108,10 @@ locals {
     "connect-src ${join(" ", local.connect_src)}",
     "frame-src ${join(" ", local.frame_src)}",
     "object-src 'none'",
-    "base-uri 'self'",
+    "base-uri 'none'",
     "frame-ancestors 'none'",
-    "form-action 'self'",
+    "form-action 'none'",
+    "upgrade-insecure-requests",
   ])
 
   # ── Website content sync ───────────────────────────────────────────

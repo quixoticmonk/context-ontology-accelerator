@@ -99,6 +99,16 @@ resource "aws_opensearchserverless_collection_group" "this" {
     min_search_capacity_in_ocu   = var.aoss_min_ocu
   }]
 
+  # Cross-variable check (variable-level `validation` blocks can't reference
+  # another variable). Catches `-var aoss_min_ocu=16 -var aoss_max_ocu=8` at
+  # plan time instead of letting CloudFormation reject it mid-update.
+  lifecycle {
+    precondition {
+      condition     = var.aoss_min_ocu <= var.aoss_max_ocu
+      error_message = "aoss_min_ocu (${var.aoss_min_ocu}) cannot exceed aoss_max_ocu (${var.aoss_max_ocu})."
+    }
+  }
+
   tags = { Component = var.component }
 }
 

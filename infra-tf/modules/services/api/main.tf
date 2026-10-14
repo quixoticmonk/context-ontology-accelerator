@@ -22,6 +22,31 @@ resource "aws_api_gateway_rest_api" "this" {
   # requests then MUST come through the custom domain.
   disable_execute_api_endpoint = var.custom_domain != null
 
+  # ── 501-stub guard (mirrors CDK ApiStack INTENTIONALLY_STUBBED check) ──
+  # The spec→handler map falls back to the 501 stub for any unlisted path.
+  # That is right for an operation with no backend yet, and wrong for a
+  # finished feature whose handler simply isn't wired. Both symptoms are
+  # silent — the stub returns 501 either way — so the only reliable
+  # signal is a positive declaration: EVERY spec path must be either
+  # wired in `var.path_handlers` or listed in `local.intentionally_stubbed`.
+  # The reverse — a wired path still on the allowlist — is also an
+  # error: the "did I forget to remove the allowlist entry?" symptom
+  # vanishes once the backend lands, so catch it here.
+  # Preconditions only fire when wiring is supplied (tests that construct
+  # the module to assert on auth or WAF pass neither map, and all paths
+  # correctly stub for them).
+  lifecycle {
+    precondition {
+      condition     = !local.wiring_supplied || length(local.unexpectedly_stubbed) == 0
+      error_message = "API paths would fall through to the 501 stub: ${join(", ", local.unexpectedly_stubbed)}. Add a path_handlers entry, or list the path in intentionally_stubbed (locals.tf) if it is deliberately unimplemented."
+    }
+
+    precondition {
+      condition     = !local.wiring_supplied || length(local.wired_but_allowlisted) == 0
+      error_message = "API paths are wired to a handler but still listed in intentionally_stubbed: ${join(", ", local.wired_but_allowlisted)}. Remove the allowlist entry now that the backend has landed."
+    }
+  }
+
   tags = local.tags
 }
 

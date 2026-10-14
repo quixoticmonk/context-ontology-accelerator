@@ -22,6 +22,19 @@ locals {
 
   http_methods = ["get", "put", "post", "delete", "patch", "head"]
 
+  # ── Intentionally-stubbed allowlist ─────────────────────────────────
+  # Mirrors the CDK's INTENTIONALLY_STUBBED set (upstream
+  # infra/lib/stacks/services/api-stack.ts). A spec path with no handler
+  # entry silently becomes a 501 stub; without the guard below a finished
+  # feature can ship dead (upstream saw this with POST .../sources/{id}/
+  # stop: handler + IAM + UI button + tests all present, 501 in every
+  # environment because the path map had no key). The set below is the
+  # ONLY paths allowed to stub when handler wiring is supplied.
+  intentionally_stubbed = toset([
+    "/health",                                                  # answered by the mock integration, no Lambda needed
+    "/namespaces/{namespaceId}/ontologies/{ontologyId}/upload", # superseded by upload-urls + ingest-from-s3
+  ])
+
   # For each path in the spec, resolve the target Lambda ARN. Falls
   # back to the stub Lambda when the path isn't in var.path_handlers —
   # matching CDK's `handlers[apiPath] ?? stubFn.functionArn`.
@@ -29,6 +42,12 @@ locals {
     for path, _methods in local.merged_spec_raw.paths :
     path => lookup(var.path_handlers, path, aws_lambda_function.stub.arn)
   }
+
+  spec_paths            = toset(keys(local.merged_spec_raw.paths))
+  wired_paths           = toset(keys(var.path_handlers))
+  wiring_supplied       = length(local.wired_paths) > 0
+  unexpectedly_stubbed  = setsubtract(local.spec_paths, setunion(local.wired_paths, local.intentionally_stubbed))
+  wired_but_allowlisted = setintersection(local.wired_paths, local.intentionally_stubbed)
 
   # Response headers to overlay on every operation's responses.
   # `Access-Control-Allow-Origin` must be declared here because the

@@ -34,7 +34,7 @@ resource "aws_neptune_cluster" "this" {
 resource "aws_neptune_cluster_instance" "this" {
   cluster_identifier = aws_neptune_cluster.this.id
   identifier         = "${var.name_prefix}-neptune-primary"
-  instance_class     = "db.r8g.large"
+  instance_class     = var.neptune_instance_class
   engine             = "neptune"
   apply_immediately  = true
 
