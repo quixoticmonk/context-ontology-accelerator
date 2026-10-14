@@ -126,3 +126,127 @@ resource "aws_sqs_queue" "doc_ingestion" {
 
   tags = local.tags
 }
+
+# ═════════════════════════════════════════════════════════════════════
+#  Source-delete worker queue + DLQ (v0.3.5 async DELETE flow)
+# ═════════════════════════════════════════════════════════════════════
+# DELETE /sources/{sourceId} enqueues here instead of running cleanup
+# inline, so the API returns 202+DELETING in <30s while the worker
+# finishes the DataZone teardown within its 15-min envelope. Visibility
+# MUST exceed the worker's timeout — 16min here vs the worker's 15min —
+# or SQS redelivers to a still-running handler and duplicates cleanup.
+resource "aws_sqs_queue" "source_delete_dlq" {
+  name                      = "${var.name_prefix}-sources-delete-dlq"
+  message_retention_seconds = 1209600 # 14 days
+  kms_master_key_id         = "alias/aws/sqs"
+
+  tags = local.tags
+}
+
+resource "aws_sqs_queue" "source_delete" {
+  name                       = "${var.name_prefix}-sources-delete-queue"
+  visibility_timeout_seconds = 960 # 16 minutes (worker is 15)
+  kms_master_key_id          = "alias/aws/sqs"
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.source_delete_dlq.arn
+    maxReceiveCount     = 3
+  })
+
+  tags = local.tags
+}
+
+# Deny non-TLS (CDK enforceSSL: true).
+data "aws_iam_policy_document" "source_delete_ssl" {
+  statement {
+    sid     = "DenyInsecureConnections"
+    effect  = "Deny"
+    actions = ["sqs:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [aws_sqs_queue.source_delete.arn]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "source_delete" {
+  queue_url = aws_sqs_queue.source_delete.id
+  policy    = data.aws_iam_policy_document.source_delete_ssl.json
+}
+
+# ═════════════════════════════════════════════════════════════════════
+#  Glue-event rescan queue + DLQ (v0.3.5 event-driven rescans)
+# ═════════════════════════════════════════════════════════════════════
+# Per-source EventBridge rules (created at runtime by the sources-api
+# Lambda) match a source's Glue catalog changes and route to this queue.
+# A consumer Lambda drains it into EVENT rescans. SQS-as-target rather
+# than Lambda-direct avoids per-rule Lambda permission churn; the queue
+# policy grants EventBridge instead.
+resource "aws_sqs_queue" "glue_event_dlq" {
+  name                      = "${var.name_prefix}-sources-glue-event-dlq"
+  message_retention_seconds = 1209600 # 14 days
+  kms_master_key_id         = "alias/aws/sqs"
+
+  tags = local.tags
+}
+
+resource "aws_sqs_queue" "glue_event" {
+  name                       = "${var.name_prefix}-sources-glue-event-queue"
+  visibility_timeout_seconds = 180 # 6x the consumer's 30s timeout (AWS guidance)
+  kms_master_key_id          = "alias/aws/sqs"
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.glue_event_dlq.arn
+    maxReceiveCount     = 5
+  })
+
+  tags = local.tags
+}
+
+# Resource policy: allow EventBridge rules in THIS account to deliver,
+# plus deny non-TLS. The CDK merged the two into one policy document;
+# we do the same here so both statements apply as one queue policy.
+data "aws_iam_policy_document" "glue_event" {
+  statement {
+    sid     = "AllowEventBridgeSend"
+    effect  = "Allow"
+    actions = ["sqs:SendMessage"]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    resources = [aws_sqs_queue.glue_event.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+
+  statement {
+    sid     = "DenyInsecureConnections"
+    effect  = "Deny"
+    actions = ["sqs:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [aws_sqs_queue.glue_event.arn]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "glue_event" {
+  queue_url = aws_sqs_queue.glue_event.id
+  policy    = data.aws_iam_policy_document.glue_event.json
+}

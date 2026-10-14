@@ -61,6 +61,84 @@ data "aws_iam_policy_document" "sources_api" {
       aws_sqs_queue.db_scan.arn,
       aws_sqs_queue.doc_ingestion.arn,
       aws_sqs_queue.bulk_review.arn,
+      # v0.3.5 async DELETE: /sources/{sourceId} DELETE enqueues here.
+      aws_sqs_queue.source_delete.arn,
+    ]
+  }
+
+  # ── v0.3.5 EventBridge Scheduler (rescan-schedule endpoint) ─────────
+  # The API Lambda creates/updates/deletes the per-source schedules in
+  # var.name_prefix-sources-rescan and passes the scheduler role to them.
+  # Least-privilege: scheduler actions scoped to this group's schedules,
+  # iam:PassRole scoped to the scheduler role AND the service.
+  statement {
+    sid = "ManageRescanSchedules"
+    actions = [
+      "scheduler:CreateSchedule",
+      "scheduler:UpdateSchedule",
+      "scheduler:DeleteSchedule",
+      "scheduler:GetSchedule",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/${aws_scheduler_schedule_group.rescan.name}/*",
+    ]
+  }
+
+  statement {
+    sid       = "PassRescanSchedulerRole"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.rescan_scheduler.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["scheduler.amazonaws.com"]
+    }
+  }
+
+  # ── v0.3.5 Glue-event rules (event-rescan endpoint) ─────────────────
+  # The API Lambda creates per-source EventBridge rules scoped to the
+  # var.name_prefix-glue-rescan-* name prefix. SQS delivery is authorised
+  # by the queue's resource policy, so no target role / PassRole needed
+  # for the rule's target (vs the scheduler path above).
+  statement {
+    sid = "ManageGlueEventRules"
+    actions = [
+      "events:PutRule",
+      "events:PutTargets",
+      "events:DeleteRule",
+      "events:RemoveTargets",
+      "events:DescribeRule",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:events:${var.region}:${data.aws_caller_identity.current.account_id}:rule/${var.name_prefix}-glue-rescan-*",
+    ]
+  }
+
+  # ── v0.3.5 Databricks per-source SSM parameters ─────────────────────
+  # The API writes per-source parameters under {prefix}/{env}/connectors/
+  # databricks/sources/. Writes outside the allowlisted principal set
+  # alarm via DatabricksUnexpectedParameterWrite (databricks_param_audit.tf),
+  # which is scoped to this exact prefix.
+  statement {
+    sid = "DatabricksSourceConfig"
+    actions = [
+      "ssm:PutParameter",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath",
+      "ssm:DeleteParameter",
+      "ssm:DeleteParameters",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/${var.env}/connectors/databricks/sources/*",
+    ]
+  }
+
+  statement {
+    sid     = "DatabricksConnectorArnLookup"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/${var.env}/connectors/databricks/deployment/function-arn",
     ]
   }
 
@@ -245,6 +323,32 @@ resource "aws_lambda_function" "sources_api" {
       # tag on every resource this role checks at registration. Must
       # equal the prefix in `namespace_tag_key` above.
       RESOURCE_TAG_PREFIX = var.resource_prefix
+
+      # ── v0.3.5 additions ─────────────────────────────────────────────
+      # Set → database DELETE enqueues to the worker and returns 202+DELETING.
+      # Unset → delete runs inline (legacy behaviour). The worker handler
+      # ships in the same zip under coa_sources/api/source_deletion_worker.py.
+      SOURCE_DELETE_QUEUE_URL = aws_sqs_queue.source_delete.url
+
+      # EventBridge Scheduler wiring. The API creates per-source schedules in
+      # this group and passes RESCAN_SCHEDULE_ROLE_ARN as the schedule's
+      # target role. RESCAN_TARGET_ARN is derived from the known function
+      # name rather than aws_lambda_function.sources_api.arn — a Lambda can't
+      # reference its own ARN in its own env (circular dependency).
+      RESCAN_SCHEDULE_GROUP    = aws_scheduler_schedule_group.rescan.name
+      RESCAN_SCHEDULE_ROLE_ARN = aws_iam_role.rescan_scheduler.arn
+      RESCAN_TARGET_ARN        = "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-sources-api"
+
+      # Per-source Glue-event rules (created at runtime by the API) target
+      # this queue. The glue-event-rescan consumer Lambda owns the queue.
+      GLUE_EVENT_QUEUE_ARN   = aws_sqs_queue.glue_event.arn
+      GLUE_EVENT_RULE_PREFIX = "${var.name_prefix}-glue-rescan"
+
+      # Databricks per-source parameter prefix for the audit tripwire. The
+      # API Lambda writes under this prefix; parameter writes outside the
+      # allowlisted principal set alarm via DatabricksUnexpectedParameterWrite.
+      DATABRICKS_CONFIG_SSM_PREFIX       = "${var.ssm_prefix}/${var.env}/connectors/databricks/sources"
+      DATABRICKS_CONNECTOR_ARN_SSM_PARAM = "${var.ssm_prefix}/${var.env}/connectors/databricks/deployment/function-arn"
     }
   }
 

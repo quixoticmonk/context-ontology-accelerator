@@ -26,10 +26,12 @@ locals {
     "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/columns/{columnName}/metadata" = local.sources_fn_arn
     # Scan history: list a source's scan + steward-review events. Without an
     # entry here the route falls back to the not-implemented stub (501).
-    "/namespaces/{namespaceId}/sources/{sourceId}/scan"         = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}" = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/{sourceId}/metadata"     = local.sources_fn_arn
-    "/namespaces/{namespaceId}/sources/upload-urls"             = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/scan"            = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}"    = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/rescan-schedule" = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/event-rescan"    = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/{sourceId}/metadata"        = local.sources_fn_arn
+    "/namespaces/{namespaceId}/sources/upload-urls"                = local.sources_fn_arn
 
     "/roles"                                     = local.namespace_platform_fn_arn
     "/namespaces/{namespaceId}/roles"            = local.namespace_roles_fn_arn

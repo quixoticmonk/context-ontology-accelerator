@@ -49,6 +49,12 @@ variable "bedrock_embed_model_id" {
   default     = "us.cohere.embed-v4:0"
 }
 
+variable "cdk_cfn_exec_role_name" {
+  description = "Optional CloudFormation execution role name to allowlist in the Databricks parameter-audit metric filter. When null, only the sources-API role is allowlisted. Set only when a stack managed via CDK/CloudFormation legitimately writes under the Databricks per-source parameter prefix; most Terraform-only deployments leave this null."
+  type        = string
+  default     = null
+}
+
 variable "component" {
   description = "Component tag applied to every resource in this module."
   type        = string
