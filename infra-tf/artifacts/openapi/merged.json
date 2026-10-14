@@ -1750,8 +1750,7 @@
                 "summary": "Export selected metrics inline",
                 "description": "",
                 "value": [
-                  "total_revenue",
-                  "avg_order_value"
+                  "total_revenue"
                 ]
               }
             }
@@ -1782,7 +1781,7 @@
                     "summary": "Export selected metrics inline",
                     "description": "",
                     "value": {
-                      "content": "version: 1\nmetrics:\n  - name: total_revenue\n    expression: SUM(net_amount)\n  - name: avg_order_value\n    expression: AVG(net_amount)\n"
+                      "content": "osi_spec_version: '1.0'\ndatasets:\n- name: orders\n  source: public.orders\n  data_source_id: warehouse-pg-01\nmetrics:\n- name: total_revenue\n  description: Total revenue from closed orders\n  expression:\n    dialects:\n    - dialect: ANSI_SQL\n      expression: SELECT SUM(net_amount) FROM public.orders\n  custom_extensions:\n  - vendor_name: COA\n    data:\n      data_source_id: warehouse-pg-01\n      source_table: public.orders\n"
                     }
                   }
                 }
@@ -3314,6 +3313,24 @@
                 "value": "http://coa.amazon.com/onto/sales-crm"
               }
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max entities to return per collection (classes, object properties,\ndatatype properties are each capped independently). Bounds the\nresponse so a large ontology does not exceed the API Gateway / Lambda\nresponse limit. Omit for the server default.",
+            "schema": {
+              "type": "number",
+              "description": "Max entities to return per collection (classes, object properties,\ndatatype properties are each capped independently). Bounds the\nresponse so a large ontology does not exceed the API Gateway / Lambda\nresponse limit. Omit for the server default."
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Zero-based offset into each collection, for paging. Combined with\n``limit`` this yields a stable page window over the full ontology.",
+            "schema": {
+              "type": "number",
+              "description": "Zero-based offset into each collection, for paging. Combined with\n``limit`` this yields a stable page window over the full ontology."
+            }
           }
         ],
         "responses": {
@@ -3368,7 +3385,10 @@
                           "domain": "http://example.com/onto#Customer",
                           "range": "http://www.w3.org/2001/XMLSchema#string"
                         }
-                      ]
+                      ],
+                      "totalClasses": 1,
+                      "totalObjectProperties": 1,
+                      "totalDatatypeProperties": 1
                     }
                   }
                 }
@@ -4045,7 +4065,7 @@
                   "summary": "Import metrics from inline OSI YAML",
                   "description": "",
                   "value": {
-                    "content": "version: 1\nmetrics:\n  - name: total_revenue\n    expression: SUM(net_amount)\n"
+                    "content": "osi_spec_version: '1.0'\nmetrics:\n- name: total_revenue\n  description: Total revenue from closed orders\n  expression:\n    dialects:\n    - dialect: ANSI_SQL\n      expression: SELECT SUM(net_amount) FROM public.orders\n  custom_extensions:\n  - vendor_name: COA\n    data:\n      data_source_id: warehouse-pg-01\n      source_table: public.orders\n"
                   }
                 }
               }
@@ -4099,13 +4119,11 @@
                     "summary": "Import metrics from inline OSI YAML",
                     "description": "",
                     "value": {
-                      "datasetsResolved": 1,
-                      "metricsCreated": 3,
-                      "metricsUpdated": 1,
-                      "warnings": [
-                        "Metric 'legacy_gmv' skipped: no matching data source."
-                      ],
-                      "status": "COMPLETED"
+                      "datasetsResolved": 0,
+                      "metricsCreated": 0,
+                      "metricsUpdated": 0,
+                      "jobId": "01HZY8K3M4N5P6Q7R8S9T0V1W2",
+                      "status": "IN_PROGRESS"
                     }
                   }
                 }
@@ -5202,8 +5220,8 @@
     },
     "/namespaces/{namespaceId}/metrics": {
       "get": {
-        "description": "List the metrics available for querying in the namespace, with their\ndimensions and synonyms. Read-through from the metric store.",
-        "operationId": "ServeListMetrics",
+        "description": "List metric definitions in a namespace, optionally filtered by data source or source table.",
+        "operationId": "ListMetrics",
         "parameters": [
           {
             "name": "namespaceId",
@@ -5218,85 +5236,116 @@
             },
             "required": true,
             "examples": {
-              "ServeListMetrics_example1": {
-                "summary": "List queryable metrics",
+              "ListMetrics_example1": {
+                "summary": "List metrics filtered by source table",
                 "description": "",
                 "value": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
               }
             }
           },
           {
-            "name": "status",
+            "name": "nextToken",
             "in": "query",
-            "description": "Filter metrics by status.",
+            "description": "Pagination token from a previous response; omit for the first page.",
             "schema": {
               "type": "string",
-              "description": "Filter metrics by status."
-            },
-            "examples": {
-              "ServeListMetrics_example1": {
-                "summary": "List queryable metrics",
-                "description": "",
-                "value": "ACTIVE"
-              }
+              "description": "Pagination token from a previous response; omit for the first page."
             }
           },
           {
             "name": "maxResults",
             "in": "query",
-            "description": "Maximum number of metrics to return per page.",
+            "description": "Maximum number of metrics to return in one page.",
             "schema": {
               "type": "number",
-              "description": "Maximum number of metrics to return per page."
+              "description": "Maximum number of metrics to return in one page."
             },
             "examples": {
-              "ServeListMetrics_example1": {
-                "summary": "List queryable metrics",
+              "ListMetrics_example1": {
+                "summary": "List metrics filtered by source table",
                 "description": "",
                 "value": 20
               }
             }
           },
           {
-            "name": "nextToken",
+            "name": "dataSourceId",
             "in": "query",
-            "description": "Pagination token from a previous response.",
+            "description": "Data source identifier reference.",
             "schema": {
               "type": "string",
-              "description": "Pagination token from a previous response."
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "description": "Data source identifier reference."
+            }
+          },
+          {
+            "name": "sourceTable",
+            "in": "query",
+            "description": "Source table name reference.",
+            "schema": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "description": "Source table name reference."
+            },
+            "examples": {
+              "ListMetrics_example1": {
+                "summary": "List metrics filtered by source table",
+                "description": "",
+                "value": "public.orders"
+              }
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "ServeListMetrics 200 response",
+            "description": "ListMetrics 200 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServeListMetricsResponseContent"
+                  "$ref": "#/components/schemas/ListMetricsResponseContent"
                 },
                 "examples": {
-                  "ServeListMetrics_example1": {
-                    "summary": "List queryable metrics",
+                  "ListMetrics_example1": {
+                    "summary": "List metrics filtered by source table",
                     "description": "",
                     "value": {
                       "metrics": [
                         {
-                          "metricId": "m-revenue",
+                          "metricId": "01HZY8K3M4N5P6Q7R8S9T0V1W2",
+                          "namespaceId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
                           "name": "total_revenue",
-                          "description": "Sum of net revenue across orders",
-                          "dimensions": [
-                            {
-                              "name": "period",
-                              "type": "time"
-                            }
-                          ],
-                          "synonyms": [
-                            "revenue",
-                            "sales"
-                          ]
+                          "description": "Sum of net revenue across all closed orders.",
+                          "expression": {
+                            "dialects": [
+                              {
+                                "dialect": "POSTGRESQL",
+                                "expression": "SELECT SUM(net_amount) FROM public.orders"
+                              }
+                            ]
+                          },
+                          "dataSourceId": "warehouse-pg-01",
+                          "sourceTable": "public.orders",
+                          "defaultTimeGrain": "MONTH",
+                          "unit": "USD",
+                          "returnType": "decimal"
                         }
-                      ]
+                      ],
+                      "nextToken": "eyJvZmZzZXQiOjIwfQ"
                     }
                   }
                 }
@@ -5305,6 +5354,18 @@
           },
           "400": {
             "description": "ValidationError 400 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -5315,30 +5376,22 @@
           },
           "403": {
             "description": "AccessDeniedError 403 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AccessDeniedErrorResponseContent"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NamespaceNotFoundError 404 response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NamespaceNotFoundErrorResponseContent"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "RateLimitExceededError 429 response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RateLimitExceededErrorResponseContent"
                 }
               }
             }
@@ -5441,7 +5494,7 @@
                       "dialects": [
                         {
                           "dialect": "POSTGRESQL",
-                          "expression": "SUM(net_amount)"
+                          "expression": "SELECT SUM(net_amount) FROM public.orders"
                         }
                       ]
                     },
@@ -5513,7 +5566,7 @@
                           "dialects": [
                             {
                               "dialect": "POSTGRESQL",
-                              "expression": "SUM(net_amount)"
+                              "expression": "SELECT SUM(net_amount) FROM public.orders"
                             }
                           ]
                         },
@@ -5701,7 +5754,7 @@
         }
       },
       "post": {
-        "description": "Validate a metric definition without persisting it, returning any warnings.",
+        "description": "Validate a metric definition without persisting it. ERROR findings predict\ncreate/update rejection; INFO findings are advisory.",
         "operationId": "ValidateMetric",
         "requestBody": {
           "content": {
@@ -5720,7 +5773,7 @@
                       "dialects": [
                         {
                           "dialect": "POSTGRESQL",
-                          "expression": "AVG(net_amount)"
+                          "expression": "SELECT AVG(net_amount) FROM public.orders"
                         }
                       ]
                     },
@@ -6052,7 +6105,7 @@
                           "dialects": [
                             {
                               "dialect": "POSTGRESQL",
-                              "expression": "SUM(net_amount)"
+                              "expression": "SELECT SUM(net_amount) FROM public.orders"
                             }
                           ]
                         },
@@ -6253,11 +6306,11 @@
                       "dialects": [
                         {
                           "dialect": "POSTGRESQL",
-                          "expression": "SUM(net_amount)"
+                          "expression": "SELECT SUM(net_amount) FROM public.orders"
                         },
                         {
                           "dialect": "TRINO",
-                          "expression": "SUM(net_amount)"
+                          "expression": "SELECT SUM(net_amount) FROM public.orders"
                         }
                       ]
                     },
@@ -6349,11 +6402,11 @@
                           "dialects": [
                             {
                               "dialect": "POSTGRESQL",
-                              "expression": "SUM(net_amount)"
+                              "expression": "SELECT SUM(net_amount) FROM public.orders"
                             },
                             {
                               "dialect": "TRINO",
-                              "expression": "SUM(net_amount)"
+                              "expression": "SELECT SUM(net_amount) FROM public.orders"
                             }
                           ]
                         },
@@ -7205,15 +7258,18 @@
               }
             },
             "content": {
-              "application/octet-stream": {
+              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DownloadOntologyOutputPayload"
+                  "$ref": "#/components/schemas/DownloadOntologyResponseContent"
                 },
                 "examples": {
                   "DownloadOntology_example1": {
                     "summary": "Download an ontology as Turtle",
                     "description": "",
-                    "value": "QHByZWZpeCBvd2w6IDxodHRwOi8vd3d3LnczLm9yZy8yMDAyLzA3L293bCM+IC4KZXg6Q3VzdG9tZXIgYSBvd2w6Q2xhc3MgLgo="
+                    "value": {
+                      "downloadUrl": "https://coa-artifacts.s3.amazonaws.com/downloads/sales-analytics/sales-crm.ttl?X-Amz-Signature=abc123",
+                      "expiresInSeconds": 3600
+                    }
                   }
                 }
               }
@@ -7319,8 +7375,7 @@
         "x-amazon-apigateway-integration": {
           "contentHandling": "CONVERT_TO_TEXT",
           "requestTemplates": {
-            "application/json": "{\"statusCode\":200}",
-            "application/octet-stream": "{\"statusCode\":200}"
+            "application/json": "{\"statusCode\":200}"
           },
           "responses": {
             "default": {
@@ -13303,6 +13358,258 @@
         }
       }
     },
+    "/namespaces/{namespaceId}/sources/{sourceId}/event-rescan": {
+      "options": {
+        "description": "Handles CORS-preflight requests",
+        "operationId": "CorsNamespacesNamespaceidSourcesSourceidEvent_rescan",
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceEventRescan_example1": {
+                "summary": "Enable event-driven rescans",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              },
+              "PutSourceEventRescan_example2": {
+                "summary": "Disable event-driven rescans",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source to configure.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source to configure."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceEventRescan_example1": {
+                "summary": "Enable event-driven rescans",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              },
+              "PutSourceEventRescan_example2": {
+                "summary": "Disable event-driven rescans",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canned response for CORS-preflight requests",
+            "headers": {
+              "Access-Control-Allow-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Methods": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Max-Age": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "tags": [
+          "CORS"
+        ],
+        "x-amazon-apigateway-integration": {
+          "contentHandling": "CONVERT_TO_TEXT",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":200}"
+          },
+          "responses": {
+            "default": {
+              "responseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Amz-Sdk-Invocation-Id,Amz-Sdk-Request,Authorization,Content-Length,Content-Type,x-amz-content-sha256,X-Amz-User-Agent,X-Amzn-Trace-Id'",
+                "method.response.header.Access-Control-Allow-Methods": "'PUT'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'",
+                "method.response.header.Access-Control-Max-Age": "'3600'"
+              },
+              "statusCode": "200"
+            }
+          },
+          "type": "mock",
+          "passthroughBehavior": "when_no_match"
+        }
+      },
+      "put": {
+        "description": "Enable or disable event-driven rescans for a DATABASE source (Glue only).\nWhen enabled, an EventBridge rule matching the source's Glue Data Catalog\nchanges fires an EVENT rescan; disabling removes the rule.",
+        "operationId": "PutSourceEventRescan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSourceEventRescanRequestContent"
+              },
+              "examples": {
+                "PutSourceEventRescan_example1": {
+                  "summary": "Enable event-driven rescans",
+                  "description": "",
+                  "value": {
+                    "enabled": true
+                  }
+                },
+                "PutSourceEventRescan_example2": {
+                  "summary": "Disable event-driven rescans",
+                  "description": "",
+                  "value": {
+                    "enabled": false
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceEventRescan_example1": {
+                "summary": "Enable event-driven rescans",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              },
+              "PutSourceEventRescan_example2": {
+                "summary": "Disable event-driven rescans",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source to configure.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source to configure."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceEventRescan_example1": {
+                "summary": "Enable event-driven rescans",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              },
+              "PutSourceEventRescan_example2": {
+                "summary": "Disable event-driven rescans",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PutSourceEventRescan 200 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutSourceEventRescanResponseContent"
+                },
+                "examples": {
+                  "PutSourceEventRescan_example1": {
+                    "summary": "Enable event-driven rescans",
+                    "description": "",
+                    "value": {
+                      "sourceId": "src-7f3a9c1e",
+                      "eventRescan": {
+                        "enabled": true
+                      }
+                    }
+                  },
+                  "PutSourceEventRescan_example2": {
+                    "summary": "Disable event-driven rescans",
+                    "description": "",
+                    "value": {
+                      "sourceId": "src-7f3a9c1e",
+                      "eventRescan": {
+                        "enabled": false
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationError 400 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseContent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/namespaces/{namespaceId}/sources/{sourceId}/metadata": {
       "options": {
         "description": "Handles CORS-preflight requests",
@@ -13793,7 +14100,7 @@
           "responses": {
             "default": {
               "responseParameters": {
-                "method.response.header.Access-Control-Allow-Headers": "'Amz-Sdk-Invocation-Id,Amz-Sdk-Request,Authorization,Content-Type,x-amz-content-sha256,X-Amz-User-Agent,X-Amzn-Trace-Id'",
+                "method.response.header.Access-Control-Allow-Headers": "'Amz-Sdk-Invocation-Id,Amz-Sdk-Request,Authorization,Content-Length,Content-Type,x-amz-content-sha256,X-Amz-User-Agent,X-Amzn-Trace-Id'",
                 "method.response.header.Access-Control-Allow-Methods": "'POST'",
                 "method.response.header.Access-Control-Allow-Origin": "'*'",
                 "method.response.header.Access-Control-Max-Age": "'3600'"
@@ -13808,6 +14115,22 @@
       "post": {
         "description": "Re-trigger the scan/ingestion pipeline for an existing source.",
         "operationId": "RescanSource",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RescanSourceRequestContent"
+              },
+              "examples": {
+                "RescanSource_example1": {
+                  "summary": "Re-scan an existing source",
+                  "description": "",
+                  "value": {}
+                }
+              }
+            }
+          }
+        },
         "parameters": [
           {
             "name": "namespaceId",
@@ -13902,6 +14225,472 @@
               }
             }
           }
+        }
+      }
+    },
+    "/namespaces/{namespaceId}/sources/{sourceId}/rescan-schedule": {
+      "options": {
+        "description": "Handles CORS-preflight requests",
+        "operationId": "CorsNamespacesNamespaceidSourcesSourceidRescan_schedule",
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceRescanSchedule_example1": {
+                "summary": "Enable a nightly rescan",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              },
+              "PutSourceRescanSchedule_example2": {
+                "summary": "Disable the recurring rescan",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source to schedule rescans for.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source to schedule rescans for."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceRescanSchedule_example1": {
+                "summary": "Enable a nightly rescan",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              },
+              "PutSourceRescanSchedule_example2": {
+                "summary": "Disable the recurring rescan",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canned response for CORS-preflight requests",
+            "headers": {
+              "Access-Control-Allow-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Methods": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Max-Age": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "tags": [
+          "CORS"
+        ],
+        "x-amazon-apigateway-integration": {
+          "contentHandling": "CONVERT_TO_TEXT",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":200}"
+          },
+          "responses": {
+            "default": {
+              "responseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Amz-Sdk-Invocation-Id,Amz-Sdk-Request,Authorization,Content-Length,Content-Type,x-amz-content-sha256,X-Amz-User-Agent,X-Amzn-Trace-Id'",
+                "method.response.header.Access-Control-Allow-Methods": "'PUT'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'",
+                "method.response.header.Access-Control-Max-Age": "'3600'"
+              },
+              "statusCode": "200"
+            }
+          },
+          "type": "mock",
+          "passthroughBehavior": "when_no_match"
+        }
+      },
+      "put": {
+        "description": "Configure (or disable) the recurring rescan schedule for a DATABASE source.\nSetting enabled=true with a scheduleExpression creates or updates an\nEventBridge schedule that fires a SCHEDULED rescan on that cadence; setting\nenabled=false removes it.",
+        "operationId": "PutSourceRescanSchedule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSourceRescanScheduleRequestContent"
+              },
+              "examples": {
+                "PutSourceRescanSchedule_example1": {
+                  "summary": "Enable a nightly rescan",
+                  "description": "",
+                  "value": {
+                    "enabled": true,
+                    "scheduleExpression": "cron(0 3 * * ? *)",
+                    "timezone": "America/New_York"
+                  }
+                },
+                "PutSourceRescanSchedule_example2": {
+                  "summary": "Disable the recurring rescan",
+                  "description": "",
+                  "value": {
+                    "enabled": false
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceRescanSchedule_example1": {
+                "summary": "Enable a nightly rescan",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              },
+              "PutSourceRescanSchedule_example2": {
+                "summary": "Disable the recurring rescan",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source to schedule rescans for.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source to schedule rescans for."
+            },
+            "required": true,
+            "examples": {
+              "PutSourceRescanSchedule_example1": {
+                "summary": "Enable a nightly rescan",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              },
+              "PutSourceRescanSchedule_example2": {
+                "summary": "Disable the recurring rescan",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PutSourceRescanSchedule 200 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutSourceRescanScheduleResponseContent"
+                },
+                "examples": {
+                  "PutSourceRescanSchedule_example1": {
+                    "summary": "Enable a nightly rescan",
+                    "description": "",
+                    "value": {
+                      "sourceId": "src-7f3a9c1e",
+                      "rescanSchedule": {
+                        "enabled": true,
+                        "scheduleExpression": "cron(0 3 * * ? *)",
+                        "timezone": "America/New_York"
+                      }
+                    }
+                  },
+                  "PutSourceRescanSchedule_example2": {
+                    "summary": "Disable the recurring rescan",
+                    "description": "",
+                    "value": {
+                      "sourceId": "src-7f3a9c1e",
+                      "rescanSchedule": {
+                        "enabled": false
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationError 400 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseContent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/namespaces/{namespaceId}/sources/{sourceId}/scan": {
+      "get": {
+        "description": "List the scan and review history for a DATABASE source, newest first.\nCombines discovery/enrichment scan rows with steward approve/reject events\nso the console can show a real audit trail instead of a derived guess.",
+        "operationId": "ListSourceScanJobs",
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "ListSourceScanJobs_example1": {
+                "summary": "List a source's scan and review history, newest first",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source whose history to list.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source whose history to list."
+            },
+            "required": true,
+            "examples": {
+              "ListSourceScanJobs_example1": {
+                "summary": "List a source's scan and review history, newest first",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ListSourceScanJobs 200 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSourceScanJobsResponseContent"
+                },
+                "examples": {
+                  "ListSourceScanJobs_example1": {
+                    "summary": "List a source's scan and review history, newest first",
+                    "description": "",
+                    "value": {
+                      "items": [
+                        {
+                          "at": "2026-07-23T15:02:00Z",
+                          "eventType": "REVIEW",
+                          "status": "APPROVED",
+                          "decision": "APPROVED",
+                          "isRescan": false,
+                          "tablesApproved": 12
+                        },
+                        {
+                          "at": "2026-07-23T14:30:00Z",
+                          "eventType": "SCAN",
+                          "status": "COMPLETED",
+                          "scanType": "full",
+                          "tablesDiscovered": 12,
+                          "completedAt": "2026-07-23T14:35:00Z"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationError 400 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseContent"
+                }
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "description": "Handles CORS-preflight requests",
+        "operationId": "CorsNamespacesNamespaceidSourcesSourceidScan",
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "ListSourceScanJobs_example1": {
+                "summary": "List a source's scan and review history, newest first",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source whose history to list.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source whose history to list."
+            },
+            "required": true,
+            "examples": {
+              "ListSourceScanJobs_example1": {
+                "summary": "List a source's scan and review history, newest first",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canned response for CORS-preflight requests",
+            "headers": {
+              "Access-Control-Allow-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Methods": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Max-Age": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "tags": [
+          "CORS"
+        ],
+        "x-amazon-apigateway-integration": {
+          "contentHandling": "CONVERT_TO_TEXT",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":200}"
+          },
+          "responses": {
+            "default": {
+              "responseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Amz-Sdk-Invocation-Id,Amz-Sdk-Request,Authorization,Content-Type,x-amz-content-sha256,X-Amz-User-Agent,X-Amzn-Trace-Id'",
+                "method.response.header.Access-Control-Allow-Methods": "'GET'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'",
+                "method.response.header.Access-Control-Max-Age": "'3600'"
+              },
+              "statusCode": "200"
+            }
+          },
+          "type": "mock",
+          "passthroughBehavior": "when_no_match"
         }
       }
     },
@@ -15262,6 +16051,302 @@
                       "tableId": "sales.orders",
                       "columnName": "internal_notes",
                       "reviewStatus": "REJECTED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationError 400 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseContent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}/keep": {
+      "options": {
+        "description": "Handles CORS-preflight requests",
+        "operationId": "CorsNamespacesNamespaceidSourcesSourceidTablesTableidKeep",
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "KeepRescanRemoval_example1": {
+                "summary": "Keep a table the re-scan flagged as removed",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              },
+              "KeepRescanRemoval_example2": {
+                "summary": "Keep a single column the re-scan flagged as removed",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source containing the flagged table.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source containing the flagged table."
+            },
+            "required": true,
+            "examples": {
+              "KeepRescanRemoval_example1": {
+                "summary": "Keep a table the re-scan flagged as removed",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              },
+              "KeepRescanRemoval_example2": {
+                "summary": "Keep a single column the re-scan flagged as removed",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "description": "Table identifier (database.table format).",
+            "schema": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[a-zA-Z0-9_\\-:.]+$",
+              "description": "Table identifier (database.table format)."
+            },
+            "required": true,
+            "examples": {
+              "KeepRescanRemoval_example1": {
+                "summary": "Keep a table the re-scan flagged as removed",
+                "description": "",
+                "value": "sales.legacy_orders"
+              },
+              "KeepRescanRemoval_example2": {
+                "summary": "Keep a single column the re-scan flagged as removed",
+                "description": "",
+                "value": "sales.orders"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canned response for CORS-preflight requests",
+            "headers": {
+              "Access-Control-Allow-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Methods": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Max-Age": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "tags": [
+          "CORS"
+        ],
+        "x-amazon-apigateway-integration": {
+          "contentHandling": "CONVERT_TO_TEXT",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":200}"
+          },
+          "responses": {
+            "default": {
+              "responseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Amz-Sdk-Invocation-Id,Amz-Sdk-Request,Authorization,Content-Length,Content-Type,x-amz-content-sha256,X-Amz-User-Agent,X-Amzn-Trace-Id'",
+                "method.response.header.Access-Control-Allow-Methods": "'PUT'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'",
+                "method.response.header.Access-Control-Max-Age": "'3600'"
+              },
+              "statusCode": "200"
+            }
+          },
+          "type": "mock",
+          "passthroughBehavior": "when_no_match"
+        }
+      },
+      "put": {
+        "description": "Decline a re-scan-flagged removal so approving the re-scan will NOT delete\nit. Drops the table (or one column of it) from the re-scan removal set in the\nbackup blob; the surfaced pendingDeletion marker clears on the next read.\n\n\"Removed from the source\" does not always mean \"deleted\" \u2014 a partial scan, a\npermission change, or a narrowed include/exclude filter can drop a table or\ncolumn that should be kept. This lets the steward veto a specific removal.\n\nOnly valid while the source is in RESCAN_REVIEW. Omit columnName to keep the\nwhole table; set it to keep one removed column. Idempotent \u2014 keeping an item\nthat is not in the removal set is a no-op.",
+        "operationId": "KeepRescanRemoval",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeepRescanRemovalRequestContent"
+              },
+              "examples": {
+                "KeepRescanRemoval_example1": {
+                  "summary": "Keep a table the re-scan flagged as removed",
+                  "description": "",
+                  "value": {}
+                },
+                "KeepRescanRemoval_example2": {
+                  "summary": "Keep a single column the re-scan flagged as removed",
+                  "description": "",
+                  "value": {
+                    "columnName": "legacy_region_code"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "description": "UUID v4 identifier.",
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "description": "UUID v4 identifier."
+            },
+            "required": true,
+            "examples": {
+              "KeepRescanRemoval_example1": {
+                "summary": "Keep a table the re-scan flagged as removed",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              },
+              "KeepRescanRemoval_example2": {
+                "summary": "Keep a single column the re-scan flagged as removed",
+                "description": "",
+                "value": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              }
+            }
+          },
+          {
+            "name": "sourceId",
+            "in": "path",
+            "description": "Identifier of the source containing the flagged table.",
+            "schema": {
+              "type": "string",
+              "description": "Identifier of the source containing the flagged table."
+            },
+            "required": true,
+            "examples": {
+              "KeepRescanRemoval_example1": {
+                "summary": "Keep a table the re-scan flagged as removed",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              },
+              "KeepRescanRemoval_example2": {
+                "summary": "Keep a single column the re-scan flagged as removed",
+                "description": "",
+                "value": "src-7f3a9c1e"
+              }
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "description": "Table identifier (database.table format).",
+            "schema": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[a-zA-Z0-9_\\-:.]+$",
+              "description": "Table identifier (database.table format)."
+            },
+            "required": true,
+            "examples": {
+              "KeepRescanRemoval_example1": {
+                "summary": "Keep a table the re-scan flagged as removed",
+                "description": "",
+                "value": "sales.legacy_orders"
+              },
+              "KeepRescanRemoval_example2": {
+                "summary": "Keep a single column the re-scan flagged as removed",
+                "description": "",
+                "value": "sales.orders"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "KeepRescanRemoval 200 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeepRescanRemovalResponseContent"
+                },
+                "examples": {
+                  "KeepRescanRemoval_example1": {
+                    "summary": "Keep a table the re-scan flagged as removed",
+                    "description": "",
+                    "value": {
+                      "tableId": "sales.legacy_orders",
+                      "pendingDeletion": false
+                    }
+                  },
+                  "KeepRescanRemoval_example2": {
+                    "summary": "Keep a single column the re-scan flagged as removed",
+                    "description": "",
+                    "value": {
+                      "tableId": "sales.orders",
+                      "columnName": "legacy_region_code",
+                      "pendingDeletion": false
                     }
                   }
                 }
@@ -16991,6 +18076,7 @@
                         {
                           "chunkId": "doc-42#p7",
                           "text": "Enterprise contracts allow refunds within 30 days of invoice.",
+                          "sourceDocumentId": "src-6f8b4f12",
                           "sourceDocumentName": "Enterprise Terms.pdf",
                           "relevanceScore": 0.82
                         }
@@ -17694,6 +18780,10 @@
               "type": "string"
             },
             "description": "Sampled distinct values for low-cardinality categorical columns\n(capped, best-effort). Empty for high-cardinality, non-string, or\nunsampled columns. Used by the serve NL\u2192SQL layer to hint the LLM\nwith correct enum literals for WHERE clauses, and shown in the UI."
+          },
+          "pendingDeletion": {
+            "type": "boolean",
+            "description": "True when a re-scan found this column removed from the source; it is\ndeleted on approve unless the steward keeps it. Absent/false otherwise."
           }
         },
         "required": [
@@ -17786,7 +18876,7 @@
       },
       "CreateDatabaseSourceInput": {
         "type": "object",
-        "description": "Database source creation fields.\nExactly one of glueConfiguration, jdbcConfiguration or customConnectorConfiguration\nmust be provided \u2014 it selects the sub-type.",
+        "description": "Database source creation fields.\nExactly one of glueConfiguration, jdbcConfiguration, customConnectorConfiguration\nor databricksSqlWarehouseConfiguration must be provided \u2014 it selects the sub-type.",
         "properties": {
           "name": {
             "type": "string",
@@ -17802,6 +18892,9 @@
           },
           "customConnectorConfiguration": {
             "$ref": "#/components/schemas/CustomConnectorConfiguration"
+          },
+          "databricksSqlWarehouseConfiguration": {
+            "$ref": "#/components/schemas/DatabricksSqlWarehouseConfiguration"
           },
           "metadataEnrichmentEnabled": {
             "type": "boolean",
@@ -17871,6 +18964,9 @@
           },
           "principalId": {
             "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^<>\"`\\\\#|\\x00-\\x1F\\x7F]+$",
             "description": "Identifier of the principal to bind to the role."
           },
           "role": {
@@ -17933,6 +19029,7 @@
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "description": "Data source identifier reference."
           },
           "sourceTable": {
@@ -18004,18 +19101,22 @@
             "type": "string",
             "maxLength": 256,
             "minLength": 1,
-            "description": "Display name for a namespace."
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display name for a namespace. Angle brackets and control characters are rejected."
           },
           "description": {
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Namespace description."
+            "pattern": "^[^<>\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]*$",
+            "description": "Namespace description. Angle brackets and control characters other than\ntab and newline are rejected."
           },
           "owner": {
             "type": "string",
-            "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
-            "description": "Owner email address."
+            "maxLength": 254,
+            "minLength": 6,
+            "pattern": "^[A-Za-z0-9!$%&'*+/=?^_{}~-]+(\\.[A-Za-z0-9!$%&'*+/=?^_{}~-]+)*@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,63}$",
+            "description": "Owner email address. The local part allows the RFC 5322 atext characters\nexcept # | and backtick (the owner also becomes a grant principalId)."
           }
         },
         "required": [
@@ -18044,6 +19145,9 @@
           },
           "principalId": {
             "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^<>\"`\\\\#|\\x00-\\x1F\\x7F]+$",
             "description": "Identifier of the principal to bind to the platform role."
           },
           "role": {
@@ -18173,6 +19277,9 @@
           "customConnectorConfiguration": {
             "$ref": "#/components/schemas/CustomConnectorConfiguration"
           },
+          "databricksSqlWarehouseConfiguration": {
+            "$ref": "#/components/schemas/DatabricksSqlWarehouseConfiguration"
+          },
           "metadataEnrichmentEnabled": {
             "type": "boolean",
             "description": "Whether AI-powered business metadata enrichment runs for this source.\nSet at creation time and persisted with the source record. When false\nthe scan pipeline skips the enrichment step and the source transitions\nfrom SCANNING straight to PENDING_REVIEW."
@@ -18203,9 +19310,83 @@
           },
           "athenaDataCatalogName": {
             "type": "string",
-            "description": "Name of the Athena data catalog registered for this source. Read-only\nand system-managed, derived from `{resource-prefix}ds_{sourceId}`. Null\nfor S3/Iceberg-backed Glue databases, which are queried through Athena's\nnative `AwsDataCatalog`.\n\nThe addressing differs by sub-type, because the two catalogs are not the\nsame kind of object:\n\n- JDBC sub-types: a managed Glue federated catalog, NESTED under\n  `AwsDataCatalog`, and equal to `glueConnectionName`. Query it as\n  `AwsDataCatalog.<athenaDataCatalogName>.<schema>.<table>`.\n- CUSTOM_CONNECTOR: a LAMBDA-type Athena catalog bound to the customer's\n  connector Lambda. It is a TOP-LEVEL catalog, not nested, so query it as\n  `<athenaDataCatalogName>.<databaseName>.<table>`.\n\nRun the query inside the namespace's Athena workgroup (see\nNamespaceDetail.athenaWorkgroupName)."
+            "description": "Name of the Athena data catalog registered for this source. Read-only\nand system-managed, derived from `{resource-prefix}ds_{sourceId}`. Null\nfor S3/Iceberg-backed Glue databases, which are queried through Athena's\nnative `AwsDataCatalog`.\n\nThe addressing differs by sub-type, because the two catalogs are not the\nsame kind of object:\n\n- JDBC sub-types: a managed Glue federated catalog, NESTED under\n  `AwsDataCatalog`, and equal to `glueConnectionName`. Query it as\n  `AwsDataCatalog.<athenaDataCatalogName>.<schema>.<table>`.\n- CUSTOM_CONNECTOR: a LAMBDA-type Athena catalog bound to the customer's\n  connector Lambda. It is a TOP-LEVEL catalog, not nested, so query it as\n  `<athenaDataCatalogName>.<databaseName>.<table>`.\n- DATABRICKS_SQL_WAREHOUSE: also a TOP-LEVEL LAMBDA-type catalog, addressed\n  the same way, but bound to the ONE connector Lambda this deployment\n  operates \u2014 every such catalog in the environment shares that handler ARN,\n  and the catalog name is what selects the source's workspace and\n  credential. `databaseName` is the Unity Catalog schema.\n\nRun the query inside the namespace's Athena workgroup (see\nNamespaceDetail.athenaWorkgroupName)."
+          },
+          "rescanSchedule": {
+            "$ref": "#/components/schemas/RescanSchedule"
+          },
+          "eventRescan": {
+            "$ref": "#/components/schemas/EventRescanConfig"
           }
         }
+      },
+      "DatabricksSqlWarehouseConfiguration": {
+        "type": "object",
+        "description": "Databricks SQL Warehouse source \u2014 the DATABRICKS_SQL_WAREHOUSE sub-type.\nDiscovery and queries both run through Athena against a connector Lambda this\nservice deploys, which resolves this configuration from the Athena catalog\nname it is invoked under. Nothing here is deployed by the customer.\n\nIts own shape rather than an extra DatabaseEngine on JdbcConfiguration, whose\n@required `host`/`port` have no meaning for a warehouse addressed by an HTTP\npath and which has no place for the Unity Catalog catalog.",
+        "properties": {
+          "workspaceHostname": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9.-]*\\.(cloud\\.databricks\\.com|azuredatabricks\\.net|gcp\\.databricks\\.com)$",
+            "description": "Databricks workspace host, e.g. `dbc-a1b2345c-d6e7.cloud.databricks.com`.\nA PrivateLink-only workspace is not reachable: the connector runs outside\nany customer VPC."
+          },
+          "httpPath": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^/sql/1\\.0/(warehouses|endpoints)/[a-zA-Z0-9]+$",
+            "description": "SQL Warehouse HTTP path. The Databricks analogue of a port."
+          },
+          "databricksCatalog": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+            "description": "Unity Catalog catalog pinned for this source. Lowercased at registration:\n`information_schema` stores identifiers lowercase."
+          },
+          "databaseName": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+            "description": "Unity Catalog schema this source exposes. Exactly one per source \u2014 the same\none-database-per-source model GlueConfiguration and\nCustomConnectorConfiguration use. Lowercased at registration."
+          },
+          "credentialSecretArn": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 20,
+            "pattern": "^arn:(aws|aws-us-gov):secretsmanager:[a-z0-9-]+:\\d{12}:secret:.+$",
+            "description": "Secret holding {\"token\": ...} for a personal access token, or\n{\"client_id\": ..., \"client_secret\": ...} for OAuth machine-to-machine. The\nshape selects the auth mode, so a customer cannot declare one mode and\nstore the other. Reachable only through crossAccountRoleArn, so its ACCOUNT\nis unconstrained; it must be readable by that role and live in the\ndeployment region (Athena does not support cross-Region federated queries).\n\nNote an AWS constraint this service can neither impose nor relax: a secret\nin a different account from the role must be encrypted with a\nCUSTOMER-MANAGED key, because `aws/secretsmanager` cannot be shared across\naccounts by any policy."
+          },
+          "crossAccountRoleArn": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 20,
+            "pattern": "^arn:(aws|aws-us-gov):iam::\\d{12}:role(/|/[\\u0021-\\u007F]+/)[\\w+=,.@\\-]+$",
+            "description": "Customer-owned IAM role the connector assumes to read\ncredentialSecretArn. Same member name, type and meaning as on\nJdbcConfiguration and GlueConfiguration, and @required here rather than\noptional: the connector holds no Secrets Manager permission of its own, so\nthere is no direct-read fallback.\n\nIts trust policy must name the connector role and condition on\nNamespaceDetail$datasourceExternalId; its permission policy grants\nGetSecretValue on that one secret, plus kms:Decrypt if the secret uses a\ncustomer-managed key.\n\nThe role MUST be named {RESOURCE_PREFIX}datasource-access-*, because this\ndeployment's assume grant is scoped to that prefix, so registration rejects\nany other name explicitly rather than letting it fail as an opaque\nAccessDenied at first scan. Its ACCOUNT is unconstrained.\n\nThere is no externalId member: a caller-supplied ExternalId is the\nvulnerability it was meant to close, so the value is derived from the\nnamespace."
+          },
+          "tableFilter": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "description": "Include-filter applied to table names within databaseName. Omit to\ndiscover every table."
+          },
+          "tableExcludeFilter": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "description": "Exclude-filter applied to table names within databaseName, evaluated\nafter tableFilter."
+          }
+        },
+        "required": [
+          "credentialSecretArn",
+          "crossAccountRoleArn",
+          "databaseName",
+          "databricksCatalog",
+          "httpPath",
+          "workspaceHostname"
+        ]
       },
       "DatatypeRepairChange": {
         "type": "object",
@@ -18329,10 +19510,21 @@
           }
         }
       },
-      "DownloadOntologyOutputPayload": {
-        "type": "string",
-        "description": "The ontology serialized as Turtle.",
-        "format": "byte"
+      "DownloadOntologyResponseContent": {
+        "type": "object",
+        "properties": {
+          "downloadUrl": {
+            "type": "string",
+            "description": "Presigned S3 GET URL for the ontology serialized as Turtle. The\nontology is written to the artifacts bucket and served out-of-band\nrather than inlined, because a large induced ontology (6+ MB) would\nexceed the API Gateway / Lambda response limit and 502 the call."
+          },
+          "expiresInSeconds": {
+            "type": "number",
+            "description": "Seconds until the presigned URL expires."
+          }
+        },
+        "required": [
+          "downloadUrl"
+        ]
       },
       "DroppedTable": {
         "type": "object",
@@ -18350,6 +19542,19 @@
         "required": [
           "reason",
           "tableName"
+        ]
+      },
+      "EventRescanConfig": {
+        "type": "object",
+        "description": "Event-driven rescan configuration for a DATABASE source. When enabled (Glue\nsources only), upstream Glue Data Catalog changes to the source's database\nautomatically trigger an EVENT-trigger rescan; the schema-diff keeps it\nnon-destructive and repeated events are coalesced.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether event-driven rescans are currently active."
+          }
+        },
+        "required": [
+          "enabled"
         ]
       },
       "ExportFormat": {
@@ -18404,11 +19609,25 @@
               "maxLength": 128,
               "minLength": 1
             },
+            "maxItems": 100,
+            "minItems": 0,
             "description": "Explicit entity-class vocabulary handed to the extraction LLM. When\nnon-empty, overrides both graphrag's hardcoded news/finance defaults\nAND the corpus-inferred fallback \u2014 the exact labels supplied here are\nthe ones the extractor uses to type entities. Case-sensitive, spaced\n(e.g. \"Policy\", \"Claim\", \"Loss Ratio\"). Leave empty to fall back to\ninferEntityClassifications."
           },
           "inferEntityClassifications": {
             "type": "boolean",
             "description": "Whether to derive the entity-class vocabulary from this corpus at ingest\nstart rather than inheriting graphrag's hardcoded news/finance defaults\n(\"Company\", \"Sports Team\", \"Creative Work\", \u2026). Ignored when\npreferredEntityClassifications is set. Defaults to true."
+          },
+          "preferredTopics": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "description": "A topic name. Longer than EntityClassification because editorial topic names\nare phrases (\"Black Tie Gala Dress Code\"), not single labels."
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "description": "Explicit TOPIC vocabulary handed to the extraction LLM. Topics are the\nthematic groupings chunks are assigned to \u2014 they become ``__Topic__``\nnodes and are later induced as ``skos:Concept`` \u2014 as distinct from\npreferredEntityClassifications, which types the entities themselves\n(``__Entity__.class``, induced as ``owl:Class``).\n\nThe extractor prefers a listed topic when one matches the content in\nmeaning and specificity, and invents a name otherwise, so this is a\nsteer rather than a closed set. Case-sensitive, spaces allowed\n(e.g. \"Black Tie Gala\", \"Everyday Elegance\").\n\nLeave empty (the default) to let the extractor name every topic from the\nchunk text. There is deliberately no ``inferTopics`` flag: the toolkit\nhas no topic equivalent of the entity-classification inference pass, so\nan empty list already *is* \"let the model decide\"."
           },
           "enableTableExtraction": {
             "type": "boolean",
@@ -18485,6 +19704,22 @@
           "targetColumn": {
             "type": "string",
             "description": "Referenced column in the target table."
+          },
+          "source": {
+            "type": "string",
+            "description": "Origin of the key. Preserved on a steward review so an approved inferred\nrelationship keeps its AI_INFERRED provenance (#1088)."
+          },
+          "reviewStatus": {
+            "type": "string",
+            "description": "Steward review decision for an inferred relationship (#1088): APPROVED or\nREJECTED. Omitted for a plain steward-authored edit (treated as approved)."
+          },
+          "targetDatasourceId": {
+            "type": "string",
+            "description": "Datasource id of the target table for a cross-source relationship (#1088)."
+          },
+          "provenance": {
+            "type": "string",
+            "description": "Provenance note, preserved across a review round-trip (#1088)."
           }
         },
         "required": [
@@ -18516,6 +19751,18 @@
             "type": "number",
             "description": "Inference confidence (0.0-1.0) for AI-inferred keys.",
             "format": "float"
+          },
+          "reviewStatus": {
+            "type": "string",
+            "description": "Steward review state for an inferred relationship (#1088): PENDING_REVIEW,\nAPPROVED, or REJECTED. Empty for authoritative keys (deterministic/steward)\nand keys predating review. Only APPROVED/authoritative keys reach the ontology."
+          },
+          "targetDatasourceId": {
+            "type": "string",
+            "description": "Datasource id of the target table when the relationship crosses a source\nboundary (#1088). Empty for a within-source key."
+          },
+          "provenance": {
+            "type": "string",
+            "description": "Human-readable note of what an inferred relationship was inferred from,\nshown to the steward at review time (#1088)."
           }
         }
       },
@@ -18607,6 +19854,9 @@
             "type": "boolean",
             "description": "Whether this vertex carries the ``coa:isMapped`` marker \u2014 i.e. it is\nbacked by an R2RML mapping and therefore answerable by the structured\nTier-2 (NL\u2192SPARQL / NL\u2192SQL) path. Structured / table-backed classes are\ntrue; unstructured-induced and foundational classes are false (the marker\nis absent). Derived from the top-level ``coa:isMapped`` triple and\nexcluded from ``edges``."
           },
+          "superseded": {
+            "$ref": "#/components/schemas/SupersededAnnotations"
+          },
           "edges": {
             "type": "array",
             "items": {
@@ -18676,6 +19926,9 @@
             "type": "boolean",
             "description": "Whether this vertex carries the ``coa:isMapped`` marker \u2014 i.e. it is\nbacked by an R2RML mapping and therefore answerable by the structured\nTier-2 (NL\u2192SPARQL / NL\u2192SQL) path. Structured / table-backed classes are\ntrue; unstructured-induced and foundational classes are false (the marker\nis absent). Derived from the top-level ``coa:isMapped`` triple and\nexcluded from ``edges``."
           },
+          "superseded": {
+            "$ref": "#/components/schemas/SupersededAnnotations"
+          },
           "edges": {
             "type": "array",
             "items": {
@@ -18744,6 +19997,9 @@
           "isMapped": {
             "type": "boolean",
             "description": "Whether this vertex carries the ``coa:isMapped`` marker \u2014 i.e. it is\nbacked by an R2RML mapping and therefore answerable by the structured\nTier-2 (NL\u2192SPARQL / NL\u2192SQL) path. Structured / table-backed classes are\ntrue; unstructured-induced and foundational classes are false (the marker\nis absent). Derived from the top-level ``coa:isMapped`` triple and\nexcluded from ``edges``."
+          },
+          "superseded": {
+            "$ref": "#/components/schemas/SupersededAnnotations"
           },
           "edges": {
             "type": "array",
@@ -18960,6 +20216,18 @@
               "$ref": "#/components/schemas/OntologyPropertySummary"
             },
             "description": "Datatype properties \u2014 attributes of a class with a literal range."
+          },
+          "totalClasses": {
+            "type": "number",
+            "description": "Total number of classes in the ontology (independent of limit/offset),\nso a client can show the true count while rendering one page."
+          },
+          "totalObjectProperties": {
+            "type": "number",
+            "description": "Total number of object properties in the ontology (independent of limit/offset)."
+          },
+          "totalDatatypeProperties": {
+            "type": "number",
+            "description": "Total number of datatype properties in the ontology (independent of limit/offset)."
           }
         },
         "required": [
@@ -19094,6 +20362,10 @@
           "matchesUrl": {
             "type": "string",
             "description": "Presigned S3 GET URL for the grounding-match list (`matches.json`)\nwhen it is served out-of-band. Null when the match list is small\nenough to be returned inline."
+          },
+          "constraintsUrl": {
+            "type": "string",
+            "description": "Presigned S3 GET URL for the SHACL constraint config\n(`constraints.ttl`) when it is served out-of-band. Null when no\nconstraints artifact exists, in which case any small inline\n`constraintConfig` in `metadata` is returned instead."
           },
           "metadata": {
             "$ref": "#/components/schemas/ProposalMetadata"
@@ -19234,6 +20506,14 @@
             "type": "number",
             "description": "Number of tables discovered by the scan."
           },
+          "tablesProcessed": {
+            "type": "number",
+            "description": "Tables processed so far, counting both unchanged-on-inspection and\nenriched. Published as the job advances, so it lags by a few seconds."
+          },
+          "tablesTotal": {
+            "type": "number",
+            "description": "Denominator for `tablesProcessed`. Falls back to the previous scan's\ntable count until this scan's discovery has finished enumerating."
+          },
           "tablesAdded": {
             "type": "number",
             "description": "Number of tables added since the previous scan."
@@ -19270,6 +20550,13 @@
               "type": "string"
             },
             "description": "The unreadable tables as `database.table`, capped in length.\n\nA signal for diagnosis, not an inventory \u2014 `tablesFailed` is the exact\nfigure and this list may be shorter than it."
+          },
+          "filterWarnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Warnings about the source's filters, absent when none. Set when a filter\nthat looks like a regular expression matched nothing \u2014 filters are globs,\nso the scan succeeded without the intended filtering."
           }
         },
         "required": [
@@ -19319,6 +20606,17 @@
           },
           "technicalMetadata": {
             "$ref": "#/components/schemas/TechnicalMetadataOutput"
+          },
+          "pendingDeletion": {
+            "type": "boolean",
+            "description": "True when a re-scan found this table removed from the source; it is\ndeleted on approve unless the steward keeps it. Absent/false otherwise."
+          },
+          "rescanDiff": {
+            "$ref": "#/components/schemas/RescanTableDiff"
+          },
+          "added": {
+            "type": "boolean",
+            "description": "True when the current re-scan discovered this table for the first time\n(it did not exist in the last approved scan). It therefore has no\nold-vs-new diff \u2014 the whole table is new. Absent/false otherwise."
           }
         },
         "required": [
@@ -19434,13 +20732,13 @@
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Regex filter pattern for schema/table filtering."
+            "description": "Passed to Glue `GetTables` as its native `Expression` (a regular\nexpression) \u2014 the one filter that is not a glob."
           },
           "tableExcludeFilter": {
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Regex filter pattern for schema/table filtering."
+            "description": "Tables matching this glob filter are excluded."
           },
           "crossAccountRoleArn": {
             "type": "string",
@@ -19755,6 +21053,7 @@
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "description": "Data source identifier reference."
           },
           "proposalId": {
@@ -20068,25 +21367,25 @@
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Regex filter pattern for schema/table filtering."
+            "description": "Only schemas matching this glob filter are discovered."
           },
           "schemaExcludeFilter": {
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Regex filter pattern for schema/table filtering."
+            "description": "Schemas matching this glob filter are excluded, IN ADDITION TO the\nengine's system schemas (e.g. `pg_catalog`, `information_schema`), which\nare always excluded."
           },
           "tableFilter": {
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Regex filter pattern for schema/table filtering."
+            "description": "Schema/table filter: one or more shell globs, separated by `|` or `,`, each\nmatched against the WHOLE name. `*` matches any characters, `?` one\ncharacter, `[abc]` one of a set. Examples: `sales_*`, `public|analytics`,\n`constructor*,results`. Not a regular expression \u2014 `^`, `$` and `.*` are\nmatched literally. The one exception is a Glue Data Catalog source's\n`tableFilter`, which is passed to Glue as its native expression syntax."
           },
           "tableExcludeFilter": {
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Regex filter pattern for schema/table filtering."
+            "description": "Schema/table filter: one or more shell globs, separated by `|` or `,`, each\nmatched against the WHOLE name. `*` matches any characters, `?` one\ncharacter, `[abc]` one of a set. Examples: `sales_*`, `public|analytics`,\n`constructor*,results`. Not a regular expression \u2014 `^`, `$` and `.*` are\nmatched literally. The one exception is a Glue Data Catalog source's\n`tableFilter`, which is passed to Glue as its native expression syntax."
           },
           "credentialSecretArn": {
             "type": "string",
@@ -20124,6 +21423,39 @@
           "engine",
           "host",
           "port"
+        ]
+      },
+      "KeepRescanRemovalRequestContent": {
+        "type": "object",
+        "properties": {
+          "columnName": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+            "description": "If set, keep only this removed column of the table. Omit to keep the\nwhole removed table."
+          }
+        }
+      },
+      "KeepRescanRemovalResponseContent": {
+        "type": "object",
+        "properties": {
+          "tableId": {
+            "type": "string",
+            "description": "Identifier of the table the kept item belongs to."
+          },
+          "columnName": {
+            "type": "string",
+            "description": "The kept column, echoed back only when keeping a single column."
+          },
+          "pendingDeletion": {
+            "type": "boolean",
+            "description": "The item's removal state after the keep. Always false \u2014 the item is\nno longer pending deletion."
+          }
+        },
+        "required": [
+          "pendingDeletion",
+          "tableId"
         ]
       },
       "ListFoundationalOntologiesResponseContent": {
@@ -20338,6 +21670,21 @@
           "proposals"
         ]
       },
+      "ListSourceScanJobsResponseContent": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScanJobEntry"
+            },
+            "description": "History entries, newest first."
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
       "ListSourceTablesResponseContent": {
         "type": "object",
         "description": "Standard pagination output",
@@ -20504,6 +21851,7 @@
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "description": "Data source identifier reference."
           },
           "sourceTable": {
@@ -20608,18 +21956,22 @@
             "type": "string",
             "maxLength": 256,
             "minLength": 1,
-            "description": "Display name for a namespace."
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display name for a namespace. Angle brackets and control characters are rejected."
           },
           "description": {
             "type": "string",
             "maxLength": 1024,
             "minLength": 1,
-            "description": "Namespace description."
+            "pattern": "^[^<>\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]*$",
+            "description": "Namespace description. Angle brackets and control characters other than\ntab and newline are rejected."
           },
           "owner": {
             "type": "string",
-            "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
-            "description": "Owner email address."
+            "maxLength": 254,
+            "minLength": 6,
+            "pattern": "^[A-Za-z0-9!$%&'*+/=?^_{}~-]+(\\.[A-Za-z0-9!$%&'*+/=?^_{}~-]+)*@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,63}$",
+            "description": "Owner email address. The local part allows the RFC 5322 atext characters\nexcept # | and backtick (the owner also becomes a grant principalId)."
           },
           "status": {
             "$ref": "#/components/schemas/NamespaceStatus"
@@ -20650,6 +22002,10 @@
           },
           "vkgHealth": {
             "$ref": "#/components/schemas/VkgHealthStatus"
+          },
+          "vkgHealthReason": {
+            "type": "string",
+            "description": "Human-readable explanation for a non-HEALTHY vkgHealth, when known\n(e.g. \"container health check failing\", \"no running task\"). Absent when\nHEALTHY. Coarse by design \u2014 the precise container-side cause is in the\nVKG service /health response and its CloudWatch logs."
           }
         },
         "required": [
@@ -20693,7 +22049,8 @@
             "type": "string",
             "maxLength": 256,
             "minLength": 1,
-            "description": "Display name for a namespace."
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display name for a namespace. Angle brackets and control characters are rejected."
           },
           "status": {
             "$ref": "#/components/schemas/NamespaceStatus"
@@ -21027,6 +22384,7 @@
               "type": "string",
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
               "description": "Data source identifier reference."
             },
             "description": "Data source IDs this proposal was induced from."
@@ -21212,6 +22570,70 @@
           "tier3_review"
         ]
       },
+      "PutSourceEventRescanRequestContent": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether event-driven rescans should be active."
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "PutSourceEventRescanResponseContent": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "description": "Identifier of the source."
+          },
+          "eventRescan": {
+            "$ref": "#/components/schemas/EventRescanConfig"
+          }
+        },
+        "required": [
+          "eventRescan",
+          "sourceId"
+        ]
+      },
+      "PutSourceRescanScheduleRequestContent": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the recurring rescan should be active."
+          },
+          "scheduleExpression": {
+            "type": "string",
+            "description": "EventBridge schedule expression (e.g. \"rate(1 day)\" or\n\"cron(0 3 * * ? *)\"). Required when enabled=true.\n\nThe cadence is floored, because every tick is a full discovery plus\nenrichment pass. A `rate()` below the floor is rejected with 400, a\n`cron()` must name a single minute so it cannot fire sub-hourly, and\none-time `at()` expressions are not accepted."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone for cron evaluation. Defaults to UTC."
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "PutSourceRescanScheduleResponseContent": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "description": "Identifier of the source."
+          },
+          "rescanSchedule": {
+            "$ref": "#/components/schemas/RescanSchedule"
+          }
+        },
+        "required": [
+          "rescanSchedule",
+          "sourceId"
+        ]
+      },
       "QueryEngine": {
         "type": "string",
         "description": "How the consumption layer should execute queries against a source.",
@@ -21314,6 +22736,104 @@
           "repairedCount"
         ]
       },
+      "RescanChangeKind": {
+        "type": "string",
+        "description": "Category of a source-owned field a re-scan found changed. Groups the\nindividual field changes so the review UI can present them by kind.",
+        "enum": [
+          "SCHEMA",
+          "DESCRIPTION",
+          "CONSTRAINT",
+          "SAMPLED_VALUES"
+        ]
+      },
+      "RescanColumnChange": {
+        "type": "object",
+        "description": "A column a re-scan added, removed, or modified, with its changed fields.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Column name."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RescanColumnChangeStatus"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RescanFieldChange"
+            },
+            "description": "Changed source-owned fields (populated for MODIFIED)."
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ]
+      },
+      "RescanColumnChangeStatus": {
+        "type": "string",
+        "description": "How a re-scan changed a column, relative to the last approved scan.\nWire values are lower-case to match what the diff has always emitted, so\nnaming them here is not a breaking change.",
+        "enum": [
+          "added",
+          "removed",
+          "modified"
+        ]
+      },
+      "RescanFieldChange": {
+        "type": "object",
+        "description": "One source-owned field that a re-scan changed vs. the last approved scan,\ncarrying both the old and new values for the steward's before/after view.",
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "Field name (e.g. \"description\", \"data_type\", \"primary_key\")."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RescanChangeKind"
+          },
+          "old": {
+            "type": "string",
+            "description": "Value at the last approved scan."
+          },
+          "new": {
+            "type": "string",
+            "description": "Value the latest re-scan discovered."
+          }
+        },
+        "required": [
+          "field",
+          "kind"
+        ]
+      },
+      "RescanSchedule": {
+        "type": "object",
+        "description": "A recurring rescan cadence for a DATABASE source, backed by an EventBridge\nschedule. When enabled, the source is automatically re-scanned on the given\ncadence (a SCHEDULED-trigger rescan); the schema-diff keeps it\nnon-destructive.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the recurring rescan is currently active."
+          },
+          "scheduleExpression": {
+            "type": "string",
+            "description": "EventBridge schedule expression, e.g. \"rate(1 day)\" or\n\"cron(0 3 * * ? *)\". Required when enabled."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone the cron expression is evaluated in (e.g.\n\"America/New_York\"). Defaults to UTC when omitted."
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "RescanSourceRequestContent": {
+        "type": "object",
+        "properties": {
+          "confirmDiscardOpenReview": {
+            "type": "boolean",
+            "description": "Acknowledge that starting this re-scan discards an open re-scan\nreview. Required only when the source is in RESCAN_REVIEW: a fresh\nre-scan re-diffs against the last APPROVED state, so any review\ndecisions or edits made inside the open review window are lost.\nOmitting it in that state returns 409 rather than silently\ndiscarding the review. Ignored from every other status, where a\nre-scan discards nothing."
+          }
+        }
+      },
       "RescanSourceResponseContent": {
         "type": "object",
         "properties": {
@@ -21323,6 +22843,26 @@
           },
           "status": {
             "$ref": "#/components/schemas/SourceStatus"
+          }
+        }
+      },
+      "RescanTableDiff": {
+        "type": "object",
+        "description": "The old-vs-new breakdown of what a re-scan changed for a table, so a Data\nSteward can compare against the last approved scan before approving. Present\nonly while the source is in RESCAN_REVIEW and this table actually changed.",
+        "properties": {
+          "tableFields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RescanFieldChange"
+            },
+            "description": "Changed table-level source-owned fields (description, keys, format, ...)."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RescanColumnChange"
+            },
+            "description": "Per-column added / removed / modified breakdown."
           }
         }
       },
@@ -21486,6 +23026,76 @@
           "scope"
         ]
       },
+      "ScanJobEntry": {
+        "type": "object",
+        "description": "One row in a source's scan history.",
+        "properties": {
+          "at": {
+            "type": "number",
+            "description": "When the entry occurred (scan start, or the moment the review resolved).",
+            "format": "double"
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/ScanJobEventType"
+          },
+          "status": {
+            "type": "string",
+            "description": "Status of the row. For a SCAN this is the scan-job status\n(IN_PROGRESS/DISCOVERING/ENRICHING/COMPLETED/FAILED/CANCELLED); for a\nREVIEW it is the terminal source status the decision produced\n(e.g. APPROVED, REJECTED, APPROVAL_FAILED). Free-form because the two\nevent kinds draw from different status vocabularies."
+          },
+          "scanType": {
+            "type": "string",
+            "description": "For a SCAN row: whether it was a full or incremental (re-scan) run."
+          },
+          "triggerType": {
+            "$ref": "#/components/schemas/ScanTrigger"
+          },
+          "tablesDiscovered": {
+            "type": "number",
+            "description": "Number of tables discovered by the scan (SCAN rows)."
+          },
+          "tablesApproved": {
+            "type": "number",
+            "description": "Number of tables approved as of this review (REVIEW rows)."
+          },
+          "completedAt": {
+            "type": "number",
+            "description": "Timestamp when the scan job completed (SCAN rows).",
+            "format": "double"
+          },
+          "errorMessage": {
+            "type": "string",
+            "description": "Error message if the scan job failed (SCAN rows)."
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "isRescan": {
+            "type": "boolean",
+            "description": "True when this event resolved a re-scan review (rather than an initial\napprove/reject). REVIEW rows only."
+          }
+        },
+        "required": [
+          "at"
+        ]
+      },
+      "ScanJobEventType": {
+        "type": "string",
+        "description": "Kind of entry in a source's scan history. A row with no explicit type is a\nSCAN (the scan-job rows written before review events existed carry none).",
+        "enum": [
+          "SCAN",
+          "REVIEW"
+        ]
+      },
+      "ScanTrigger": {
+        "type": "string",
+        "description": "What triggered a scan job. INITIAL is the first scan on connect; MANUAL is a\nuser-initiated rescan; SCHEDULED and EVENT are automated rescans.",
+        "enum": [
+          "INITIAL",
+          "MANUAL",
+          "SCHEDULED",
+          "EVENT"
+        ]
+      },
       "SourceScanJobStatus": {
         "type": "string",
         "description": "Status of a database scan job execution.",
@@ -21508,6 +23118,7 @@
           "SCANNING_KG_BUILD",
           "ENRICHING",
           "PENDING_REVIEW",
+          "RESCAN_REVIEW",
           "APPROVING",
           "APPROVAL_FAILED",
           "REJECTING",
@@ -21528,6 +23139,7 @@
           "GLUE_DATABASE",
           "JDBC_DATABASE",
           "CUSTOM_CONNECTOR",
+          "DATABRICKS_SQL_WAREHOUSE",
           "S3",
           "LOCAL_UPLOAD"
         ]
@@ -21614,6 +23226,7 @@
               "type": "string",
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
               "description": "Data source identifier reference."
             },
             "description": "Data source IDs to induct from."
@@ -21622,7 +23235,7 @@
             "type": "string",
             "maxLength": 2048,
             "minLength": 10,
-            "pattern": "^https?://.+$",
+            "pattern": "^https?://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/(?!\\.\\.?(?:[/#]|$))(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+)*/?#?$",
             "description": "URI prefix for generated ontology classes and properties."
           },
           "label": {
@@ -21657,7 +23270,8 @@
           },
           "graphArn": {
             "type": "string",
-            "description": "Neptune Analytics graph ARN (required when strategy is unstructured_lexical_graph)."
+            "description": "Caller-selected lexical sources are not supported. Providing this field\nreturns HTTP 422 with ``detail.code`` set to ``UNSUPPORTED_SOURCE``.\nOmit it to use the deployment-configured lexical source.\nThis shape is deprecated since 2026-10-01: Caller-selected lexical sources are not supported; omit this field.",
+            "deprecated": true
           }
         },
         "required": [
@@ -21679,6 +23293,16 @@
         "required": [
           "jobId"
         ]
+      },
+      "SupersededAnnotations": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": "Retired annotation literals keyed by kind (``comments`` / ``definitions`` /\n``altLabels`` / ``glossaryTerms`` / ``tags``). See ``GraphVertex.superseded``."
       },
       "TableSummary": {
         "type": "object",
@@ -21704,12 +23328,28 @@
             "type": "number",
             "description": "Number of columns with reviewStatus=APPROVED. Allows the UI to show\napproval progress (columnsApproved / columnCount) without fetching\nper-column detail."
           },
+          "columnsPendingDeletion": {
+            "type": "number",
+            "description": "Number of columns the re-scan found removed from the source (retained,\npending deletion on approval). Lets the list surface column-level removals\nin the Review status column."
+          },
+          "pendingRelationships": {
+            "type": "number",
+            "description": "Number of inferred foreign keys on this table with\n``reviewStatus=PENDING_REVIEW`` \u2014 relationships that a cross-source\ninference pass has proposed and a steward has not yet decided on.\nNon-zero on tables whose parent source is already ``APPROVED``\nsignals that the source's Approve button has already been clicked\nbut a later cross-source pass has since found new relationships to\nreview; the steward can drill in per-table and use per-relationship\nreview (``PATCH /keys``) or per-table Approve to settle them.\nAbsent when zero to keep response bodies small."
+          },
           "reviewStatus": {
             "$ref": "#/components/schemas/ReviewStatus"
           },
           "enrichmentSource": {
             "type": "string",
             "description": "Origin of the table's business metadata."
+          },
+          "pendingDeletion": {
+            "type": "boolean",
+            "description": "True when a re-scan found this table removed from the source; it is\ndeleted on approve unless the steward keeps it. Absent/false otherwise."
+          },
+          "added": {
+            "type": "boolean",
+            "description": "True when this table was created by the re-scan under review (net-new\nsince the last approved scan). Derived from the re-scan backup; not\npersisted; absent outside RESCAN_REVIEW."
           }
         },
         "required": [
@@ -21769,6 +23409,7 @@
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "description": "Data source identifier reference."
           },
           "sourceTable": {
@@ -21830,11 +23471,15 @@
         "properties": {
           "displayName": {
             "type": "string",
-            "description": "New human-readable display name for the namespace."
+            "maxLength": 256,
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]*$",
+            "description": "New human-readable display name for the namespace. An empty string\nclears it (the edit form sends \"\" for a cleared field)."
           },
           "description": {
             "type": "string",
-            "description": "New description for the namespace."
+            "maxLength": 1024,
+            "pattern": "^[^<>\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]*$",
+            "description": "New description for the namespace. An empty string clears it."
           }
         }
       },
@@ -22132,6 +23777,7 @@
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "description": "Data source identifier reference."
           },
           "sourceTable": {
@@ -22172,14 +23818,14 @@
       },
       "ValidateMetricResponseContent": {
         "type": "object",
-        "description": "Result of validating a metric definition, listing any warnings.",
+        "description": "Result of validating a metric definition, listing blocking and advisory findings.",
         "properties": {
           "warnings": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ValidationWarning"
             },
-            "description": "Non-fatal validation warnings raised during validation."
+            "description": "Validation findings. Severity ERROR predicts create/update rejection;\nINFO is advisory."
           }
         },
         "required": [
@@ -22281,6 +23927,7 @@
         "description": "Health of the namespace's VKG translation service. HEALTHY: running and able\nto translate. UNAVAILABLE: exists but not serving. PROVISIONING: service is\nstarting up (deployment in progress, not yet serving) \u2014 expected to become\nHEALTHY shortly. UNKNOWN: not deployed yet or state undetermined.",
         "enum": [
           "HEALTHY",
+          "DEGRADED",
           "UNAVAILABLE",
           "PROVISIONING",
           "UNKNOWN"
@@ -22290,6 +23937,7 @@
         "type": "string",
         "description": "Severity level attached to a validation warning.",
         "enum": [
+          "ERROR",
           "WARNING",
           "INFO"
         ]
@@ -22394,23 +24042,6 @@
         "required": [
           "name",
           "value"
-        ]
-      },
-      "DimensionInfo": {
-        "type": "object",
-        "description": "A dimension a metric can be sliced by, with its name and type (e.g. time,\ncategory).",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Name of the dimension."
-          },
-          "type": {
-            "type": "string",
-            "description": "Type of the dimension (e.g. time, category)."
-          }
-        },
-        "required": [
-          "name"
         ]
       },
       "DimensionOperator": {
@@ -22590,46 +24221,6 @@
           "trace"
         ]
       },
-      "MetricSummary": {
-        "type": "object",
-        "description": "A queryable metric with its identifier, name, description, dimensions,\nsynonyms, and backing data source.",
-        "properties": {
-          "metricId": {
-            "type": "string",
-            "description": "Identifier of the metric."
-          },
-          "name": {
-            "type": "string",
-            "description": "Human-readable name of the metric."
-          },
-          "description": {
-            "type": "string",
-            "description": "Description of the metric."
-          },
-          "dimensions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DimensionInfo"
-            },
-            "description": "Dimensions the metric can be sliced by."
-          },
-          "synonyms": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Alternative names for the metric."
-          },
-          "dataSourceId": {
-            "type": "string",
-            "description": "Identifier of the data source backing the metric."
-          }
-        },
-        "required": [
-          "metricId",
-          "name"
-        ]
-      },
       "NamespaceNotFoundErrorResponseContent": {
         "type": "object",
         "description": "Returned with HTTP 404 when the target namespace does not exist or is not\nvisible to the caller.",
@@ -22712,6 +24303,9 @@
             "type": "string",
             "description": "Execution mode: \"standard\" (single-shot) or \"deep-reasoning\" (multi-step\nreasoning loop). Orthogonal to the tier cascade. Absent = the serve\ndeployment default. Deep reasoning is higher-recall but much slower\n(p50 ~90s), so a caller behind a short client timeout should send\n\"standard\". \"agentic\" is the deprecated pre-rename spelling of\n\"deep-reasoning\" and is still accepted."
           },
+          "strategy": {
+            "$ref": "#/components/schemas/QueryStrategy"
+          },
           "dimensions": {
             "type": "array",
             "items": {
@@ -22726,6 +24320,10 @@
           "includeSupporting": {
             "type": "boolean",
             "description": "Whether to include supporting content in the response."
+          },
+          "includeDebugInfo": {
+            "type": "boolean",
+            "description": "When true, include the generated SQL (`queryUsed`) and SPARQL\n(`sparqlGenerated`) in the response for debugging and observability.\nDefaults to false; when unset or false, both fields are omitted.\n\n**Security:** these fields expose internal schema (table and column\nnames, joins). Only enable for trusted callers, admin-tier users, or\ndevelopment environments."
           },
           "maxResults": {
             "type": "number",
@@ -22822,6 +24420,18 @@
           "confidence",
           "tier",
           "trace"
+        ]
+      },
+      "QueryStrategy": {
+        "type": "string",
+        "description": "Which Tier-2 engine answers a structured query. Absent = the serve default\n(``nl_to_sql_first``).\n\nThis is a DIFFERENT axis from ``mode``: ``mode`` chooses whether the whole\nT1\u2192T2\u2192T3 cascade is replaced by the Tier-3 reasoning loop, while ``strategy``\nchooses which engine answers within Tier 2. Both were called \"agentic\" before\nthe rebrand, which is why the distinction is spelled out here.\n\nAn explicit value is caller intent and is never overridden by automatic tier\ngating or per-query Tier-2 pruning.",
+        "enum": [
+          "best",
+          "ontop",
+          "nl_to_sql",
+          "ontop_first",
+          "nl_to_sql_first",
+          "deep-reasoning"
         ]
       },
       "QueryTranslationErrorResponseContent": {
@@ -22950,25 +24560,6 @@
           "uri"
         ]
       },
-      "ServeListMetricsResponseContent": {
-        "type": "object",
-        "properties": {
-          "metrics": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MetricSummary"
-            },
-            "description": "The metrics available in the namespace."
-          },
-          "nextToken": {
-            "type": "string",
-            "description": "Pagination token for retrieving the next page, if any."
-          }
-        },
-        "required": [
-          "metrics"
-        ]
-      },
       "SupportingContent": {
         "type": "object",
         "description": "A knowledge-base chunk that supports an answer, with its text, source\ndocument provenance, and relevance score.",
@@ -22983,11 +24574,11 @@
           },
           "sourceDocumentId": {
             "type": "string",
-            "description": "Identifier of the source document the chunk came from."
+            "description": "Opaque, unique identifier of the source document the chunk came from.\nUse this value to correlate chunks; it is not a display name."
           },
           "sourceDocumentName": {
             "type": "string",
-            "description": "Human-readable name of the source document."
+            "description": "Human-readable original file name of the source document. This value is\nintended for display and is not guaranteed to be unique."
           },
           "relevanceScore": {
             "type": "number",
