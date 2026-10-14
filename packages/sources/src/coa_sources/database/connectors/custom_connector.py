@@ -52,13 +52,14 @@ from coa_common.domain_models import (
     Table,
     TechnicalMetadata,
 )
+from coa_control_plane_server.models.source_sub_type import SourceSubType
 
 from coa_sources.database.metrics import emit_metric
 
 from .athena_statement import AthenaStatementError, AthenaStatementRunner
 from .base import ConnectionCheck, ConnectionTestResult, MetadataConnector
 from .constraint_tags import ParsedComment, assemble_constraints, parse_comment
-from .filters import compile_filter
+from .filters import compile_filter, unmatched_regex_warning
 
 # structlog, not stdlib logging: these run in the sources-api and discovery
 # Lambdas, whose setup_logging() pins the stdlib root logger to WARNING and
@@ -133,6 +134,29 @@ _DESCRIBE_ROW_SKIP_PREFIXES = ("#",)
 def _is_addressable_unquoted(identifier: str) -> bool:
     """Whether ``identifier`` can be sent unquoted to both Athena parsers."""
     return bool(_UNQUOTED_IDENTIFIER_RE.match(identifier or ""))
+
+
+def _catalog_failure_hint(config: dict) -> str:
+    """Advice for a catalog that would not resolve, chosen by who deployed the connector.
+
+    For ``CUSTOM_CONNECTOR`` the customer owns the Lambda, so the commonest cause is a
+    missing resource policy. For ``DATABRICKS_SQL_WAREHOUSE`` this deployment operates the
+    connector, and registration already resolved its ARN, so reaching here means the
+    function or the source's configuration parameter went away afterwards.
+    """
+    if config.get("source_sub_type") == SourceSubType.DATABRICKS_SQL_WAREHOUSE.value:
+        return (
+            "This deployment operates the connector for this source type, so this is an "
+            "operator-side fault rather than anything to change on the source: registration "
+            "resolved a deployed connector ARN, so either that function has since been removed or "
+            "renamed, or this source's connector configuration parameter is missing. Check that "
+            "the Databricks connector stack is deployed under the name the catalog was created "
+            "with, and that the parameter for this catalog name still exists."
+        )
+    return (
+        "Check that the connector Lambda's resource policy allows this deployment's discovery and "
+        "serve roles to invoke it, and that the Lambda is deployed and healthy."
+    )
 
 
 class CustomConnector(MetadataConnector):
@@ -211,15 +235,13 @@ class CustomConnector(MetadataConnector):
         try:
             databases = self._list_databases(catalog)
         except AthenaStatementError as exc:
-            # The likeliest cause by far, so it leads the message: without the
-            # customer's resource policy Athena cannot invoke the connector, and
-            # the AccessDenied it reports names our role rather than the fix.
+            # Athena reports an AccessDenied naming our own role, which points at neither
+            # fix, so the message has to name the likely cause per sub-type.
             return ConnectionTestResult(
                 success=False,
                 message=(
-                    f"Could not list databases in Athena data catalog '{catalog}'. Check that the connector "
-                    f"Lambda's resource policy allows this deployment's discovery and serve roles to invoke "
-                    f"it, and that the Lambda is deployed and healthy. Athena reported: {exc}"
+                    f"Could not list databases in Athena data catalog '{catalog}'. "
+                    f"{_catalog_failure_hint(config)} Athena reported: {exc}"
                 ),
                 checks=[ConnectionCheck(check="catalog_access", status="failed", message=str(exc))],
             )
@@ -267,7 +289,11 @@ class CustomConnector(MetadataConnector):
         catalog = config.get("athena_data_catalog_name", "")
         database = config.get("database_name", "")
         if not catalog or not database:
-            raise ValueError("athena_data_catalog_name and database_name are required for a CUSTOM_CONNECTOR source")
+            # Named from the record rather than hardcoded: this connector serves every
+            # connector-backed sub-type, so a message naming CUSTOM_CONNECTOR would
+            # misdirect a steward reading it about a Databricks source.
+            sub_type = config.get("source_sub_type") or "connector-backed"
+            raise ValueError(f"athena_data_catalog_name and database_name are required for a {sub_type} source")
         for label, value in (("catalog", catalog), ("database", database)):
             if not _is_addressable_unquoted(value):
                 raise ValueError(
@@ -296,10 +322,18 @@ class CustomConnector(MetadataConnector):
             listed=len(table_names),
             after_filters=len(kept),
         )
+        filter_warnings = [
+            w
+            for w in (
+                unmatched_regex_warning(config.get("table_filter"), "table_filter", table_names),
+                unmatched_regex_warning(config.get("table_exclude_filter"), "table_exclude_filter", table_names),
+            )
+            if w
+        ]
         if not kept:
             # Not an error: a filter that matches nothing, or an empty database,
             # is a configuration outcome the steward can see and correct.
-            return DiscoveredMetadata(tables=[])
+            return DiscoveredMetadata(tables=[], filter_warnings=filter_warnings)
 
         # Enforced HERE, before the fan-out, not only in discovery_handler. That
         # check runs on `metadata.tables` — i.e. after this method has already
@@ -334,7 +368,9 @@ class CustomConnector(MetadataConnector):
                 database=database,
                 failed_tables=failed,
             )
-        return DiscoveredMetadata(tables=tables, failed_tables=[f"{database}.{t}" for t in failed])
+        return DiscoveredMetadata(
+            tables=tables, failed_tables=[f"{database}.{t}" for t in failed], filter_warnings=filter_warnings
+        )
 
     # ── Statement helpers ────────────────────────────────────────────────
 
@@ -444,10 +480,11 @@ class CustomConnector(MetadataConnector):
             Column(
                 name=name,
                 data_type=data_type,
-                # DESCRIBE carries no nullability, and neither does Athena's
-                # Column type, so it is genuinely unknown rather than True. No
-                # ontology impact: induction reads only PRIMARY_KEY for NOT_NULL.
-                nullable=True,
+                # DESCRIBE carries no nullability and neither does Athena's Column type,
+                # so `@notnull` in the comment is the only channel. An absent tag must
+                # keep meaning nullable: every connector deployed before the tag existed
+                # emits none, and their columns would otherwise all flip.
+                nullable=not comment.is_not_null,
                 business_metadata=(
                     BusinessMetadata(
                         description=comment.description,

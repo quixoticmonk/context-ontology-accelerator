@@ -5,7 +5,7 @@
 # public.ecr.aws/lambda/python:3.12 tag on 2026-09-17 to clear the AL2023 expat /
 # openssl / libtiff HIGH CVEs Trivy/Inspector flagged against the prior 2026-05-13 base.
 # checkov:skip=CKV_DOCKER_2:Lambda container image. HEALTHCHECK is a no-op on the Lambda runtime - the Lambda service owns invocation lifecycle and container readiness (via LAMBDA_RUNTIME_API), not Docker's HEALTHCHECK.
-FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12@sha256:ce181a0559b8e4ae8464a94daef13e1449f3bdafada046272b47dd8af2c06531
+FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12@sha256:a32fd0af1505dad402a3a8c2bc1766a81b292f6869f13f1239d6c28b57b434c7
 
 # System deps: poppler for PDF text extraction, file-libs for libmagic (file type detection)
 RUN dnf install -y poppler-utils file-libs && dnf clean all

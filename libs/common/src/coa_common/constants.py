@@ -26,6 +26,13 @@ RESOURCE_PREFIX: str = os.environ.get("RESOURCE_PREFIX", "coa").rstrip("-")
 Deploy-time infrastructure injects this as ``{prefix}-{env}-`` (e.g.
 ``coa-dev-``) because its consumers build resource names from it. Do NOT
 derive data-plane identifiers from it — use ``BRAND`` below.
+
+This module reads ``RESOURCE_PREFIX`` twice, with two different rules, and the
+difference is deliberate. Here it is stripped to the bare brand token and defaults to
+one, because its consumers are tag keys and index names that must stay resolvable in
+a deployment that never set the variable. :func:`require_resource_prefix` reads the
+raw ``{prefix}-{env}-`` form and REFUSES to default, because its consumers are the
+ExternalId a customer pastes into a trust policy and the catalog name a query resolves.
 """
 
 BRAND: str = "coa"
@@ -130,6 +137,35 @@ SOURCE_PIPELINE_RUN_FIELDS: tuple[str, ...] = (
     "preprocessingIssues",
     "preprocessingIssuesS3Key",
     "preprocessingIssuesTruncated",
+)
+
+# The DATABASE members of the Smithy SourceSubType enum, mirrored for the same reason as
+# the statuses above. Consumers DERIVE their own sets from these rather than re-listing
+# the values, because a sub-type missing from such a set fails silently.
+# ``packages/sources/tests/unit/database/test_sub_types.py`` is the tripwire that
+# compares this mirror against the generated enum.
+
+
+class DatabaseSubType(StrEnum):
+    """Sub-type of a DATABASE source (Smithy SourceSubType, DATABASE members only)."""
+
+    GLUE_DATABASE = "GLUE_DATABASE"
+    JDBC_DATABASE = "JDBC_DATABASE"
+    CUSTOM_CONNECTOR = "CUSTOM_CONNECTOR"
+    DATABRICKS_SQL_WAREHOUSE = "DATABRICKS_SQL_WAREHOUSE"
+
+
+DATABASE_SUB_TYPES: frozenset[str] = frozenset(s.value for s in DatabaseSubType)
+
+# Sub-types whose source is served by a federation connector Lambda under its own
+# top-level Athena ``LAMBDA`` catalog, and so resolves its own database rather than a
+# Glue-crawled schema. Tested as MEMBERSHIP, never equality against one of them: that
+# shape fails open for every other member.
+CONNECTOR_BACKED_SUB_TYPES: frozenset[str] = frozenset(
+    {
+        DatabaseSubType.CUSTOM_CONNECTOR.value,
+        DatabaseSubType.DATABRICKS_SQL_WAREHOUSE.value,
+    }
 )
 
 
@@ -301,12 +337,11 @@ revisited with evidence if a real query is ever refused.
 # context-manager's ``StrategyOption`` would add an undeclared runtime dependency
 # to the Lambda bundle.
 #
-# This is the THIRD copy of the same set (Smithy ``QueryStrategy``, serve's
-# ``StrategyOption``, here), so drift is guarded by a three-way parity test in
+# The THIRD copy of the same set (Smithy ``QueryStrategy``, serve's ``StrategyOption``,
+# here), so drift is guarded by a three-way parity test in
 # ``packages/context-manager/tests/unit/test_strategy.py``. An unknown value must be
-# rejected rather than forwarded: it would fall out of
-# ``Orchestrator._EXPLICIT_STRATEGY_OPTIONS`` and silently run the default fallback
-# chain while the caller believed it pinned an engine.
+# rejected rather than forwarded: it would silently run the default fallback chain while
+# the caller believed it pinned an engine.
 QUERY_STRATEGIES: frozenset[str] = frozenset(
     {
         "best",
@@ -369,6 +404,25 @@ def validate_namespace_id(value: str, name: str = "namespaceId") -> None:
         raise ValueError(f"Invalid {name}: {value!r}. Must be a UUID v4 (e.g. '550e8400-e29b-41d4-a716-446655440000').")
 
 
+def validate_source_id(value: str, name: str = "sourceId") -> None:
+    """Raise ``ValueError`` if *value* is not a safe source ID.
+
+    Source IDs are server-generated ``uuid.uuid4()`` values (see
+    ``coa_sources.api.database_routes._create_database_source`` /
+    ``document_routes``). Validating at the API boundary is defense-in-depth: it
+    keeps a malformed path parameter from flowing into DynamoDB keys, a DataZone
+    search prefix, a derived catalog name, or an STS ``RoleSessionName`` (whose
+    charset is constrained), and keeps CloudTrail attribution well-formed.
+
+    Uses the shared safe-id character class (alphanumeric, hyphen, underscore)
+    rather than a strict UUID v4 match — that rejects every unsafe character
+    that could break the downstream sinks (whitespace, ``:``, ``%``, ``.``,
+    ``/``, path traversal) while still accepting the server-minted UUIDs. Reuses
+    ``validate_id`` so the class stays single-sourced.
+    """
+    validate_id(value, name)
+
+
 def validate_namespace_name(value: str) -> None:
     """Raise ``ValueError`` if *value* is not a valid namespace name.
 
@@ -393,11 +447,69 @@ def validate_s3_prefix(value: str, name: str) -> None:
         raise ValueError(f"Invalid {name}: {value!r}. Must be a relative path like 'healthcare/' or 'documents/2024/'.")
 
 
+# Grant principal IDs: emails, IdP ``sub`` UUIDs, group names, agent IDs.
+# IdP group names and emails are free-form (``R&D Team``, ``Sales (EMEA)``,
+# non-ASCII letters, ``o'brien@...``), so instead of an allowlist this rejects
+# the characters that carry markup or escape a quoted context (``<`` ``>``
+# ``"`` backtick ``\``), control characters, and the grant key / grant-id
+# delimiters ``#`` and ``|``. ``::`` is rejected separately because a single
+# ``:`` is legitimate. Keep in sync with ``PrincipalId`` in
+# models/src/main/smithy/grant.smithy.
+PRINCIPAL_ID_RE: re.Pattern[str] = re.compile(r'[^<>"`\\#|\x00-\x1F\x7F]{1,256}')
+
+# Ontology URI prefix: http(s), an RFC 1123 host, an optional port 1-65535, and
+# an optional path of non-empty segments (no ``.``/``..``) made of RFC 3986
+# unreserved characters or ``%HH`` escapes, ending in an optional ``/`` and/or
+# ``#``. Escapes are stored as-is and never decoded. Keep in sync with
+# ``OntologyUriPrefix`` in models/src/main/smithy/ontology-induction.smithy.
+ONTOLOGY_URI_PREFIX_RE: re.Pattern[str] = re.compile(
+    r"https?://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
+    r"(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?"
+    r"(?:/(?!\.\.?(?:[/#]|$))(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+)*/?#?"
+)
+MAX_ONTOLOGY_URI_PREFIX_LEN = 2048
+
+
+def validate_principal_id(value: object, name: str = "principalId") -> str:
+    """Return *value* if it is a well-formed grant principal ID, else raise ``ValueError``.
+
+    The raw value is deliberately not echoed in the error: principal IDs are
+    caller-supplied and the message is returned in the API response.
+    """
+    if not isinstance(value, str) or not PRINCIPAL_ID_RE.fullmatch(value) or "::" in value:
+        raise ValueError(
+            f"Invalid {name}: must be 1-256 characters and may not contain <, >, \", `, \\, #, |, '::', "
+            "or control characters."
+        )
+    return value
+
+
+def validate_ontology_uri_prefix(value: object, name: str = "ontology_uri_prefix") -> str:
+    """Return the stripped *value* if it is a safe http(s) IRI prefix, else raise ``ValueError``.
+
+    The prefix is minted into every induced class/property IRI and stored as the
+    ontology ID, so it must not carry markup, quotes, whitespace, query strings,
+    or userinfo.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"Invalid {name}: must be a string.")
+    value = value.strip()
+    if len(value) > MAX_ONTOLOGY_URI_PREFIX_LEN or not ONTOLOGY_URI_PREFIX_RE.fullmatch(value):
+        raise ValueError(
+            f"Invalid {name}: must be an http(s) URI such as 'https://example.com/ontology/sales#' "
+            "with a valid host and port and a path of letters, digits, ._~- or %HH escapes."
+        )
+    return value
+
+
 # ---------------------------------------------------------------------------
 # GraphRAG Toolkit tenant ID conversion
 # ---------------------------------------------------------------------------
 # TenantId rules: 1–25 lowercase letters, numbers, and periods only.
 # Periods cannot be at the start or end.
+
+
+_TENANT_ID_HEX_RE = re.compile(r"^[0-9a-f]+$", re.IGNORECASE)
 
 
 def to_graphrag_tenant_id(namespace_id: str, doc_source_id: str = "") -> str:
@@ -412,11 +524,31 @@ def to_graphrag_tenant_id(namespace_id: str, doc_source_id: str = "") -> str:
     The ``doc_source_id`` parameter is accepted but ignored — kept for
     backwards-compatible call sites during migration.
 
+    The stripped value MUST be hex-only. This closes an openCypher-injection
+    class of bug at the sink (``NeptuneDatabaseLexicalStore._label``
+    interpolates the tenant id into a backtick-quoted label); a backtick or
+    other cypher metacharacter that survived hyphen-stripping would break
+    out of the label and inject arbitrary cypher. Non-hex input is a strong
+    signal the caller either fabricated the id or bypassed the API's
+    UUID-shaped route validation — so raise rather than sanitize.
+
+    Empty input is preserved as empty (some call sites use it to signal
+    "no tenant scoping").
+
     Example:
         namespace_id = "550e8400-e29b-41d4-a716-446655440000"
         tenant_id    = "550e8400e29b41d4a71644665"
+
+    Raises:
+        ValueError: If ``namespace_id`` is non-empty and, after hyphen
+            stripping, contains any character outside ``[0-9a-fA-F]``.
     """
-    return namespace_id.replace("-", "")[:25]
+    if not namespace_id:
+        return ""
+    stripped = namespace_id.replace("-", "")
+    if not _TENANT_ID_HEX_RE.match(stripped):
+        raise ValueError(f"namespace_id must be a hex UUID after hyphen stripping; got {namespace_id!r}")
+    return stripped[:25]
 
 
 def graphrag_chunk_index_name(namespace_id: str) -> str:
@@ -626,8 +758,7 @@ MAX_PAGE_SIZE: int = 100
 # orchestration, so both surfaces that expose them (data-layer's ``handler.py``
 # and MCP's ``coa_mcp.tools.discovery``) invoke the backend Lambdas DIRECTLY
 # and skip the Context Manager. The env var names and resource paths below are
-# the contract between those callers and the Terraform modules that wire the
-# ARNs in.
+# the contract between those callers and the CDK stacks that wire the ARNs in.
 #
 # If any of these strings diverge between call sites, a caller falls back to
 # an empty ARN (silent 501) or hits a URL the ontology-api-proxy's alias table
@@ -772,6 +903,34 @@ def namespace_tag_condition_patterns(namespace_id: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def require_resource_prefix() -> str:
+    """This deployment's ``{prefix}-{env}-`` resource prefix, refusing to default.
+
+    Every value derived from it is part of a contract a customer or another deployment
+    can observe: the ExternalId they paste into a trust policy, the reserved role-name
+    prefix their role has to sit inside, and the Athena catalog name a query resolves. A
+    default would let a component whose environment lacks the variable register a source
+    against a different deployment's names, and the mismatch surfaces at the first query,
+    after the customer has already written the wrong ExternalId into their policy. The
+    Java connector refuses to construct without it; this is the same refusal.
+
+    Distinct from the module-level ``RESOURCE_PREFIX`` constant above, which is stripped to
+    the bare brand token and does default. See that docstring for which is which.
+
+    Raises:
+        RuntimeError: ``RESOURCE_PREFIX`` is unset or empty.
+    """
+    prefix = os.environ.get("RESOURCE_PREFIX", "").strip()
+    if not prefix:
+        raise RuntimeError(
+            "RESOURCE_PREFIX is not set. It is the deployment's '{prefix}-{env}-' resource prefix, and "
+            "the sts:ExternalId, the reserved datasource role-name prefix and the Athena catalog name "
+            "are all derived from it — so a default would publish another deployment's values to a "
+            "customer. CDK sets it on every Lambda that needs it; a component missing it is misdeployed."
+        )
+    return prefix
+
+
 def datasource_external_id(namespace_id: str) -> str:
     """ExternalId the platform presents when assuming a customer's datasource role.
 
@@ -785,12 +944,16 @@ def datasource_external_id(namespace_id: str) -> str:
     derivations drifted, every cross-account onboarding would fail ``AccessDenied``
     with nothing to point at.
 
-    Reads ``RESOURCE_PREFIX`` per call (not the module-level constant above, which
-    is stripped to the bare brand token) so the value matches the deployment's
-    ``{prefix}-{env}-`` naming, the same form as ``athenaWorkgroupName``.
+    Reads ``RESOURCE_PREFIX`` per call through :func:`require_resource_prefix`, so the
+    value matches the deployment's ``{prefix}-{env}-`` naming, the same form as
+    ``athenaWorkgroupName``. The module-level constant above is a different rule: it is
+    stripped to the bare brand token and it does default.
+
+    Raises:
+        RuntimeError: ``RESOURCE_PREFIX`` is unset. A returned default here becomes an
+            ExternalId a customer writes into a trust policy, so there is no safe one.
     """
-    prefix = os.environ.get("RESOURCE_PREFIX", "coa-dev-")
-    return f"{prefix}{namespace_id}"
+    return f"{require_resource_prefix()}{namespace_id}"
 
 
 # ---------------------------------------------------------------------------

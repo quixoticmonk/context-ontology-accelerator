@@ -189,7 +189,7 @@ Scan job history for sources.
 | `GET` | `/namespaces/{namespaceId}/sources` | List all sources (paginated, newest first) |
 | `POST` | `/namespaces/{namespaceId}/sources` | Create a DATABASE or DOCUMENTS source |
 | `GET` | `/namespaces/{namespaceId}/sources/{sourceId}` | Get source detail |
-| `DELETE` | `/namespaces/{namespaceId}/sources/{sourceId}` | Delete a source |
+| `DELETE` | `/namespaces/{namespaceId}/sources/{sourceId}` | Delete a source. Returns `202` + `DELETING` when the teardown runs asynchronously; poll `GetSource` until it returns `404` (row removed) or `DELETE_FAILED` |
 | `POST` | `/namespaces/{namespaceId}/sources/{sourceId}/rescan` | Re-trigger scan or ingestion |
 | `POST` | `/namespaces/{namespaceId}/sources/upload-urls` | Get pre-signed S3 upload URLs |
 | `GET` | `/namespaces/{namespaceId}/sources/{sourceId}/tables` | List DataZone tables (DATABASE only) |
@@ -407,6 +407,7 @@ Frontend polls `GET /sources/{sourceId}` and inspects the `status` field. Termin
 | `FEDERATION_PROVISIONER_ROLE_ARN` | No | ARN of the federation provisioner role holding Lake Formation data-lake-admin privileges. The handler assumes it to tear down a JDBC source's Glue federated catalog on deletion. When unset, federated-resource cleanup is skipped. |
 | `RESOURCE_PREFIX` | Yes, for `CUSTOM_CONNECTOR` | Deployment resource prefix (e.g. `scl-dev-`), used to derive the per-source Athena data-catalog name. **Load-bearing:** unset, `derive_catalog_name` falls back to a hard-coded `coa-dev-`, and every `CreateDataCatalog` then fails `AccessDenied` against the prefix-scoped IAM policy — which reads as a policy defect rather than a naming one. |
 | `ALLOWED_ORIGIN` | No | CORS allowed origin (default: `*`) |
+| `SOURCE_DELETE_QUEUE_URL` | No | SQS URL of the database-source delete queue (consumed by `sources-delete-worker`). Set: database `DELETE` returns `202` + `DELETING`. Unset: the delete runs inline and returns `200`. |
 
 ## Environment Variables (Database Pipeline)
 
@@ -489,6 +490,10 @@ Consumes SQS messages from the bulk review queue and applies the review decision
 | `TENANT_ID` | Yes | Injected by Step Functions container override |
 | `STAGING_PREFIX` | Yes | Injected by Step Functions container override |
 | `EXTRACTION_MODE` | Yes | Injected by Step Functions container override |
+| `EXTRACTION_TIMEOUT_SECONDS` | No | Bedrock extraction read timeout in seconds (default: `300`; range: `1`–`3600`) |
+| `EXTRACTION_CONNECT_TIMEOUT_SECONDS` | No | Bedrock connection timeout in seconds (default: `10`; range: `0.1`–`300`) |
+| `EXTRACTION_MAX_ATTEMPTS` | No | Bounded extraction retry attempts (default: `5`; range: `1`–`20`) |
+| `EXTRACTION_NUM_THREADS_PER_WORKER` | No | Per-process extraction fan-out used to size the HTTP connection pool (default: `4`; range: `1`–`256`) |
 
 ### Ingestion Trigger Lambda (`sources-doc-ingestion-trigger`)
 
@@ -682,15 +687,15 @@ The JDBC connector (`coa_sources.database.connectors.jdbc.JdbcConnector`) implem
 
 1. Resolve the engine's dialect and connect via its driver (TLS enforced where the driver exposes it).
 2. List schemas via `information_schema.schemata` and apply filters:
-   - `schema_filter` regex (include) — matches schema names to keep.
-   - `schema_exclude_filter` regex (exclude) — applied after include.
-   - When no exclude is provided, system schemas (`pg_catalog`, `information_schema`, `pg_toast.*`) are excluded by default.
+   - `schema_filter` glob filter (include) — matches schema names to keep.
+   - `schema_exclude_filter` glob filter (exclude) — applied after include, in addition to the dialect's system schemas (`pg_catalog`, `information_schema`, `pg_toast.*` for PostgreSQL), which are always excluded.
+   - Filters are `|`/`,`-separated shell globs matched against the whole name (`connectors/filters.py`), not regular expressions. A regex-looking filter that matches nothing yields a hint in the zero-match error, or a `filterWarnings` entry on the scan job.
 3. For each surviving schema, list tables (BASE TABLE + VIEW), apply `table_filter` / `table_exclude_filter`.
 4. Pull all surviving tables' columns in a single `information_schema.columns` query (avoids per-table round trips).
 5. Build `Table` objects with `database = schema_name` so the canonical `table_id` is `{schema}.{table}` (matches the design's JDBC identifier format).
 6. Compute the same 16-character schema hash format as the Glue connector for re-scan change detection.
 
-All schema and table names from configuration are bound via parameter placeholders — never interpolated into SQL — to prevent injection through the regex filter inputs.
+All schema and table names from configuration are bound via parameter placeholders — never interpolated into SQL — to prevent injection through the filter inputs.
 
 #### Deterministic PK/FK discovery
 

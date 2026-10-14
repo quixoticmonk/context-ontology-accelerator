@@ -2,9 +2,9 @@
 #   docker build -f packages/sources/documents/kg-build/Dockerfile .
 # Pin to digest to prevent supply-chain attacks via tag mutation. The pin is for
 # supply-chain integrity only, NOT patch currency — see the apt-get upgrade below.
-# python:3.12-slim, digest resolved from the tag on 2026-09-01.
+# python:3.12-slim, digest resolved from the tag on 2026-10-06.
 # checkov:skip=CKV_DOCKER_2:Batch ECS Fargate task. Runs graph_build to completion and exits; the process exit code is the health signal reported back to the launching Step Function. HEALTHCHECK against a long-running server does not apply to a batch handler.
-FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
+FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
 
 WORKDIR /app
 
