@@ -487,6 +487,72 @@ After changing these, re-run `terraform -chdir=stacks/30-services apply` and
 trigger a reload for existing namespaces (publish their ontologies again) so
 the reload Lambda re-registers their task definitions at the new sizing.
 
+#### Neptune instance class
+
+The Neptune primary writer defaults to `db.r8g.large` (2 vCPU → 4 query
+threads). On a benchmark environment where SPARQL under concurrent
+deep-reasoning + metric-resolver load has OOM'd with
+`MemoryLimitExceededException`, raise it per-environment rather than in code:
+
+```hcl
+# shared.tfvars
+neptune_instance_class = "db.r8g.xlarge"
+```
+
+**Never downgrade below `db.r8g.large`.** The default is a safety floor that
+the sync SOP (NG.9) protects explicitly.
+
+#### Tier-2 NL→SQL ontology foreign-key expansion
+
+The Tier-2 flat NL→SQL path (`strategy="nl_to_sql_first"`) appends the tables
+one induced foreign-key hop out from the retrieved classes to its schema
+context. On the evidence of three repeats across three benchmark cells
+(Spider 2.0 pooled, per-DB, BIRD) upstream flipped this **on by default** —
+retrieval full-hit up in 8 of 9 repeats (+6 to +20.8pp), execution accuracy
+up in all 6 Spider 2.0 arm×seed contrasts (+2.2 to +7.4pp; 67 win / 35 loss;
+clustered paired-bootstrap mean +3.95pp with CI excluding zero). BIRD is a
+wash on execution accuracy — the honest claim is "a real gain on Spider 2.0,
+neutral on BIRD".
+
+The TF variable is `null` by default, which means "defer to the runtime's
+compiled-in default (ON)". Pin either direction with:
+
+```hcl
+# shared.tfvars
+serve_nl2sql_graph_expand            = false  # turn it OFF on this deploy
+serve_nl2sql_graph_expand_max_tables = 8      # or raise if the missing join
+                                              # table is further down the FK ordering
+```
+
+Per-request override: `options.flatGraphExpand` on the `/query` call — with
+the walk on by default, an A/B's control arm must pass `flatGraphExpand:
+false` rather than omit the option. Requires Neptune wired (serve already
+depends on it).
+
+#### NL→SPARQL translation budget
+
+`serve_vkg_translation_timeout_s` pins the whole-translation budget (T-Box
+assembly, LLM call, SPARQL validation, every validate-and-retry attempt) for
+the Tier-2 Ontop route. Unset leaves the runtime's 60s. **Raise it** when
+`translation_timed_out` appears in the trace, or when the namespace is wide
+enough that a complete T-Box makes a long prompt — over 727 benchmark
+translations on a 175-class namespace, p50 was **29.1s** / p90 **44.7s**,
+with **6.9%** already timing out at the 60s default:
+
+```hcl
+# shared.tfvars
+serve_vkg_translation_timeout_s = 120
+```
+
+**Bounded by**, and this budget cannot raise, each of: the whole-request
+budget (`RESOLVE_TIMEOUT_S`, 170s), half of that when the request retries
+translation (`OntopStrategy._retry_vkg` re-enters translation with a fresh
+budget, so ~85s available for the first attempt), 90s under
+`strategy="best"`, and ~29s over REST (the data-layer REST path's own
+timeout severs the socket first). A median translation on a wide namespace
+does not fit over REST at any value and callers should use the streaming
+endpoint there.
+
 ### Internal Environment Variables
 
 These are wired by the Terraform modules or carry in-code defaults. They are
@@ -876,6 +942,119 @@ aws apigateway get-authorizers \
   --rest-api-id $(cd infra-tf/stacks/60-api-edge && terraform output -raw api_id) \
   --region us-east-1
 ```
+
+### A database source is stuck in `DELETING`
+
+**Cause:** the `sources-delete-worker` message ran out of attempts
+(`maxReceiveCount=3`) and moved to `sources-delete-dlq`, which raises the
+DLQ alarm. Repeated cleanup failures cause this, and so does account-level
+Lambda throttling: throttled deliveries still count as attempts. While a
+source reads `DELETING`, a repeat `DELETE` on it returns `409`.
+
+**Fix:** check the worker's logs for `source_delete_worker_failed` /
+`source_delete_incomplete`. If throttling caused it, raise the account's
+Lambda concurrency quota. Then redrive the DLQ; every deletion step is
+idempotent:
+
+```bash
+QUEUE_URL=$(aws sqs get-queue-url \
+  --queue-name "$(cd infra-tf/stacks/40-sources && terraform output -raw name_prefix)-sources-delete-queue" \
+  --query QueueUrl --output text)
+DLQ_URL=$(aws sqs get-queue-url \
+  --queue-name "$(cd infra-tf/stacks/40-sources && terraform output -raw name_prefix)-sources-delete-dlq" \
+  --query QueueUrl --output text)
+aws sqs start-message-move-task --source-arn "$(aws sqs get-queue-attributes \
+  --queue-url "$DLQ_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)"
+```
+
+The row flips to `DELETE_FAILED` once the worker's reserved retries are
+exhausted; a client can then issue a fresh `DELETE` to re-enqueue, or wait
+for the namespace-deletion sweep to pick it up.
+
+## Connector Parameter Integrity — CloudTrail Prerequisite
+
+The sources module writes per-source Databricks configuration under
+`${ssm_prefix}/${env}/connectors/databricks/sources/{sourceId}` and reads
+each source's `functionArn`, `credentialSecretArn`, and `namespaceId` back
+when the Databricks catalog resolves. Because a repoint (PutParameter
+overwriting one source's config with another source's secret ARN + namespace)
+resolves **successfully**, no runtime check can see it after the fact — the
+catalog does its lookup and the query answers from the wrong workspace. The
+Terraform sources module ships a tripwire for exactly this.
+
+### Why no other signal can see a repoint
+
+A cross-source credential repoint is deliberate: the IAM permissions on the
+sources-API role already deny PutParameter outside this prefix, so the
+realistic attack surface is a compromised or misused sources-API role, or
+a sibling pipeline writing under the prefix. The sources-API role is
+scoped (see `DatabricksSourceConfig` in `infra-tf/modules/services/sources/
+sources_api.tf`), but Terraform itself cannot distinguish a legitimate
+re-registration from a repoint — both are PutParameter calls.
+
+### The prerequisite: a CloudTrail trail logging management events
+
+The audit uses CloudTrail → EventBridge → CloudWatch Logs. **Without a
+CloudTrail trail logging management events** in this account+region, the
+EventBridge rules below receive nothing and the alarm never fires. This
+module does **not** create the trail — it is an account-wide concern. If
+you don't have one:
+
+```bash
+aws cloudtrail create-trail \
+  --name coa-mgmt-events \
+  --s3-bucket-name <existing-trail-bucket> \
+  --is-multi-region-trail \
+  --include-global-service-events
+aws cloudtrail put-event-selectors \
+  --trail-name coa-mgmt-events \
+  --event-selectors '[{"ReadWriteType":"WriteOnly","IncludeManagementEvents":true}]'
+aws cloudtrail start-logging --name coa-mgmt-events
+```
+
+If the account has an org-level trail, the sources module needs no action
+and the alarm works out of the box.
+
+### What the deployment creates
+
+`infra-tf/modules/services/sources/databricks_param_audit.tf`:
+
+- An `aws_cloudwatch_log_group` under
+  `/aws/events/${name_prefix}-databricks-parameter-writes` with one-year
+  retention and KMS encryption. The `/aws/events/` prefix is EventBridge's
+  conventional target path and keeps the delivery resource policy narrow.
+- Two `aws_cloudwatch_event_rule`s matching CloudTrail `PutParameter` /
+  `DeleteParameter` (single form) and `DeleteParameters` (batch form)
+  events whose `requestParameters.name` or `names` is under the per-source
+  prefix. **Every write under the path is logged, legitimate ones
+  included** — the allowlist is applied by the metric filter below, not
+  by the rules (an EventBridge `anything-but` pattern does NOT match an
+  ABSENT key, so a sessionContext-less principal would be silently
+  exempted by a pattern-level allowlist).
+- A `aws_cloudwatch_log_metric_filter`
+  `UnexpectedConnectorParameterWrite` under namespace `COA/Sources` with
+  a `NOT EXISTS`-first allowlist clause (so an IAM user or root call,
+  neither of which carries `sessionContext.sessionIssuer.userName`, is
+  caught — not exempted — because a comparison against an absent field
+  is false).
+- A `aws_cloudwatch_metric_alarm` with threshold 1,
+  `GreaterThanOrEqualToThreshold`, 5-minute period, `notBreaching` for
+  missing data (a write is a discrete event — "no data" is the normal
+  state and must not read as a breach).
+
+### When the alarm fires
+
+A principal **outside the allowlist** writes or deletes a parameter under
+`${ssm_prefix}/${env}/connectors/databricks/sources/`. Treat as a
+potential cross-source credential repoint: compare the parameter's
+`credentialSecretArn` and `namespaceId` against the source record (SOURCES
+table) **before dismissing**. A repoint resolves successfully, so no other
+metric can see it — this one alarm is the only control.
+
+The allowlist by default covers only `aws_iam_role.sources_api.name` (the
+sources-API role, which writes here in normal operation). Set
+`cdk_cfn_exec_role_name = "..."` on the module call if a CloudFormation
+execution role in this account legitimately writes under the prefix too.
 
 ## Appendix A — AWS Service Inventory, Quotas, and Considerations
 

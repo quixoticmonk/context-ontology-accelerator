@@ -42,7 +42,8 @@ flowchart LR
 | JDBC | `JDBC_DATABASE` | SQL Server | Direct SQL or Athena federated |
 | JDBC | `JDBC_DATABASE` | Oracle | Athena federated only |
 | JDBC | `JDBC_DATABASE` | Snowflake | Athena federated only |
-| Custom connector | `CUSTOM_CONNECTOR` | Databricks SQL Warehouse — a ready-made connector ships in `connectors/databricks/` | Athena only (Lambda-backed catalog) |
+| Databricks | `DATABRICKS_SQL_WAREHOUSE` | Databricks SQL Warehouse — nothing to deploy, the connector is operated for you | Athena only (Lambda-backed catalog) |
+| Custom connector | `CUSTOM_CONNECTOR` | Databricks SQL Warehouse, deployed and operated by you from `connectors/databricks/` | Athena only (Lambda-backed catalog) |
 | Custom connector | `CUSTOM_CONNECTOR` | Any other source you can wrap in an Athena Query Federation SDK connector Lambda | Athena only (Lambda-backed catalog) |
 
 !!! tip "Sources with no native support"
@@ -79,15 +80,21 @@ comment placement and tag encoding for you, and a CDK construct that emits the r
 prefix and resource policies. [Custom Connector Sources](custom-connector-sources.md) is the
 contract that guide builds against.
 
-#### Databricks SQL Warehouse
+### Databricks SQL Warehouse
 
-A ready-made connector for Databricks SQL Warehouse ships with COA — you deploy it and register a
-`CUSTOM_CONNECTOR` source against it, rather than writing one yourself.
+Databricks has a source sub-type of its own, `DATABRICKS_SQL_WAREHOUSE`, and **nothing to
+deploy**: COA operates the connector, and onboarding is a form plus one IAM role. One source
+exposes one Unity Catalog schema. See
+[Databricks SQL Warehouse Sources](databricks-sources.md) for the Unity Catalog grants, both
+IAM policies, the authentication modes, and the cost and governance disclosures this route
+requires. That is the route to use.
 
-**Its runbook is `connectors/databricks/README.md` in your COA checkout**, not a page on this site:
-it covers deployment, creating the credential secret, the three Unity Catalog grants, registering
-the source, and the alarms the stack creates. Start from its *Quick start*. Four things to know
-before you plan around it:
+The same connector can also be **deployed and operated by you** and registered as a
+`CUSTOM_CONNECTOR` source — the shape earlier releases shipped. It remains supported and is not
+being withdrawn; if you already run it, you need do nothing. Its runbook is
+`connectors/databricks/README.md` in your COA checkout, not a page on this site: it covers
+deployment, creating the credential secret, the Unity Catalog grants, registering the source, and
+the alarms the stack creates. Four things to know before you plan around that route:
 
 - **One deployment serves one warehouse**, exposing one Unity Catalog catalog and either one
   pinned schema or every schema in that catalog. A second warehouse needs a second deployment.
@@ -96,7 +103,7 @@ before you plan around it:
   declared rather than from inference. Two limits: a table that declares no constraints
   contributes no keys, and a foreign key whose parent table lies outside the exposed schema is
   dropped. You encode nothing yourself — the connector handles the
-  [key-passing format](custom-connector-sources.md#declaring-primary-and-foreign-keys-in-column-comments)
+  [key-passing format](custom-connector-sources.md#declaring-keys-and-nullability-in-column-comments)
   custom connectors use, and removes any such tag already present in a Unity Catalog column
   comment so it cannot assert a key the warehouse never declared.
 - **Aggregations are computed in Athena, not in the warehouse.** Athena federation pushes
@@ -109,6 +116,13 @@ before you plan around it:
 - **Authentication is a personal access token or OAuth machine-to-machine**, chosen by the
   shape of the Secrets Manager secret you point it at: `{"token": …}` for a token,
   `{"client_id": …, "client_secret": …}` for OAuth. A secret carrying both is rejected.
+
+The last three of those are properties of reaching a warehouse through Athena federation at all,
+so they hold for the `DATABRICKS_SQL_WAREHOUSE` sub-type too — including the cost consequence,
+which [Databricks SQL Warehouse Sources](databricks-sources.md#cost-you-should-know-before-the-bill)
+states in full. What differs between the two routes is who deploys and pays for the connector,
+and how the credential is reached: the managed sub-type reads it through a role you own rather
+than granting the connector a direct read.
 
 ### Direct SQL vs Athena federated
 
@@ -272,13 +286,41 @@ and a `databaseSource.jdbcConfiguration` body — see **CreateSource** in the
 | `databaseName` | Yes | Target database (alphanumeric + `_` `-`, max 128 chars) |
 | `credentialSecretArn` | Yes | Secrets Manager secret ARN with `username`/`password`. In-account secrets must carry a `<prefix>:namespace` tag listing this namespace — space-separate the UUIDs to share one secret across namespaces (see the credentials prerequisite above) **Set at creation only** |
 | `crossAccountRoleArn` | No | IAM role to assume for cross-account secret access. The web app's **Connect Source** form requires the role name to contain `{prefix}-datasource-access-` as a convention. The role's trust policy **must** condition on the namespace's `sts:ExternalId` — see [Cross-Account Data Sources](cross-account-sources.md) |
-| `schemaFilter` | No | Regex — only schemas matching this pattern are discovered |
-| `schemaExcludeFilter` | No | Regex — schemas matching this are excluded (after include filter) |
-| `tableFilter` | No | Regex — only tables matching this are discovered |
-| `tableExcludeFilter` | No | Regex — tables matching this are excluded |
+| `schemaFilter` | No | Glob filter — only schemas matching it are discovered; see [Filter syntax](#filter-syntax) |
+| `schemaExcludeFilter` | No | Glob filter — schemas matching it are excluded, in addition to the engine's system schemas (always excluded) |
+| `tableFilter` | No | Glob filter — only tables matching it are discovered |
+| `tableExcludeFilter` | No | Glob filter — tables matching it are excluded (after the include filter) |
 | `warehouse` | Snowflake only | Virtual warehouse used to run `INFORMATION_SCHEMA` discovery queries and required by federation. **Required for Snowflake** — omitting it fails the scan (`SCAN_FAILED`) at federation time |
 | `role` | No (Snowflake only) | Optional Snowflake RBAC role name for the discovery session — a Snowflake construct, **not** an AWS IAM role. Honored during discovery only; federation runs as the secret user's `DEFAULT_ROLE`, so grant that role least-privilege read access |
 | `metadataEnrichmentEnabled` | No | `true` (default) or `false` — skip AI enrichment |
+
+#### Filter syntax
+
+Schema and table filters are **shell globs, not regular expressions**. Each
+filter is one or more globs separated by `|` or `,`, and each glob must match
+the **whole** name:
+
+| Glob | Matches |
+|------|---------|
+| `*` | any characters |
+| `?` | exactly one character |
+| `[abc]` | one of `a`, `b`, `c` |
+
+For example `public|analytics` keeps those two schemas, `sales_*` every schema
+starting with `sales_`, and `constructor*,results` two families of tables. A
+regex such as `^target_schema$` or `target_.*` matches nothing — write
+`target_schema` or `target_*`. When a filter looks like a regex and matches
+nothing, the scan error (for an include filter) or a warning on the scan (for an
+exclude filter) says so and suggests the glob. The warning is the
+`filterWarnings` list on the scan job (`GET
+/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}`), also shown on the
+source page; it is absent when there is nothing to report, and a filter written
+as a glob that simply matches nothing never produces one.
+
+The engine's system schemas (`pg_catalog`, `information_schema`, `mysql`,
+`sys`, … depending on the engine) are always excluded; `schemaExcludeFilter`
+adds to them. The one filter that is not a glob is a Glue Data Catalog source's
+`tableFilter`, which is passed to Glue as its native expression syntax.
 
 !!! warning "`engine`, `host`, `port` and `credentialSecretArn` cannot be changed after creation"
     Updating a source's `jdbcConfiguration` (`PUT .../sources/{sourceId}/metadata`)
@@ -312,7 +354,11 @@ and a `databaseSource.jdbcConfiguration` body — see **CreateSource** in the
 
 Host, port, and database name are validated to prevent JDBC parameter injection:
 
-- **host** — alphanumeric + `.` `-` `_`, max 253 chars
+- **host** — conventional DNS hostname (alphanumeric + `.` `-`) or IPv4
+  address, max 253 chars. For Snowflake only, the account identifier in the
+  first hostname label may also contain internal `_` characters (for example,
+  `my_account.snowflakecomputing.com`); suffix labels keep the conventional DNS
+  rules
 - **port** — integer 1–65535
 - **database** — alphanumeric + `_` `-`, max 128 chars
 
@@ -391,8 +437,8 @@ and a `databaseSource.glueConfiguration` body — see **CreateSource** in the
 | `catalogId` | **Yes** | Glue Data Catalog ID: a 12-digit AWS account ID (root catalog), or `account:catalogName` for nested/federated/cross-account catalogs. Pattern-validated (`^\d{12}(:[a-zA-Z0-9_/-]+)?$`), 12–256 chars |
 | `region` | **Yes** | AWS region the catalog/database lives in |
 | `databaseName` | Yes | Glue database name |
-| `tableFilter` | No | Regex — only tables matching this are discovered |
-| `tableExcludeFilter` | No | Regex — tables matching this are excluded |
+| `tableFilter` | No | Glue expression (a regular expression, e.g. `orders.*`) passed to Glue `GetTables` — only tables matching it are discovered |
+| `tableExcludeFilter` | No | Glob filter — tables matching it are excluded; see [Filter syntax](#filter-syntax) |
 | `crossAccountRoleArn` | No | IAM role ARN the discovery connector assumes to read catalog metadata in a different account. The web app's **Connect Source** form requires the role name to contain `{prefix}-datasource-access-` as a convention. The role's trust policy **must** condition on the namespace's `sts:ExternalId` — see [Cross-Account Data Sources](cross-account-sources.md) |
 | `externalId` | No | **Deprecated — ignored.** The ExternalId is derived server-side from the namespace and cannot be set through the API; a value supplied here is discarded. Read the value to pin in your trust policy from `datasourceExternalId` on `GET /namespaces/{namespaceId}`. See [Cross-Account Data Sources](cross-account-sources.md) |
 | `athenaDataCatalogName` | No | Explicit Athena catalog name (overrides auto-resolution) |
@@ -439,6 +485,10 @@ field. Scan job detail (including the `errorMessage` field on failure) is
 available via `GET .../sources/{sourceId}/scan/{jobId}` — see
 **GetSource** / **GetSourceScanJob** in the [API Reference](#/api-reference).
 
+While a source is `ENRICHING`, the web UI shows a progress bar of tables
+processed out of the total. A table counts once enrichment has finished with it,
+even if it failed, and tables a re-scan found unchanged count immediately.
+
 ### Interpreting Errors
 
 | Status | Meaning | Action |
@@ -476,6 +526,36 @@ on the tables that still need attention (`Pending review`) without scrolling
 past already-reviewed tables. The filter maps to the `reviewStatus` query
 parameter on **ListSourceTables** in the [API Reference](#/api-reference).
 
+### Partial enrichment (wide tables)
+
+Tables wider than 80 columns are enriched in parallel 50-column batches. If some
+batches succeed and at least one fails (e.g. a guardrail blocks one column's
+content, or a batch times out / fails to parse), the table is **still written
+back with the metadata that did succeed** — its description and the columns from
+the batches that completed — rather than being discarded. Only the failed
+batch's columns are left un-enriched. Such a table is a **partially enriched**
+table.
+
+How to tell a partial table apart from a fully-enriched or fully-failed one:
+
+- **Operational metric:** the enrichment job emits the CloudWatch metric
+  `TablesPartiallyEnriched` (count, per `Engine`/`NamespaceId` dimensions), and
+  the handler emits `TablesPartial`. A non-zero value means one or more wide
+  tables completed with some columns missing enrichment — expected occasionally
+  under guardrails, worth investigating if it spikes.
+- **Which tables:** the scan-job record carries an `enrichmentPartialTables`
+  field listing the affected `db.table` ids. The enrichment result also returns
+  `tables_partial` (count) and `partial_table_ids` (list) — see the
+  `table_enricher.run()` return contract.
+- **Steward action:** open each listed table in review; the columns from failed
+  batches will have no AI description and can be edited by hand or left for a
+  re-scan. A partial table is counted under **enriched** (not **failed**), so it
+  still enters review normally — the metric/field is the signal that its
+  metadata is incomplete.
+
+Fully-failed tables (no batch succeeded) are counted under **failed** and listed
+in `failed_table_ids` instead.
+
 ### List and Get Table Detail
 
 List all tables via `GET .../sources/{sourceId}/tables`, or get a single
@@ -489,9 +569,30 @@ table's full detail (technical + AI-enriched metadata, `reviewStatus`,
 `{ "decision": "REJECTED" }` — see **ReviewSourceTable** in the
 [API Reference](#/api-reference) for the full request/response shape.
 
-**Cascade behavior:**
-- **Approving** a table cascades to its `PENDING_REVIEW` columns. Columns you've explicitly `REJECTED` are preserved — they won't be flipped by a table-level approve.
-- **Rejecting** a table cascades to ALL non-rejected columns (including previously approved ones).
+**Cascade behavior** (columns and inferred relationships alike — an
+AI-inferred cross-source foreign key carries its own `reviewStatus`, and
+`PENDING_REVIEW` relationships are withheld from the ontology until approved):
+
+- **Approving** a table approves its columns **and** its inferred
+  relationships — including any that were previously `REJECTED`. Approving
+  the table means "approve this table and everything under it." If you want
+  a specific column or relationship left out, reject it AFTER the table
+  approve (per-column: `PUT .../columns/{columnName}/review`; per-relationship:
+  `PATCH .../tables/{tableId}/keys` with `reviewStatus: REJECTED` on that FK).
+- **Rejecting** a table rejects ALL of its columns and inferred relationships,
+  including previously approved ones.
+
+!!! note "Per-table approve vs. bulk source approve"
+    **Per-table approve** re-approves EVERY child of the table (columns and
+    inferred relationships), REJECTED or not. Use it when you want the whole
+    table live; if you later want a specific column or relationship out,
+    reject it afterwards.
+
+    **Bulk source approve** is the safer default: it only touches
+    `PENDING_REVIEW` children and preserves any explicit approvals or
+    rejections you already made. Use it when the source has many tables and
+    you have already made per-column / per-relationship decisions on the ones
+    that matter.
 
 ### Approve/Reject a Column
 
@@ -505,7 +606,7 @@ For sources with many tables, `POST .../sources/{sourceId}/approve` or
 `.../reject` bulk-processes all tables. Both return `202 Accepted` (see
 **ApproveSource** / **RejectSource** in the [API Reference](#/api-reference)):
 
-- **Approve:** the source enters `APPROVING` status while a background worker processes all tables. Poll the source status until it reaches `APPROVED`. Only `PENDING_REVIEW` tables and columns are touched — anything already explicitly approved or rejected is preserved.
+- **Approve:** the source enters `APPROVING` status while a background worker processes all tables. Poll the source status until it reaches `APPROVED`. Only `PENDING_REVIEW` tables, columns **and inferred relationships** (cross-source foreign keys) are touched — anything already explicitly approved or rejected is preserved. Approved relationships materialise as ontology edges on the next induction. To keep a specific relationship out of the ontology, reject it per-relationship via `PATCH .../tables/{tableId}/keys` (with `reviewStatus: REJECTED` on that FK) — bulk source approve leaves per-relationship rejects alone. If a cross-source pass on a newly-onboarded source proposes new relationships on a table whose parent source is already `APPROVED`, the tables list badges the count so a steward can drill in and review them per-table or per-relationship.
 - **Reject:** after completion, the source returns to `PENDING_REVIEW` (not `APPROVED`), allowing further review.
 
 ## Editing Metadata as a Steward
@@ -544,6 +645,37 @@ Edits follow a priority system. Higher-priority sources are never overwritten by
 !!! note
     Editing metadata does NOT change the review status. To approve after editing, make a separate `PUT /review` call. This is intentional — the "edit + approve" UX is two distinct actions.
 
+Edits reach the ontology on the next induction; accepting that proposal into
+an existing ontology **replaces** the previous description, synonyms, glossary
+terms and tags rather than adding to them — see
+[Curating an ontology: re-induce and re-accept](ontologies.md#curating-an-ontology-re-induce-and-re-accept).
+
+### Where Each Reviewed Field Is Used
+
+Every field you approve on a table or column is carried into the induced
+ontology, and both ways Tier 2 answers a structured question — **NL→SQL** (the
+model writes SQL) and **Ontop** (the model writes SPARQL that Ontop turns into
+SQL) — receive the same approved metadata:
+
+| Field | In the ontology | Used to answer questions |
+|-------|-----------------|--------------------------|
+| Description | `rdfs:comment` on the class (table) or property (column) | Both paths, as context for the model |
+| Synonyms | `skos:altLabel` | Both paths; a table's synonyms are also matched when finding the tables a question is about |
+| Glossary terms | `coa:glossaryTerm` | Both paths; a table's glossary terms are also matched when finding the tables a question is about |
+| Tags | `coa:tag` | Both paths, as context for the model. Not used to find tables: broad tags such as "financial" would make unrelated tables look alike |
+| Primary key | `owl:hasKey` on the class | Both paths: Ontop's mapping keys rows on it, and NL→SQL is told which column identifies a row |
+| Relationships (foreign keys) | Object properties between classes | Both paths, as the join paths between tables |
+| Class hierarchy (from the proposal) | `rdfs:subClassOf` | Both paths, when the parent class is also a mapped table. A parent from a reference ontology (FIBO, Schema.org) is not shown to the SQL model, because it has no table behind it |
+
+A foreign-key column's description is kept on its relationship, ahead of the
+generated "Foreign key: …" note, so it is not lost when the column becomes a
+join.
+
+The Ontop prompt has a fixed size. In a namespace large enough to fill it, part
+of that size is kept for this metadata, spent on tables first, then columns, then
+join paths; anything that no longer fits is sent without its description,
+synonyms, glossary terms and tags, and is still queryable.
+
 ## Triggering Re-scans
 
 Re-scan a database source via `POST .../sources/{sourceId}/rescan` — see
@@ -558,6 +690,20 @@ jobs, depending on the status the source is in when you call it:
 
 Calling re-scan on a database source in any other status returns a
 `409 Conflict` naming the statuses that are allowed.
+
+!!! tip "Automatic re-scans"
+    Instead of calling re-scan by hand, a database source can re-scan itself:
+
+    - **On a schedule** — `PUT .../sources/{sourceId}/rescan-schedule` with an
+      EventBridge `rate()` or `cron()` expression (see **PutSourceRescanSchedule**
+      in the [API Reference](#/api-reference)). Sub-hourly cadences are rejected.
+    - **On Glue catalog changes** — `PUT .../sources/{sourceId}/event-rescan`
+      (Glue sources only; see **PutSourceEventRescan**). Table and database
+      create, update, and delete trigger a re-scan. Partition changes do not, and
+      bursts of changes are coalesced into one re-scan.
+
+    Automatic re-scans end in `RESCAN_REVIEW` like a manual one, so nothing
+    changes until a steward approves it, and they never discard an open review.
 
 ### When to Re-scan
 
@@ -648,7 +794,8 @@ changes nothing.
 a single audit trail — see **ListSourceScanJobs** in the
 [API Reference](#/api-reference). It combines two kinds of event:
 
-- **Scans** — each discovery and enrichment run, including failures.
+- **Scans** — each discovery and enrichment run, including failures. Each row
+  shows its trigger: `INITIAL`, `MANUAL`, `SCHEDULED`, or `EVENT`.
 - **Review decisions** — approvals, rejections, and re-scan decisions.
 
 The web UI renders this on the source's **Scan history** tab. Use it to answer
@@ -736,7 +883,7 @@ LIMIT 100;
 | `Unsupported database engine: <ENGINE>` on connect | The `engine` value is not one of the supported engines listed above | Use a supported engine, or register the database through the Glue Data Catalog instead |
 | Snowflake `SCAN_FAILED` right after discovery succeeds | No `warehouse` set — federation is rejected at connection creation (`WAREHOUSE are missing in the request object`) | Set `jdbcConfiguration.warehouse` to an active Snowflake virtual warehouse and re-scan |
 | Snowflake/Oracle scan succeeds but Athena queries return `TABLE_NOT_FOUND` on an empty catalog | Historical casing-filter bug (fixed) — the federated catalog resolved but exposed zero objects because Snowflake/Oracle fold unquoted identifiers to UPPERCASE | Fixed in current releases (the lowercase casing filter is no longer sent for Oracle/Snowflake). Delete and re-create the source if it was onboarded before the fix — the property is non-updatable |
-| `SCAN_FAILED` with `... exceeding the limit of N` | Source has more tables than `MAX_TABLES_PER_SOURCE` (default `10000`); discovery fails fast rather than hitting the Lambda timeout | Narrow the scan scope with `schemaFilter` / `schemaExcludeFilter` / `tableFilter` (e.g. exclude system schemas like `schemaExcludeFilter: "information_schema\|pg_catalog\|sys"`). If a larger source genuinely needs to be scanned in one pass, raise (or set `0` to disable) the `MAX_TABLES_PER_SOURCE` env var on the `sources-db-connector` Lambda. |
+| `SCAN_FAILED` with `... exceeding the limit of N` | Source has more tables than `MAX_TABLES_PER_SOURCE` (default `10000`); discovery fails fast rather than hitting the Lambda timeout | Narrow the scan scope with `schemaFilter` / `schemaExcludeFilter` / `tableFilter` (e.g. `schemaFilter: "sales_*"` or `tableExcludeFilter: "tmp_*,staging_*"`; system schemas are already excluded). If a larger source genuinely needs to be scanned in one pass, raise (or set `0` to disable) the `MAX_TABLES_PER_SOURCE` env var on the `sources-db-connector` Lambda. |
 | Scan times out on a very large Glue/Athena catalog | Enum sampling issues one Athena query per candidate column; the fan-out has to fit inside the scan Lambda timeout | Sampling queries run in parallel, capped by the `ATHENA_SAMPLING_CONCURRENCY` env var on the `sources-db-connector` Lambda (default `16`). Raise it if the account's Athena concurrent-DML quota allows more in-flight queries — that quota, not this setting, is the real ceiling. A non-numeric value falls back to `16`, and the effective concurrency is floored at `1`. |
 
 ### Custom connector issues
@@ -746,7 +893,7 @@ guide (`connectors/README.md`) covers each in more depth.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Tables are discovered but no primary or foreign keys arrive | The discovery role has no `lambda:InvokeFunction` on the connector, so `DESCRIBE` — the only thing that reads the key tags — never ran | Grant the role named by `/{prefix}/sources/db-connector-role-arn`. Queries work without it, which is why this looks like a metadata problem rather than a permissions one |
+| Tables are discovered but no primary or foreign keys arrive | The discovery role has no `lambda:InvokeFunction` on the connector, so `DESCRIBE` — the only thing that reads the key tags — never ran | Grant the role named by `/{prefix}/{envName}/sources/db-connector-role-arn`. Queries work without it, which is why this looks like a metadata problem rather than a permissions one |
 | `DESCRIBE` returns names and types with no comment column | The connector put comments on the Arrow *field* rather than in the schema's metadata, where Athena reads them | Build the schema with the toolkit's `TableSchema`, which makes the working placement the only one expressible |
 | A large result returns **zero rows** with status `SUCCEEDED` | The connector could not write its spill: no `spill_bucket`, the wrong prefix, or no `s3:PutObject` under it | Check the Lambda's `spill_bucket` and that `spill_prefix` is `connectors/<id>/spills`; confirm objects appear there during a query |
 | `AccessDenied`, but only on large results | Spill is read with the *querying* role's credentials, not the connector's | Grant the serve and discovery roles `s3:GetObject` under the spill prefix and `kms:Decrypt` on the spill key |
