@@ -62,10 +62,18 @@ resource "aws_ssm_parameter" "doc_ingestion_state_machine_arn" {
 }
 
 resource "aws_ssm_parameter" "db_connector_role_arn" {
-  name        = "${var.ssm_prefix}/sources/db-connector-role-arn"
+  # ENV-SCOPED (v0.3.5 parity, same reasoning as serve/runtime-role-arn):
+  # the connector apps deployed from a separate CDK app in the connectors/
+  # tree (and the matching customer-facing docs in connectors/README.md /
+  # connectors/.env.example / coa-contract.ts) all expect this at
+  # `/{prefix}/{envName}/sources/db-connector-role-arn`. Writing it env-less
+  # lets a sibling environment's deploy overwrite the value and the last
+  # one wins, handing a sibling environment's connector a trust that
+  # points at the wrong role.
+  name        = "${var.ssm_prefix}/${var.env}/sources/db-connector-role-arn"
   type        = "String"
   value       = aws_iam_role.db_connector.arn
-  description = "Sources database connector Lambda execution role ARN"
+  description = "Sources database connector Lambda execution role ARN (env-scoped)"
   tags        = local.tags
 }
 

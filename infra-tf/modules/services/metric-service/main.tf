@@ -85,6 +85,59 @@ resource "aws_sqs_queue" "import" {
 }
 
 # ═════════════════════════════════════════════════════════════════════
+#  Metric-service queue TLS-deny policies (v0.3.5 parity)
+# ═════════════════════════════════════════════════════════════════════
+# Upstream v0.3.5 added `enforceSSL: true` to both ImportQueue and
+# ImportDLQ. The CDK's enforceSSL compiles to the exact deny-non-TLS
+# statement below.
+
+data "aws_iam_policy_document" "import_queue_ssl" {
+  statement {
+    sid     = "DenyInsecureConnections"
+    effect  = "Deny"
+    actions = ["sqs:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [aws_sqs_queue.import.arn]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "import" {
+  queue_url = aws_sqs_queue.import.id
+  policy    = data.aws_iam_policy_document.import_queue_ssl.json
+}
+
+data "aws_iam_policy_document" "import_dlq_ssl" {
+  statement {
+    sid     = "DenyInsecureConnections"
+    effect  = "Deny"
+    actions = ["sqs:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [aws_sqs_queue.import_dlq.arn]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "import_dlq" {
+  queue_url = aws_sqs_queue.import_dlq.id
+  policy    = data.aws_iam_policy_document.import_dlq_ssl.json
+}
+
+# ═════════════════════════════════════════════════════════════════════
 #  S3 — OSI import/export staging bucket (+ access logs)
 # ═════════════════════════════════════════════════════════════════════
 # Server access logs sink. Encrypted, public access blocked, TLS-only.

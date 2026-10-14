@@ -250,3 +250,66 @@ resource "aws_sqs_queue_policy" "glue_event" {
   queue_url = aws_sqs_queue.glue_event.id
   policy    = data.aws_iam_policy_document.glue_event.json
 }
+
+# ═════════════════════════════════════════════════════════════════════
+#  TLS-deny policies on remaining queues (v0.3.5 parity)
+# ═════════════════════════════════════════════════════════════════════
+# Upstream v0.3.5 added `enforceSSL: true` to every SQS queue in the
+# sources stack. The CDK's enforceSSL compiles to the exact deny-non-TLS
+# statement below. Pre-v0.3.5 only BulkReviewQueue carried it; after,
+# every queue + DLQ does. The three queues added in the v0.3.5 flows
+# (source_delete, glue_event, and their DLQs) already carry the policy
+# from the compute_delete_rescan tf port; this block covers the
+# pre-existing queues that upstream retrofitted.
+
+locals {
+  tls_deny_queues = {
+    db_connector_dlq  = aws_sqs_queue.db_connector_dlq.arn
+    db_scan           = aws_sqs_queue.db_scan.arn
+    db_scan_dlq       = aws_sqs_queue.db_scan_dlq.arn
+    bulk_review_dlq   = aws_sqs_queue.bulk_review_dlq.arn
+    doc_ingestion     = aws_sqs_queue.doc_ingestion.arn
+    doc_ingestion_dlq = aws_sqs_queue.doc_ingestion_dlq.arn
+    source_delete_dlq = aws_sqs_queue.source_delete_dlq.arn
+    glue_event_dlq    = aws_sqs_queue.glue_event_dlq.arn
+  }
+}
+
+data "aws_iam_policy_document" "tls_deny_queues" {
+  for_each = local.tls_deny_queues
+
+  statement {
+    sid     = "DenyInsecureConnections"
+    effect  = "Deny"
+    actions = ["sqs:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [each.value]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "tls_deny" {
+  for_each = local.tls_deny_queues
+
+  # Resolve from each key, since queue_url/aws_sqs_queue.XXX.id can't
+  # be dynamically indexed on the ARN alone.
+  queue_url = {
+    db_connector_dlq  = aws_sqs_queue.db_connector_dlq.id
+    db_scan           = aws_sqs_queue.db_scan.id
+    db_scan_dlq       = aws_sqs_queue.db_scan_dlq.id
+    bulk_review_dlq   = aws_sqs_queue.bulk_review_dlq.id
+    doc_ingestion     = aws_sqs_queue.doc_ingestion.id
+    doc_ingestion_dlq = aws_sqs_queue.doc_ingestion_dlq.id
+    source_delete_dlq = aws_sqs_queue.source_delete_dlq.id
+    glue_event_dlq    = aws_sqs_queue.glue_event_dlq.id
+  }[each.key]
+
+  policy = data.aws_iam_policy_document.tls_deny_queues[each.key].json
+}
