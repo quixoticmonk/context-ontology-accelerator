@@ -125,7 +125,7 @@ resource "aws_lambda_function" "federation_provisioner" {
       RESOURCE_PREFIX               = "${var.name_prefix}-"
       ATHENA_SPILL_BUCKET           = var.athena_spill_bucket_name
       FEDERATED_CATALOG_ROLE_ARN    = aws_iam_role.federated_catalog.arn
-      CONSUMER_QUERY_ROLE_SSM_PARAM = "${var.ssm_prefix}/serve/runtime-role-arn"
+      CONSUMER_QUERY_ROLE_SSM_PARAM = "${var.ssm_prefix}/${var.env}/serve/runtime-role-arn"
       RESOURCE_TAG_PREFIX           = var.resource_prefix
     }
   }

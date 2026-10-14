@@ -10,10 +10,18 @@ resource "aws_ssm_parameter" "runtime_arn" {
 }
 
 resource "aws_ssm_parameter" "runtime_role_arn" {
-  name        = "${var.ssm_prefix}/serve/runtime-role-arn"
+  # ENV-SCOPED, unlike this platform's other role parameters. `ssm_prefix` is
+  # `/${prefix}` alone and environments share an account, so an env-less name lets a
+  # sibling environment's deploy overwrite this value and the last one wins. This one
+  # fails OPEN: it is read by a connector stack deployed from a separate CDK app,
+  # where it becomes a lambda:InvokeFunction resource policy plus s3:GetObject on the
+  # connector's spill prefix and kms:Decrypt on its spill key. The wrong value hands a
+  # sibling environment's serve role a read on this environment's spilled query
+  # results.
+  name        = "${var.ssm_prefix}/${var.env}/serve/runtime-role-arn"
   type        = "String"
   value       = aws_iam_role.runtime.arn
-  description = "AgentCore Runtime IAM role ARN (consumer query principal)"
+  description = "AgentCore Runtime IAM role ARN (consumer query principal, env-scoped)"
   tags        = local.tags
 }
 

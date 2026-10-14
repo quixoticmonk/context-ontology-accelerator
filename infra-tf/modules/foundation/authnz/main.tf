@@ -177,17 +177,17 @@ resource "aws_dynamodb_table_item" "group_role_mapping" {
   range_key  = aws_dynamodb_table.resource_role_mappings.range_key
 
   item = jsonencode({
-    PK               = { S = "Platform::GLOBAL#Group::${each.value.group}" }
+    PK               = { S = "Platform::GLOBAL#Group::${each.value.group_key}" }
     SK               = { S = "ROLE#${each.value.role_id}" }
     resourceType     = { S = "Platform" }
     resourceId       = { S = "GLOBAL" }
     principalType    = { S = "Group" }
     principalId      = { S = each.value.group }
     role             = { S = each.value.role_id }
-    principalKey     = { S = "Group::${each.value.group}" }
+    principalKey     = { S = "Group::${each.value.group_key}" }
     resourceRoleKey  = { S = "Platform::GLOBAL#ROLE#${each.value.role_id}" }
     namespaceKey     = { S = "NS#GLOBAL" }
-    principalRoleKey = { S = "Group::${each.value.group}#ROLE#${each.value.role_id}" }
+    principalRoleKey = { S = "Group::${each.value.group_key}#ROLE#${each.value.role_id}" }
     grantedBy        = { S = "system" }
     grantedAt        = { S = "1970-01-01T00:00:00Z" }
   })

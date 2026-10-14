@@ -24,12 +24,43 @@ locals {
   # grantedAt is a static sentinel rather than the CDK's synth-time
   # ISO timestamp: timestamp() would force a perpetual diff on every
   # plan, and the field is informational (not a key).
+  #
+  # `group_key` mirrors `sanitizePrincipalKey` from
+  # libs/ts-shared/src/authnz.ts and MUST stay byte-identical to it:
+  #   1. values containing "@" are lowercased and trimmed (email-like)
+  #   2. URL-encode via urlencode() — JS's encodeURIComponent equivalent
+  #   3. additionally %-encode !'()*  (encodeURIComponent reserves these)
+  #   4. un-encode %40 back to @ so stored keys stay human-readable
+  # Keys (PK/principalKey/principalRoleKey) use the sanitized form;
+  # principalId stays raw. If this mismatches the TypeScript function
+  # the control-plane's GSI lookups on PrincipalIndex silently miss.
   group_role_seed_items = {
     for pair in flatten([
       for m in var.claims_mappings : [
         for role_id in m.mapped_roles : {
-          key     = "${m.group_value}-${role_id}"
-          group   = m.group_value
+          key   = "${m.group_value}-${role_id}"
+          group = m.group_value
+          group_key = replace(
+            replace(
+              replace(
+                replace(
+                  replace(
+                    replace(
+                      urlencode(
+                        strcontains(m.group_value, "@") ? lower(trimspace(m.group_value)) : m.group_value
+                      ),
+                      "!", "%21"
+                    ),
+                    "'", "%27"
+                  ),
+                  "(", "%28"
+                ),
+                ")", "%29"
+              ),
+              "*", "%2A"
+            ),
+            "%40", "@"
+          )
           role_id = role_id
         }
       ]

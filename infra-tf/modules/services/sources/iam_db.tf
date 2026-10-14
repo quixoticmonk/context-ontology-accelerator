@@ -405,7 +405,7 @@ data "aws_iam_policy_document" "federation_provisioner" {
     sid     = "ReadConsumerQueryRoleParam"
     actions = ["ssm:GetParameter"]
     resources = [
-      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/serve/runtime-role-arn",
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/${var.env}/serve/runtime-role-arn",
     ]
   }
 
