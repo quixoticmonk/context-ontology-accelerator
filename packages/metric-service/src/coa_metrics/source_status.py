@@ -19,6 +19,7 @@ enforcement — a WARNING is logged whenever permissive mode is active.
 from __future__ import annotations
 
 import os
+import re
 
 import structlog
 from botocore.exceptions import BotoCoreError, ClientError
@@ -32,6 +33,11 @@ PERMISSIVE_ENV = "ALLOW_PERMISSIVE_SOURCE_LOOKUP"
 # Statuses a metric may reference — keep in sync with the UI filter in
 # packages/web-app/src/pages/MetricForm.tsx (APPROVED || COMPLETED).
 _ALLOWED_STATUSES = frozenset({SourceStatus.APPROVED.value, SourceStatus.COMPLETED.value})
+
+# Mirrors ``DataSourceId`` in models/src/main/smithy/metric-service.smithy.
+# Applied here too because OSI import builds metrics without the generated model.
+_DATA_SOURCE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+DATA_SOURCE_ID_FORMAT_MESSAGE = "dataSourceId must be 1-128 characters of letters, digits, '.', '_', or '-'"
 
 
 class SourceValidationUnavailableError(RuntimeError):
@@ -61,6 +67,9 @@ def check_source_approved(namespace: str, data_source_id: str) -> str | None:
     """
     if not data_source_id:
         return "dataSourceId is required"
+
+    if not _DATA_SOURCE_ID_RE.fullmatch(data_source_id):
+        return DATA_SOURCE_ID_FORMAT_MESSAGE
 
     if permissive_lookup_enabled():
         logger.warning(
@@ -131,13 +140,14 @@ def check_source_approved(namespace: str, data_source_id: str) -> str | None:
 def check_source_table_exists(namespace: str, data_source_id: str, source_table: str) -> str | None:
     """Verify the declared ``sourceTable`` exists in the source's catalog (#161).
 
-    Rejects only **provable** absence. The catalog lookup fails open (an
-    unreachable catalog is indistinguishable from an empty one), and a source
-    can legitimately be COMPLETED while none of its assets are steward-approved
-    yet — so a table is treated as absent only when the catalog was read
-    successfully, knows at least one table for the source, and the declared one
-    is not among them. Anything less falls back to the soft ``table_reference``
-    warning that ``validate_metric`` already emits.
+    Rejects only **provable** absence. An unconfigured catalog lookup falls back
+    to the existing soft warning, while a configured lookup that cannot read the
+    catalog fails closed with a 503. A source can legitimately be COMPLETED while
+    none of its assets are indexed yet — so a table is treated as absent only
+    when the catalog was read successfully, knows at least one table for the
+    source, and no unambiguous approved asset resolves for the declared name.
+    This rejects unapproved assets and ambiguous bare names as well as missing
+    tables.
 
     "Cannot configure" and "read failed" are deliberately NOT the same thing:
 
@@ -204,7 +214,7 @@ def check_source_table_exists(namespace: str, data_source_id: str, source_table:
 
     known = lookup.known_tables(data_source_id)
     if not known:
-        # Source known to the sources table but with no approved assets yet —
+        # Source known to the sources table but with no indexed assets yet —
         # absence is not provable, so fall back to the soft warning. Debug, not
         # info: this fires on every create against a COMPLETED source.
         logger.debug(
@@ -215,11 +225,27 @@ def check_source_table_exists(namespace: str, data_source_id: str, source_table:
         )
         return None
 
-    # Accept either form: the catalog may enumerate bare names (`orders`) while
-    # the metric declares a schema-qualified one (`public.orders`, as the docs'
-    # example does), or vice versa.
     declared = source_table.lower()
-    if declared in known or declared.rsplit(".", 1)[-1] in known:
+    exists = lookup.table_exists(data_source_id, source_table)
+
+    # A legacy catalog can expose a genuinely bare asset name while the metric
+    # uses the documented ``schema.table`` form. Only fall back when that bare
+    # name is itself present in the raw catalog. Never synthesize it from another
+    # qualified asset, which would let ``sales.orders`` resolve to
+    # ``archive.orders``.
+    bare = declared.rsplit(".", 1)[-1]
+    if not exists and "." in declared and bare in known:
+        exists = lookup.table_exists(data_source_id, bare)
+
+    # The per-asset approval read can fail after the name index succeeded.
+    # Re-check availability so a transient failure remains a 503 rather than
+    # being cached or reported as a definitive rejection.
+    if not lookup.catalog_available(data_source_id):
+        raise SourceValidationUnavailableError(
+            f"table catalog unavailable for data source '{data_source_id}' in namespace '{namespace}'"
+        )
+
+    if exists:
         return None
 
     return (

@@ -140,14 +140,14 @@ class TestBuildLexicalStoreSSRFPrevention:
             patch("coa_ontology.inducer.routers.induce_unstructured.NeptuneAnalyticsLexicalStore") as mock_na,
             patch("coa_ontology.inducer.routers.induce_unstructured.NeptuneDatabaseLexicalStore") as mock_ndb,
         ):
-            _build_lexical_store(graph_arn, "us-east-1", app_config, namespace="test-ns")
+            _build_lexical_store(graph_arn, "us-east-1", app_config, namespace="550e8400-e29b-41d4-a716-446655440002")
 
             # NeptuneDatabaseLexicalStore was constructed with server config endpoint
             mock_ndb.assert_called_once()
             call_kwargs = mock_ndb.call_args.kwargs
             assert call_kwargs["endpoint"] == "real-cluster.us-east-1.neptune.amazonaws.com"
             assert call_kwargs["region"] == "us-east-1"
-            assert "test-ns" in call_kwargs["tenant_id"] or call_kwargs["tenant_id"] != ""
+            assert call_kwargs["tenant_id"] != ""
 
             # NeptuneAnalyticsLexicalStore was NOT constructed
             mock_na.assert_not_called()
@@ -260,7 +260,7 @@ class TestDispatchBuildsValidGraphArn:
 
         body = WorkbenchInductionRequest(
             datasource_ids=["ds-1"],
-            ontology_uri_prefix=f"{GRAPH_BASE_URI}/namespace/ns-1/ontology/induced#",
+            ontology_uri_prefix=f"{GRAPH_BASE_URI}/namespace/550e8400-e29b-41d4-a716-446655440003/ontology/induced#",
             strategy="unstructured_lexical_graph",
             graph_arn=body_graph_arn,
         )
@@ -268,7 +268,7 @@ class TestDispatchBuildsValidGraphArn:
         req.app.state.config = config
         with patch("coa_ontology.inducer.routers.induce_unstructured.start_induction") as mock_unstr:
             mock_unstr.return_value = SimpleNamespace(job_id="j", status="pending")
-            start_induction(body=body, request=req, namespace="ns-1")
+            start_induction(body=body, request=req, namespace="550e8400-e29b-41d4-a716-446655440003")
             mock_unstr.assert_called_once()
             return mock_unstr.call_args.kwargs["body"]
 
@@ -283,8 +283,29 @@ class TestDispatchBuildsValidGraphArn:
         # endpoint inside _build_lexical_store.
         assert built.graph_arn == "neptune-db"
 
-    def test_explicit_na_arn_is_forwarded(self):
-        """An explicit Neptune Analytics ARN on the request is forwarded as-is."""
+    def test_explicit_na_arn_is_rejected_at_customer_dispatch(self):
+        """The customer-facing dispatch rejects an explicit NA source."""
+        from fastapi import HTTPException
+
         arn = "arn:aws:neptune-graph:us-east-1:123456789012:graph/g-abc123"
-        built = self._dispatch(body_graph_arn=arn, config={"neptune_endpoint": "ignored"})
-        assert built.graph_arn == arn
+        with pytest.raises(HTTPException) as raised:
+            self._dispatch(body_graph_arn=arn, config={"neptune_endpoint": "ignored"})
+
+        assert raised.value.status_code == 422
+        assert raised.value.detail == {
+            "code": "UNSUPPORTED_SOURCE",
+            "message": "The requested lexical graph source is not supported.",
+        }
+
+    def test_missing_neptune_endpoint_returns_structured_configuration_error(self):
+        """A missing server source uses the same structured error contract."""
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as raised:
+            self._dispatch(body_graph_arn=None, config={})
+
+        assert raised.value.status_code == 422
+        assert raised.value.detail == {
+            "code": "CONFIGURATION_ERROR",
+            "message": "The lexical graph source is not configured.",
+        }

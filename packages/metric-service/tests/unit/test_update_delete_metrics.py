@@ -12,7 +12,11 @@ import pytest
 from coa_metrics.api.delete_metric import handler as delete_handler
 from coa_metrics.api.update_metric import handler as update_handler
 from coa_metrics.neptune_client import MetricDefinition, MetricDialect
-from coa_metrics.source_status import PERMISSIVE_ENV, SourceValidationUnavailableError
+from coa_metrics.source_status import (
+    DATA_SOURCE_ID_FORMAT_MESSAGE,
+    PERMISSIVE_ENV,
+    SourceValidationUnavailableError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -71,6 +75,19 @@ def _existing_metric() -> MetricDefinition:
 
 
 # ── Update tests ────────────────────────────────────────────────────────
+
+
+class TestUpdateDataSourceIdFormat:
+    @pytest.mark.parametrize("data_source_id", ["<script>alert(1)</script>", "ds 1", "x" * 129])
+    @patch("coa_metrics.api.update_metric._get_neptune")
+    def test_malformed_data_source_id_returns_400(self, mock_neptune: MagicMock, data_source_id: str) -> None:
+        mock_neptune.return_value.get_metric.return_value = _existing_metric()
+        body = {**_valid_update_body(), "dataSourceId": data_source_id}
+        resp = update_handler(_make_update_event(body=body), None)
+        assert resp["statusCode"] == 400
+        if len(data_source_id) <= 128:
+            assert json.loads(resp["body"])["message"] == DATA_SOURCE_ID_FORMAT_MESSAGE
+        mock_neptune.return_value.update_metric.assert_not_called()
 
 
 class TestUpdateMetric:
@@ -167,15 +184,21 @@ class TestUpdateMetric:
         assert detail["namespace"] == "ns-alpha"
         assert detail["metricName"] == "revenue"
 
-    # ── #161 soft/hard validation split ──────────────────────────────────
+    # ── SQL persistence validation (#617 / #1050) ────────────────────────
 
+    @patch("coa_metrics.api.update_metric._validate_soft")
     @patch("coa_metrics.api.update_metric._get_eventbridge")
     @patch("coa_metrics.api.update_metric._get_opensearch")
     @patch("coa_metrics.api.update_metric._get_neptune")
-    def test_update_fragment_expression_publishes(
-        self, mock_neptune: MagicMock, mock_opensearch: MagicMock, mock_eventbridge: MagicMock
+    def test_update_fragment_expression_returns_400(
+        self,
+        mock_neptune: MagicMock,
+        mock_opensearch: MagicMock,
+        mock_eventbridge: MagicMock,
+        mock_validate_soft: MagicMock,
     ) -> None:
-        """#161: a fragment is a soft warning on update too (was 400)."""
+        """#617/#1050: a fragment is rejected on update too — the serve firewall
+        would reject it. Must 400 and not persist."""
         mock_neptune.return_value.get_metric.return_value = _existing_metric()
         mock_eventbridge.return_value.put_events.return_value = {}
         body = _valid_update_body()
@@ -183,8 +206,10 @@ class TestUpdateMetric:
 
         resp = update_handler(_make_update_event(body=body), None)
 
-        assert resp["statusCode"] == 200
-        mock_neptune.return_value.update_metric.assert_called_once()
+        assert resp["statusCode"] == 400
+        assert "full SELECT statement" in json.loads(resp["body"])["message"]
+        mock_neptune.return_value.update_metric.assert_not_called()
+        mock_validate_soft.assert_not_called()
 
     @patch("coa_metrics.api.update_metric._get_neptune")
     def test_update_data_modifying_expression_returns_400(self, mock_neptune: MagicMock) -> None:
@@ -221,6 +246,52 @@ class TestUpdateMetric:
         resp = update_handler(_make_update_event(body=_valid_update_body()), None)
 
         assert resp["statusCode"] == 503
+        mock_neptune.return_value.update_metric.assert_not_called()
+
+    @patch("coa_metrics.api.update_metric._get_eventbridge")
+    @patch("coa_metrics.api.update_metric._validate_soft")
+    @patch("coa_metrics.api.update_metric.check_source_table_exists")
+    @patch("coa_metrics.api.update_metric._get_opensearch")
+    @patch("coa_metrics.api.update_metric._get_neptune")
+    def test_update_error_severity_table_reference_still_publishes(
+        self,
+        mock_neptune: MagicMock,
+        mock_opensearch: MagicMock,
+        mock_check: MagicMock,
+        mock_validate_soft: MagicMock,
+        mock_eventbridge: MagicMock,
+    ) -> None:
+        """!1133 (Kun's review): an ERROR-severity table_reference finding must
+        not independently 400 update — the dedicated check_source_table_exists
+        gate owns that decision; onboarding blocks only on sql_syntax/sql_shape."""
+        mock_neptune.return_value.get_metric.return_value = _existing_metric()
+        mock_eventbridge.return_value.put_events.return_value = {}
+        mock_check.return_value = None  # can't prove absence → publish
+        mock_validate_soft.return_value = [
+            {"field": "table_reference", "message": "Source table 'orders' not found", "severity": "ERROR"}
+        ]
+        resp = update_handler(_make_update_event(body=_valid_update_body()), None)
+        assert resp["statusCode"] == 200, resp
+        mock_neptune.return_value.update_metric.assert_called_once()
+
+    @patch("coa_metrics.api.update_metric._validate_soft")
+    @patch("coa_metrics.api.update_metric.check_source_table_exists")
+    @patch("coa_metrics.api.update_metric._get_neptune")
+    def test_update_sql_shape_error_still_blocks(
+        self,
+        mock_neptune: MagicMock,
+        mock_check: MagicMock,
+        mock_validate_soft: MagicMock,
+    ) -> None:
+        """Complement: a sql_shape ERROR (a BLOCKING_CHECK) must still 400 on
+        update and not persist."""
+        mock_neptune.return_value.get_metric.return_value = _existing_metric()
+        mock_check.return_value = None
+        mock_validate_soft.return_value = [
+            {"field": "sql_shape", "message": "expression must be a full SELECT statement", "severity": "ERROR"}
+        ]
+        resp = update_handler(_make_update_event(body=_valid_update_body()), None)
+        assert resp["statusCode"] == 400, resp
         mock_neptune.return_value.update_metric.assert_not_called()
 
 

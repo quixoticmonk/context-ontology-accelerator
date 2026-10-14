@@ -133,6 +133,22 @@ class TestVKGTranslatorSuccess:
             assert step.status == Tier2Status.OK
             assert step.duration_ms >= 0
 
+    async def test_translate_output_log_omits_sql_text(self):
+        """CWE-532: the compiled SQL carries query-time literals (potential PII);
+        vkg_translate_output logs its length, never the text."""
+        import structlog.testing
+
+        sql = "SELECT id FROM customers WHERE email = 'alice@example.com'"
+        translator = _make_translator(
+            vkg_client=_make_vkg_client(sql=sql), firewall=_make_firewall(), executor=_make_executor()
+        )
+        with structlog.testing.capture_logs() as logs:
+            await translator.resolve("SELECT ?c WHERE { ?c a :Customer }", namespace="demo")
+        event = next(log for log in logs if log["event"] == "vkg_translate_output")
+        assert event["sql_length"] == len(sql)
+        assert "sql_preview" not in event
+        assert "alice@example.com" not in repr(logs)
+
 
 @pytest.mark.unit
 class TestVKGTranslatorErrors:
@@ -592,17 +608,18 @@ class TestVKGTranslatorCrossSourceQualification:
         assert "pg_cat.public.customers" in executed
         assert "awsdatacatalog.crm.customers" in executed
 
-    async def test_no_registry_keeps_previous_behaviour(self):
-        """Without a registry wired, the pipeline behaves exactly as before."""
+    async def test_no_registry_fails_closed_without_executing(self):
+        """Detected cross-source SQL without registry metadata must not execute bare."""
         routing = {
             "claims": {"datasourceId": "ds-pg", "sourceSchema": "public"},
             "policies": {"datasourceId": "ds-glue", "sourceSchema": "insurance"},
         }
         executor = _make_executor()
         translator = _make_translator(vkg_client=self._vkg(routing), firewall=self._firewall(), executor=executor)
-        await translator.resolve("SELECT ?s WHERE { ?s ?p ?o }", namespace="demo")
+        result = await translator.resolve("SELECT ?s WHERE { ?s ?p ?o }", namespace="demo")
 
-        assert executor.execute.call_args.args[0] == self._SQL
+        assert result.error == "query_qualification_error"
+        executor.execute.assert_not_awaited()
 
 
 @pytest.mark.unit

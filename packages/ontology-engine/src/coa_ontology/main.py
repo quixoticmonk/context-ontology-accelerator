@@ -20,6 +20,9 @@ import defusedxml
 # ── Workbench-specific ──────────────────────────────────────────────────
 from coa_common import DEFAULT_EMBED_MODEL_ID
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.requests import Request as StarletteRequest
 
 from coa_ontology import induce_catalog
 from coa_ontology.bedrock_embeddings import BedrockEmbeddingClient
@@ -42,6 +45,7 @@ from coa_ontology.proposals import router as proposals_router
 # ── Pluggable backends (vector + graph abstractions) ────────────────────
 from coa_ontology.stores import build_stores
 from coa_ontology.stores.adapters import StoreOntologyCatalogAdapter
+from coa_ontology.stores.neptune_db_graph import NeptuneMemoryLimitError
 
 # ── Validation ──────────────────────────────────────────────────────────
 from coa_ontology.validation.routers import validate
@@ -85,6 +89,68 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_request: StarletteRequest, exc: RequestValidationError) -> JSONResponse:
+    """Return the failing fields WITHOUT echoing the caller-supplied input.
+
+    FastAPI's default handler leaks the offending value through TWO channels:
+
+    1. An ``input`` field on every error entry — stripped here directly.
+    2. The ``msg`` field, when Pydantic's custom validators
+       (``@field_validator`` / ``@model_validator``) raise ``ValueError`` /
+       ``AssertionError`` — Pydantic uses the exception text verbatim as
+       ``msg``, and a validator that interpolates the rejected value into
+       its message text (a common pattern, e.g.
+       ``ValueError(f"Bad: {v!r}")``) reflects that value into the response
+       body regardless of what happens to ``input``.
+
+    Pydantic's built-in type-level errors (``float_parsing``, ``missing``,
+    ``string_pattern_mismatch``, …) carry a fixed ``msg`` that never
+    contains caller-supplied content, so we keep it — it's what tells a
+    legitimate caller how to fix their payload. Custom-validator errors
+    (``value_error`` / ``assertion_error``) are the ones whose ``msg`` is
+    untrusted; those get an opaque replacement and rely on ``type`` +
+    ``loc`` to say what's wrong.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {
+                    "type": err.get("type"),
+                    "loc": err.get("loc"),
+                    "msg": ("Invalid value" if err.get("type") in _CUSTOM_VALIDATOR_ERROR_TYPES else err.get("msg")),
+                }
+                for err in exc.errors()
+            ],
+        },
+    )
+
+
+# Pydantic error ``type`` strings emitted when a custom validator raises
+# ``ValueError`` / ``AssertionError``. The ``msg`` for these entries is the
+# exception text verbatim, and any validator that interpolates the rejected
+# value into that text leaks it back to the caller — a channel that survives
+# stripping the ``input`` field. Adding a new custom-validator error type
+# upstream would be caught by ``test_custom_validator_msg_is_not_echoed``.
+_CUSTOM_VALIDATOR_ERROR_TYPES = frozenset({"value_error", "assertion_error"})
+
+
+@app.exception_handler(NeptuneMemoryLimitError)
+async def _neptune_memory_limit_handler(_request: StarletteRequest, _exc: NeptuneMemoryLimitError) -> JSONResponse:
+    """Surface a Neptune OOM that survived the store's retries as a retryable 503.
+
+    Without this it is an unhandled exception and the caller gets a bare 500,
+    indistinguishable from a real bug, so clients cannot know a retry is safe.
+    Only reached on routes that let the error propagate (e.g. ``/graph/search``).
+    """
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Graph database is temporarily out of query memory; retry the request."},
+    )
+
 
 # ── Config ──────────────────────────────────────────────────────────────
 # After MR !39 consolidation, the ontology-catalog + embedding-generator

@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -37,6 +38,7 @@ import botocore.exceptions
 import httpx
 from coa_common import validate_namespace_name
 from coa_common.constants import VOCAB_URI
+from coa_common.opensearch import retry_call
 
 from coa_ontology.stores.base import GraphStore
 
@@ -49,6 +51,28 @@ NDB_REGION = os.getenv("NDB_REGION", os.getenv("AWS_REGION", "us-east-1"))
 NDB_IAM_AUTH = os.getenv("NDB_IAM_AUTH", "true").lower() == "true"
 NDB_TIMEOUT = float(os.getenv("NDB_TIMEOUT", "30"))
 DEFAULT_NAMESPACE = os.getenv("DYNAMODB_DEFAULT_NAMESPACE", "default")
+# Subjects per DELETE when superseding annotations on append; a re-induced
+# proposal can carry hundreds of classes + properties.
+_SUPERSEDE_CHUNK = 200
+
+# Neptune answers HTTP 500 ``MemoryLimitExceededException`` when query-execution
+# memory is exhausted — often by OTHER concurrent requests, so a cheap query can
+# fail alongside the heavy one. Neptune documents the error as retriable, and the
+# failed request does not commit, so a retry is safe for queries, updates and GSP
+# loads alike. Retries are short (a few seconds of backoff in total) because reads
+# sit behind API Gateway's 29 s integration limit.
+_NDB_OOM_CODE = "MemoryLimitExceededException"
+_NDB_MAX_RETRIES = int(os.getenv("NDB_MAX_RETRIES", "2"))
+_NDB_MAX_BACKOFF_S = float(os.getenv("NDB_MAX_BACKOFF_S", "4"))
+
+
+class NeptuneMemoryLimitError(httpx.HTTPStatusError):
+    """Neptune rejected a request with ``MemoryLimitExceededException``.
+
+    Subclasses :class:`httpx.HTTPStatusError` so existing ``except`` sites keep
+    working. ``main.py`` maps it to a 503 on routes that let it propagate (e.g.
+    ``/graph/search``); routes with a broad ``except Exception`` still return 500.
+    """
 
 
 # ── Named graph URI scheme ──────────────────────────────────────────────
@@ -146,6 +170,32 @@ def _sign(method: str, url: str, body: str | bytes, service: str = "neptune-db")
 # ── SPARQL transport ────────────────────────────────────────────────────
 
 
+def _raise_for_neptune_status(r: httpx.Response) -> None:
+    """``raise_for_status``, but raise :class:`NeptuneMemoryLimitError` for an OOM."""
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    # A JSON body that is not an object (list/str/null) must not raise
+    # AttributeError here: /graph/search maps AttributeError to 501, which the
+    # integ test treats as "unsupported" and skips — hiding the real error.
+    code = body.get("code") if isinstance(body, dict) else None
+    if code == _NDB_OOM_CODE:
+        raise NeptuneMemoryLimitError(f"Neptune {_NDB_OOM_CODE} ({r.status_code})", request=r.request, response=r)
+    r.raise_for_status()
+
+
+def _with_oom_retry[T](op: str, fn: Callable[[], T]) -> T:
+    """Run one Neptune HTTP call, retrying only ``MemoryLimitExceededException``."""
+    return retry_call(
+        op,
+        fn,
+        is_transient=lambda exc: isinstance(exc, NeptuneMemoryLimitError),
+        max_retries=_NDB_MAX_RETRIES,
+        max_backoff_s=_NDB_MAX_BACKOFF_S,
+    )
+
+
 def _sparql_query(query: str) -> dict:
     if not NDB_ENDPOINT:
         raise RuntimeError("NDB_ENDPOINT not set — configure your Neptune DB endpoint")
@@ -154,20 +204,26 @@ def _sparql_query(query: str) -> dict:
 
     url = f"{NDB_ENDPOINT.rstrip('/')}/sparql"
     body = urlencode({"query": query})
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/sparql-results+json",
-    }
-    headers.update(_sign("POST", url, body))
-    _t0 = _t.perf_counter()
-    with httpx.Client(timeout=NDB_TIMEOUT) as c:
-        r = c.post(url, content=body, headers=headers)
-        elapsed_ms = (_t.perf_counter() - _t0) * 1000
-        if r.status_code >= 400:
-            log.error("SPARQL query failed (%d) %.0fms: %s\nquery=%s", r.status_code, elapsed_ms, r.text[:1500], query)
-            r.raise_for_status()
-        log.info("SPARQL query %.0fms  (body=%d bytes)", elapsed_ms, len(body))
-        return r.json()
+
+    def _once() -> dict:
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/sparql-results+json",
+        }
+        headers.update(_sign("POST", url, body))
+        _t0 = _t.perf_counter()
+        with httpx.Client(timeout=NDB_TIMEOUT) as c:
+            r = c.post(url, content=body, headers=headers)
+            elapsed_ms = (_t.perf_counter() - _t0) * 1000
+            if r.status_code >= 400:
+                log.error(
+                    "SPARQL query failed (%d) %.0fms: %s\nquery=%s", r.status_code, elapsed_ms, r.text[:1500], query
+                )
+                _raise_for_neptune_status(r)
+            log.info("SPARQL query %.0fms  (body=%d bytes)", elapsed_ms, len(body))
+            return r.json()
+
+    return _with_oom_retry("neptune sparql query", _once)
 
 
 def _sparql_update(update: str) -> None:
@@ -178,22 +234,26 @@ def _sparql_update(update: str) -> None:
 
     url = f"{NDB_ENDPOINT.rstrip('/')}/sparql"
     body = urlencode({"update": update})
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    headers.update(_sign("POST", url, body))
-    _t0 = _t.perf_counter()
-    # Batched INSERTs (up to the per-flush byte budget) are a bulk-transfer
-    # workload, not the per-item call the 30 s default was sized for. Use the
-    # same floor the GSP turtle load uses so a large slow-committing flush
-    # doesn't spuriously time out (and trip the fresh-ingest rollback).
-    with httpx.Client(timeout=max(NDB_TIMEOUT, 120)) as c:
-        r = c.post(url, content=body, headers=headers)
-        elapsed_ms = (_t.perf_counter() - _t0) * 1000
-        if r.status_code >= 400:
-            log.error(
-                "SPARQL update failed (%d) %.0fms: %s\nupdate=%s", r.status_code, elapsed_ms, r.text[:1500], update
-            )
-            r.raise_for_status()
-        log.info("SPARQL update %.0fms  (body=%d bytes)", elapsed_ms, len(body))
+
+    def _once() -> None:
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        headers.update(_sign("POST", url, body))
+        _t0 = _t.perf_counter()
+        # Batched INSERTs (up to the per-flush byte budget) are a bulk-transfer
+        # workload, not the per-item call the 30 s default was sized for. Use the
+        # same floor the GSP turtle load uses so a large slow-committing flush
+        # doesn't spuriously time out (and trip the fresh-ingest rollback).
+        with httpx.Client(timeout=max(NDB_TIMEOUT, 120)) as c:
+            r = c.post(url, content=body, headers=headers)
+            elapsed_ms = (_t.perf_counter() - _t0) * 1000
+            if r.status_code >= 400:
+                log.error(
+                    "SPARQL update failed (%d) %.0fms: %s\nupdate=%s", r.status_code, elapsed_ms, r.text[:1500], update
+                )
+                _raise_for_neptune_status(r)
+            log.info("SPARQL update %.0fms  (body=%d bytes)", elapsed_ms, len(body))
+
+    _with_oom_retry("neptune sparql update", _once)
 
 
 def _gsp_post_turtle(graph_uri: str, turtle: str) -> dict:
@@ -218,16 +278,21 @@ def _gsp_post_turtle(graph_uri: str, turtle: str) -> dict:
 
         url = f"{NDB_ENDPOINT.rstrip('/')}/sparql/gsp/?graph={quote(graph_uri, safe='')}"
     body_bytes = turtle.encode("utf-8")
-    headers = {"Content-Type": "text/turtle"}
-    # SigV4 needs the body for signing.
-    headers.update(_sign("POST", url, body_bytes))
-    _t0 = _t.perf_counter()
-    with httpx.Client(timeout=max(NDB_TIMEOUT, 120)) as c:
-        r = c.post(url, content=body_bytes, headers=headers)
-        elapsed_ms = (_t.perf_counter() - _t0) * 1000
-        if r.status_code >= 400:
-            log.error("GSP POST failed (%d) %.0fms: %s", r.status_code, elapsed_ms, r.text[:500])
-            r.raise_for_status()
+
+    def _once() -> float:
+        headers = {"Content-Type": "text/turtle"}
+        # SigV4 needs the body for signing.
+        headers.update(_sign("POST", url, body_bytes))
+        _t0 = _t.perf_counter()
+        with httpx.Client(timeout=max(NDB_TIMEOUT, 120)) as c:
+            r = c.post(url, content=body_bytes, headers=headers)
+            elapsed_ms = (_t.perf_counter() - _t0) * 1000
+            if r.status_code >= 400:
+                log.error("GSP POST failed (%d) %.0fms: %s", r.status_code, elapsed_ms, r.text[:500])
+                _raise_for_neptune_status(r)
+        return elapsed_ms
+
+    elapsed_ms = _with_oom_retry("neptune gsp post", _once)
     log.info("GSP POST %.0fms  (turtle=%d bytes, graph=%s)", elapsed_ms, len(body_bytes), graph_uri)
     return {
         "graph_uri": graph_uri,
@@ -255,20 +320,24 @@ def _gsp_get_turtle(graph_uri: str) -> str | None:
         from urllib.parse import quote
 
         url = f"{NDB_ENDPOINT.rstrip('/')}/sparql/gsp/?graph={quote(graph_uri, safe='')}"
-    headers = {"Accept": "text/turtle"}
-    headers.update(_sign("GET", url, ""))
-    _t0 = _t.perf_counter()
-    with httpx.Client(timeout=max(NDB_TIMEOUT, 120)) as c:
-        r = c.get(url, headers=headers)
-        elapsed_ms = (_t.perf_counter() - _t0) * 1000
-        if r.status_code == 404:
-            log.info("GSP GET 404 %.0fms  (graph=%s)", elapsed_ms, graph_uri)
-            return None
-        if r.status_code >= 400:
-            log.error("GSP GET failed (%d) %.0fms: %s", r.status_code, elapsed_ms, r.text[:500])
-            r.raise_for_status()
-    log.info("GSP GET %.0fms  (turtle=%d bytes, graph=%s)", elapsed_ms, len(r.text), graph_uri)
-    return r.text
+
+    def _once() -> str | None:
+        headers = {"Accept": "text/turtle"}
+        headers.update(_sign("GET", url, ""))
+        _t0 = _t.perf_counter()
+        with httpx.Client(timeout=max(NDB_TIMEOUT, 120)) as c:
+            r = c.get(url, headers=headers)
+            elapsed_ms = (_t.perf_counter() - _t0) * 1000
+            if r.status_code == 404:
+                log.info("GSP GET 404 %.0fms  (graph=%s)", elapsed_ms, graph_uri)
+                return None
+            if r.status_code >= 400:
+                log.error("GSP GET failed (%d) %.0fms: %s", r.status_code, elapsed_ms, r.text[:500])
+                _raise_for_neptune_status(r)
+        log.info("GSP GET %.0fms  (turtle=%d bytes, graph=%s)", elapsed_ms, len(r.text), graph_uri)
+        return r.text
+
+    return _with_oom_retry("neptune gsp get", _once)
 
 
 def _esc(s: str) -> str:
@@ -832,6 +901,84 @@ class NeptuneDBGraphStore(GraphStore):
 
     # ── Bulk Turtle ingest ────────────────────────────────────────────
 
+    def supersede_annotations(
+        self,
+        ontology_uri: str,
+        subject_uris: Iterable[str],
+        predicates: Mapping[str, str | None],
+    ) -> int:
+        """Retire the live ``predicates`` values of ``subject_uris`` in this ontology's graph.
+
+        ``predicates`` maps each annotation predicate to the HISTORY predicate its
+        displaced values move to (``coa:supersededComment`` etc.), or ``None`` to
+        drop them outright. One ``DELETE/INSERT`` per chunk of subjects,
+        constrained by ``VALUES`` on both the subject and the ``(predicate,
+        history)`` pair, so nothing outside the named (subject, predicate) pairs
+        — in particular the relationship axioms (``rdfs:range``,
+        ``rdfs:subClassOf``, R2RML) and every other subject in the graph — can be
+        touched. Neptune's SPARQL UPDATE response carries no affected-row count,
+        so the count is taken with a ``SELECT COUNT`` first; it is the log signal
+        that supersession fired (or found nothing to do).
+        """
+        subjects = [s for s in dict.fromkeys(subject_uris) if _is_storable_iri(s)]
+        kept = {p: h for p, h in predicates.items() if h}
+        dropped = [p for p, h in predicates.items() if not h]
+        if not subjects or not predicates:
+            return 0
+        graph_uri = self._graph_for(ontology_uri)
+        removed = 0
+        # ponytail: VALUES-chunked so a large re-induced proposal (hundreds of
+        # classes + properties) stays under Neptune's request size comfortably.
+        for chunk_no, i in enumerate(range(0, len(subjects), _SUPERSEDE_CHUNK)):
+            subj_values = " ".join(_iri(s) for s in subjects[i : i + _SUPERSEDE_CHUNK])
+            all_preds = " ".join(_iri(p) for p in predicates)
+            count_pattern = f"VALUES ?s {{ {subj_values} }} VALUES ?p {{ {all_preds} }} ?s ?p ?o ."
+            try:
+                count_res = _sparql_query(
+                    f"SELECT (COUNT(*) AS ?n) WHERE {{ GRAPH {_iri(graph_uri)} {{ {count_pattern} }} }}"
+                )
+            except Exception as e:
+                raise RuntimeError(f"supersede count failed (chunk {chunk_no}, {len(subjects)} subjects): {e}") from e
+            bindings = count_res.get("results", {}).get("bindings", [])
+            n = int(bindings[0]["n"]["value"]) if bindings else 0
+            if n == 0:
+                continue
+            # Move: the displaced literal is re-attached under its history
+            # predicate so the earlier generation stays inspectable.
+            # One statement per (live, history) pair with both predicates
+            # inlined — the same shape update_ontology uses. Cost: one small
+            # update per annotation predicate (4) per subject chunk.
+            for live_pred, hist_pred in kept.items():
+                try:
+                    _sparql_update(
+                        f"WITH {_iri(graph_uri)} "
+                        f"DELETE {{ ?s {_iri(live_pred)} ?o }} INSERT {{ ?s {_iri(hist_pred)} ?o }} "
+                        f"WHERE {{ VALUES ?s {{ {subj_values} }} ?s {_iri(live_pred)} ?o . }}"
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"supersede move failed (chunk {chunk_no}, predicate {live_pred} -> {hist_pred}): {e}"
+                    ) from e
+            if dropped:
+                drop_values = " ".join(_iri(p) for p in dropped)
+                try:
+                    _sparql_update(
+                        f"WITH {_iri(graph_uri)} DELETE {{ ?s ?p ?o }} "
+                        f"WHERE {{ VALUES ?s {{ {subj_values} }} VALUES ?p {{ {drop_values} }} ?s ?p ?o . }}"
+                    )
+                except Exception as e:
+                    raise RuntimeError(f"supersede drop failed (chunk {chunk_no}, predicates {dropped}): {e}") from e
+            removed += n
+        log.info(
+            "supersede_annotations: retired %d triples (subjects=%d predicates=%d kept_as_history=%d graph=%s)",
+            removed,
+            len(subjects),
+            len(predicates),
+            len(kept),
+            graph_uri,
+        )
+        return removed
+
     def load_turtle(
         self,
         ontology_uri: str,
@@ -912,6 +1059,7 @@ class NeptuneDBGraphStore(GraphStore):
         labels: list[str] = []
         comments: list[str] = []
         alt_labels: list[str] = []
+        superseded: dict[str, list[str]] = {}
         edges: list[dict] = []
         graph_uris: set[str] = set()
         neighbor_uris: set[str] = set()
@@ -922,6 +1070,17 @@ class NeptuneDBGraphStore(GraphStore):
         rdfs_comment = RDFS + "comment"
         skos_alt_label = _SKOS + "altLabel"
         scl_is_mapped = _SCL + "isMapped"
+        # History predicates: the previous generation of a description /
+        # alt-label retired by an append-mode re-accept. Surfaced separately so
+        # the class detail can show "what this used to say" without them being
+        # mistaken for live content or for graph edges.
+        history_preds = {
+            _SCL + "supersededComment": "comments",
+            _SCL + "supersededDefinition": "definitions",
+            _SCL + "supersededAltLabel": "altLabels",
+            _SCL + "supersededGlossaryTerm": "glossaryTerms",
+            _SCL + "supersededTag": "tags",
+        }
 
         for b in bindings:
             g_val = b.get("g", {}).get("value")
@@ -944,6 +1103,10 @@ class NeptuneDBGraphStore(GraphStore):
             elif p == skos_alt_label and o_type == "literal":
                 if o_value not in alt_labels:
                     alt_labels.append(o_value)
+            elif p in history_preds and o_type == "literal":
+                bucket = superseded.setdefault(history_preds[p], [])
+                if o_value not in bucket:
+                    bucket.append(o_value)
             elif p == scl_is_mapped:
                 # Tier-2 R2RML-answerability marker (written by store_class as
                 # ``"true"^^xsd:boolean``). Surfaced as a first-class boolean so
@@ -1067,6 +1230,7 @@ class NeptuneDBGraphStore(GraphStore):
             "labels": labels,
             "comments": comments,
             "alt_labels": alt_labels,
+            "superseded": superseded,
             "is_mapped": is_mapped,
             "edges": out_edges,
         }
@@ -1156,12 +1320,17 @@ class NeptuneDBGraphStore(GraphStore):
           )"""
         )
 
+        # With a kind, the type pattern alone binds ?s and ?g: a subject typed in
+        # ?g is by definition in ?g, so an extra ``?s ?_p ?_o`` adds no matches.
+        # It does add cost: with ?g unbound it can match every quad in the cluster
+        # (all namespaces) before the STRSTARTS filter applies, and it multiplies
+        # rows per subject ahead of GROUP BY. The bound-predicate type pattern
+        # touches only typed subjects (still cluster-wide, but far fewer rows).
+        subject_pattern = type_filter or "GRAPH ?g {\n            ?s ?_p ?_o .\n          }"
+
         return f"""
-          GRAPH ?g {{
-            ?s ?_p ?_o .
-          }}
+          {subject_pattern}
           {graph_filter}
-          {type_filter}
           OPTIONAL {{ GRAPH ?g {{ ?s rdfs:label ?label . }} }}
           {text_filter}"""
 

@@ -27,17 +27,22 @@ import boto3
 from coa_common import async_boto_config
 from coa_common.bedrock_metrics import CostTracker
 from rdflib import OWL, RDF, RDFS, XSD, BNode, Graph, Literal, Namespace, URIRef
+from rdflib.collection import Collection
 from rdflib.namespace import SKOS
+from rdflib.term import Node
 
 from coa_ontology.inducer.schemas import ConceptMatch
-from coa_ontology.inducer.services.data_catalog import CatalogTable, parse_referred_column
+from coa_ontology.inducer.services.data_catalog import CatalogConstraint, CatalogTable, parse_referred_column
 from coa_ontology.inducer.strategies.base import (
     InductionStrategy,
+    add_glossary_and_tags,
     ambiguous_target_names,
+    fk_edge_allowed,
     logical_table_names,
     pascal_names_for,
     reference_index,
     resolve_fk_target_identity,
+    simple_fk_constraints,
     subject_template_names,
     table_identity,
 )
@@ -83,10 +88,22 @@ def _iri_local_name(iri: str) -> str:
 
 
 def _format_schema_context(table: CatalogTable) -> str:
-    """Format the full schema context for a table (columns + constraints)."""
+    """Format the full schema context for a table (columns + constraints).
+
+    Foreign-key constraints run through :func:`fk_edge_allowed` first so the
+    LLM only sees relationships the review gate permits. A PENDING or REJECTED
+    inferred FK never reaches the prompt, so the LLM cannot propose a live
+    relationship on top of it.
+    """
     lines = [f"Table: {table.name}"]
     if table.description:
         lines.append(f"Description: {table.description}")
+    if table.synonyms:
+        lines.append(f"Synonyms: {', '.join(table.synonyms)}")
+    if table.glossaryTerms:
+        lines.append(f"Glossary terms: {', '.join(table.glossaryTerms)}")
+    if table.tags:
+        lines.append(f"Tags: {', '.join(table.tags)}")
     lines.append("Columns:")
     for col in table.columns:
         parts = [f"  - {col.name} : {col.dataType}"]
@@ -94,10 +111,19 @@ def _format_schema_context(table: CatalogTable) -> str:
             parts.append(f"[{col.constraint}]")
         if col.description:
             parts.append(f"-- {col.description}")
+        if col.synonyms:
+            parts.append(f"(synonyms: {', '.join(col.synonyms)})")
+        if col.glossaryTerms:
+            parts.append(f"(glossary terms: {', '.join(col.glossaryTerms)})")
+        if col.tags:
+            parts.append(f"(tags: {', '.join(col.tags)})")
         lines.append(" ".join(parts))
     if table.tableConstraints:
         lines.append("Constraints:")
         for tc in table.tableConstraints:
+            if tc.constraintType == "FOREIGN_KEY" and not fk_edge_allowed(tc.relationshipType, tc.reviewStatus):
+                # PENDING_REVIEW / REJECTED inferred FK — withhold from the LLM.
+                continue
             ref = f" REFERENCES {tc.referredColumns}" if tc.referredColumns else ""
             lines.append(f"  - {tc.constraintType}({', '.join(tc.columns)}){ref}")
     return "\n".join(lines)
@@ -306,6 +332,11 @@ class RigorOntologyStrategy(InductionStrategy):
             uri_to_table,
         )
 
+        # Step 6: Carry the approved catalog metadata onto the terms the LLM
+        # generated, so a RIGOR ontology exposes the same steward-reviewed fields
+        # (description, synonyms, glossary terms, tags) as a table_to_ontology one.
+        self._stamp_catalog_metadata(novel_graph, ontology_uri_prefix, tables, pascal_by_id)
+
         if dropped_tables:
             log.warning(
                 "RIGOR: dropped %d/%d tables due to processing failures: %s",
@@ -317,6 +348,93 @@ class RigorOntologyStrategy(InductionStrategy):
         return novel_graph, novel_tables, matches, dropped_tables
 
     # ── Graph helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _stamp_terms(
+        g: Graph,
+        subject: URIRef,
+        description: str | None,
+        synonyms: list[str],
+        glossary_terms: list[str],
+        tags: list[str],
+    ) -> None:
+        """Write one table's or column's approved metadata onto ``subject``.
+
+        An approved description REPLACES whatever ``rdfs:comment`` the LLM wrote:
+        two competing descriptions on one term is the failure #1118 removed, and
+        the approved text is the one a steward signed off. With no approved
+        description the LLM's comment is kept.
+        """
+        if description and description.strip():
+            g.remove((subject, RDFS.comment, None))
+            g.add((subject, RDFS.comment, Literal(description.strip())))
+        for syn in synonyms:
+            if syn and syn.strip():
+                g.add((subject, SKOS.altLabel, Literal(syn.strip())))
+        add_glossary_and_tags(g, subject, glossary_terms, tags)
+
+    def _stamp_catalog_metadata(
+        self,
+        graph: Graph,
+        ontology_uri_prefix: str,
+        tables: list[CatalogTable],
+        pascal_by_id: dict[str, str],
+    ) -> None:
+        """Stamp each table's and column's approved metadata onto its generated term.
+
+        Resolves terms the same way ``build_r2rml`` does (``_index_classes_by_table``
+        then ``_index_properties_by_column``), so a term is annotated exactly when
+        the mapping would map it. A table or column the LLM produced no term for is
+        skipped: there is nothing in the ontology to describe.
+        """
+        class_by_identity = self._index_classes_by_table(graph, ontology_uri_prefix, tables, pascal_by_id)
+        prov_base = ontology_uri_prefix.rstrip("#").rstrip("/") + "/provenance"
+        for table in tables:
+            cls = class_by_identity.get(table_identity(table))
+            if cls is None:
+                continue
+            self._stamp_terms(graph, cls, table.description, table.synonyms, table.glossaryTerms, table.tags)
+            prop_by_col = self._index_properties_by_column(graph, cls, prov_base, table)
+            for col in table.columns:
+                prop = prop_by_col.get(col.name)
+                if prop is not None:
+                    self._stamp_terms(graph, prop, col.description, col.synonyms, col.glossaryTerms, col.tags)
+            self._stamp_primary_key(graph, cls, table, prop_by_col)
+
+    @staticmethod
+    def _stamp_primary_key(
+        graph: Graph,
+        cls: URIRef,
+        table: CatalogTable,
+        prop_by_col: dict[str, URIRef],
+    ) -> None:
+        """Declare the catalog primary key as the class's ``owl:hasKey``.
+
+        ``table_to_ontology`` always emits it; RIGOR left it to the LLM. RIGOR's
+        R2RML keys rows on the catalog key, and the serve NL→SQL context reads the
+        key from ``owl:hasKey``, so the two must be the same key. The catalog key
+        therefore REPLACES any key the LLM declared, as an approved description
+        replaces the LLM's comment (``_stamp_terms``). Skipped, leaving the graph as
+        it is, when the table has no catalog key or any key column has no generated
+        property: a partial key would misstate what identifies a row.
+        """
+        pk_cols: list[str] = []
+        for tc in table.tableConstraints or []:
+            if tc.constraintType == "PRIMARY_KEY" and tc.columns:
+                pk_cols = list(tc.columns)
+                break
+        if not pk_cols:
+            return
+        if any(c not in prop_by_col for c in pk_cols):
+            return
+        for old in list(graph.objects(cls, OWL.hasKey)):
+            graph.remove((cls, OWL.hasKey, old))
+            # Drop the old key's RDF list cells too, so no orphan list remains.
+            Collection(graph, old).clear()
+        key_props: list[Node] = [prop_by_col[c] for c in pk_cols]
+        key_list = BNode()
+        Collection(graph, key_list, key_props)
+        graph.add((cls, OWL.hasKey, key_list))
 
     @staticmethod
     def _fix_dual_typed_properties(g: Graph) -> None:
@@ -895,6 +1013,8 @@ class RigorOntologyStrategy(InductionStrategy):
                 g.add((pom, RR.objectMap, om))
 
                 fk_target, _ = self._fk_info(col.name, table)
+                fk_constraint = self._fk_constraint(col.name, table)
+                fk_target_datasource_id = fk_constraint.targetDatasourceId if fk_constraint else None
                 # Determine whether the generated property is an ObjectProperty
                 is_object_property = (
                     prop_uri,
@@ -908,7 +1028,14 @@ class RigorOntologyStrategy(InductionStrategy):
                 # in-run tables answering to the name, neither picked by the
                 # referrer's own schema — degrades to a datatype literal rather than
                 # a join to an arbitrary same-named table, exactly as base.py does.
-                target_token = self._fk_target_token(fk_target, table, ref_index, subject_names, ambiguous_names)
+                target_token = self._fk_target_token(
+                    fk_target,
+                    table,
+                    ref_index,
+                    subject_names,
+                    ambiguous_names,
+                    fk_target_datasource_id,
+                )
 
                 col_id = sql_ident(col.name)
                 if is_object_property and target_token is not None:
@@ -1044,6 +1171,7 @@ class RigorOntologyStrategy(InductionStrategy):
         ref_index: dict[str, str],
         subject_names: dict[str, str],
         ambiguous_names: set[str],
+        target_datasource_id: str | None = None,
     ) -> str | None:
         """Resolve an FK target name to the subject-IRI token of its TriplesMap.
 
@@ -1054,13 +1182,24 @@ class RigorOntologyStrategy(InductionStrategy):
         does not pick one — the caller then emits a datatype literal instead of a
         join to an arbitrary same-named table.
 
-        A target genuinely outside this induction run keeps its bare name (it has
-        no TriplesMap here to collide with), so a mapping that referenced an
-        out-of-run table stays byte-identical.
+        ``target_datasource_id`` (an approved cross-source FK, #1140) goes to the
+        same :func:`resolve_fk_target_identity` call the other three artifacts
+        make, so the template names the table the ontology's range does.
+
+        A target genuinely outside this induction run is NOT minted this
+        run, so it has no TriplesMap here to point an IRI template at. Returning
+        its bare name produced a dangling reference that made Ontop reject the
+        whole mapping on load; it now degrades to a literal (``None``) like the
+        ambiguous case and the other three emitters.
         """
         if not target_name:
             return None
-        target_id = resolve_fk_target_identity(referrer, target_name, ref_index)
+        target_id = resolve_fk_target_identity(
+            referrer,
+            target_name,
+            ref_index,
+            target_datasource_id,
+        )
         if target_id is not None and target_id in subject_names:
             return subject_names[target_id]
         if target_name in ambiguous_names:
@@ -1069,7 +1208,17 @@ class RigorOntologyStrategy(InductionStrategy):
                 target_name,
             )
             return None
-        return target_name
+        # Genuinely outside this induction run: the target table is not
+        # minted this run. An IRI-template ObjectMap pointing at a subject token
+        # whose TriplesMap is never declared is a dangling reference Ontop rejects
+        # on load, failing every query in the namespace. Degrade to a datatype
+        # literal (return None -> the caller emits rr:column), mirroring the
+        # ambiguous branch and the other three emitters.
+        log.warning(
+            "fk_target_out_of_run_degraded_to_literal",
+            extra={"referrer": referrer.name, "target": target_name},
+        )
+        return None
 
     def _index_properties_by_column(
         self,
@@ -1156,10 +1305,30 @@ class RigorOntologyStrategy(InductionStrategy):
 
     @staticmethod
     def _fk_info(col_name: str, table: CatalogTable) -> tuple[str | None, str | None]:
-        """Return (target_table, target_pk) if col_name is an FK; else (None, None)."""
-        if not table.tableConstraints:
+        """Return (target_table, target_pk) if col_name is an FK; else (None, None).
+
+        Runs through :func:`simple_fk_constraints` so the review gate applies
+        (PENDING / REJECTED inferred FKs are withheld — the same rule the
+        default table-to-ontology strategy applies) and the shared dedup +
+        empty-target-column filters run. Rigor is single-FK-per-column by
+        design, so the first survivor is used; multi-FK support in this
+        strategy is out of scope. When a column has multiple approved FKs,
+        only the first reaches the mapping and the others are dropped —
+        matching the strategy's historical first-wins shape, but only among
+        gated FKs.
+        """
+        tc = RigorOntologyStrategy._fk_constraint(col_name, table)
+        if tc is None:
             return None, None
-        for tc in table.tableConstraints:
-            if tc.constraintType == "FOREIGN_KEY" and col_name in tc.columns and tc.referredColumns:
-                return parse_referred_column(tc.referredColumns[0])
-        return None, None
+        return parse_referred_column(tc.referredColumns[0])  # type: ignore[index]
+
+    @staticmethod
+    def _fk_constraint(col_name: str, table: CatalogTable) -> CatalogConstraint | None:
+        """The single gate-passing FK constraint :meth:`_fk_info` reads, or ``None``.
+
+        Exposed so the mapping can also read the constraint's ``targetDatasourceId``
+        (#1140) without changing :meth:`_fk_info`'s ``(table, column)`` shape.
+        """
+        for tc in simple_fk_constraints(table, col_name):
+            return tc
+        return None

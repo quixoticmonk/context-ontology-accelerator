@@ -117,6 +117,24 @@ class TestCreatePlatformGrant:
         assert written["principalId"] == "foo+123@amazon.com"
 
     @patch("coa_control_plane.grants.create_platform_grant_handler.DynamoDBDAO")
+    def test_default_baseline_policy_is_not_grantable(self, mock_dao_cls):
+        """#988: ``default`` exists under PK=GLOBAL (it is the baseline policy
+        bundle), so the existence check alone would accept it. Granting it gives
+        the principal a GLOBAL role row and the namespace list stops filtering."""
+        roles_dao = MagicMock()
+        mappings_dao = MagicMock()
+        mock_dao_cls.side_effect = [roles_dao, mappings_dao]
+        roles_dao.get.return_value = {"PK": "GLOBAL", "SK": "ROLE#default", "name": "Default"}
+
+        resp = create_handler(
+            _create_event({"principalType": "User", "principalId": "a@b.com", "role": "default"}),
+            None,
+        )
+        assert resp["statusCode"] == 400
+        assert "not assignable" in json.loads(resp["body"])["message"]
+        mappings_dao.put.assert_not_called()
+
+    @patch("coa_control_plane.grants.create_platform_grant_handler.DynamoDBDAO")
     def test_role_not_found_returns_404(self, mock_dao_cls):
         roles_dao = MagicMock()
         mappings_dao = MagicMock()
@@ -170,6 +188,22 @@ class TestCreatePlatformGrant:
                 None,
             )
             assert resp["statusCode"] == 400, bad_id
+
+    def test_non_string_principal_id_returns_400(self):
+        resp = create_handler(
+            _create_event({"principalType": "User", "principalId": 12345, "role": "platform-admin"}),
+            None,
+        )
+        assert resp["statusCode"] == 400
+
+    def test_principal_id_with_markup_returns_400(self):
+        resp = create_handler(
+            _create_event(
+                {"principalType": "User", "principalId": "<a onclick=prompt(1);>x</a>", "role": "platform-admin"}
+            ),
+            None,
+        )
+        assert resp["statusCode"] == 400
 
     def test_invalid_principal_type_returns_400(self):
         resp = create_handler(

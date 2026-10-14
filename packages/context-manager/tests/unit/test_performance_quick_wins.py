@@ -555,6 +555,7 @@ class TestObjectPropertyContext:
         """_fetch_object_properties should query Neptune for owl:ObjectProperty when >1 class."""
         client = AsyncMock()
         client.query.side_effect = [
+            [],  # named-graph resolution: none found -> prefix-filter fallback
             # Full-context count query
             [{"cnt": "50"}],
             # Full-context CLASSES query (separate from properties now; 2 classes to trigger OP fetch)
@@ -614,6 +615,7 @@ class TestObjectPropertyContext:
         """ObjectProperties missing domain or range are excluded."""
         client = AsyncMock()
         client.query.side_effect = [
+            [],  # named-graph resolution: none found -> prefix-filter fallback
             [{"cnt": "50"}],
             # CLASSES query — 2 classes to trigger OP fetch
             [
@@ -701,6 +703,7 @@ class TestObjectPropertyContext:
         """The build() method should populate object_properties when >1 class."""
         client = AsyncMock()
         client.query.side_effect = [
+            [],  # named-graph resolution: none found -> prefix-filter fallback
             [{"cnt": "500"}],  # count (skip full context)
             # _fetch_by_entities class query — 2 classes to trigger OP fetch
             [
@@ -745,6 +748,7 @@ class TestObjectPropertyContext:
 
         client = AsyncMock()
         client.query.side_effect = [
+            [],  # named-graph resolution: none found -> prefix-filter fallback
             [{"cnt": "500"}],  # count (skip full context)
             # T-Box query from vector hit — only 1 class
             [
@@ -759,14 +763,17 @@ class TestObjectPropertyContext:
             ],
             # aiContext (vector hit has URI)
             [],
+            # steward annotations for the selected class (#1167)
+            [],
         ]
         hit = RVectorHit(type="ontology_class", score=0.9, entity_id="e1", uri="http://ex.org/ont#Order")
         builder = TBoxContextBuilder(client, graph_uri_template="https://test.local/{namespace}")
         context = await builder.build([hit], "demo")
 
         assert context.object_properties == []
-        # 3 queries: count + tbox + aiContext (OP skipped: only 1 class)
-        assert client.query.call_count == 3
+        # 5 queries: named-graph resolution + count + tbox + aiContext + annotations
+        # (OP skipped: only 1 class)
+        assert client.query.call_count == 5
 
     def test_token_estimate_includes_object_properties(self):
         """_estimate_tokens should count object_properties in the budget."""

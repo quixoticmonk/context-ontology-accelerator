@@ -149,6 +149,102 @@ class TestFormatSchemaContext:
         assert "Table: t1" in out
         assert "Description:" not in out
 
+    def test_review_gate_hides_pending_and_rejected_fks_from_prompt(self):
+        # Prompt must not offer PENDING_REVIEW or REJECTED inferred FKs to
+        # the LLM — otherwise rigor would propose a live relationship for
+        # something the review gate would withhold in every other artifact.
+        t = CatalogTable(
+            id="db.orders",
+            name="orders",
+            fullyQualifiedName="db.orders",
+            columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
+            tableConstraints=[
+                CatalogConstraint(
+                    constraintType="FOREIGN_KEY",
+                    columns=["customer_id"],
+                    referredColumns=["customers.id"],
+                    relationshipType="DETERMINISTIC",  # authoritative — surfaced
+                ),
+                CatalogConstraint(
+                    constraintType="FOREIGN_KEY",
+                    columns=["customer_id"],
+                    referredColumns=["crm_customers.id"],
+                    relationshipType="AI_INFERRED",
+                    reviewStatus="PENDING_REVIEW",  # gated — not surfaced
+                ),
+                CatalogConstraint(
+                    constraintType="FOREIGN_KEY",
+                    columns=["customer_id"],
+                    referredColumns=["legacy_customers.id"],
+                    relationshipType="AI_INFERRED",
+                    reviewStatus="REJECTED",  # gated — not surfaced
+                ),
+            ],
+        )
+        out = _format_schema_context(t)
+        # Authoritative FK survives.
+        assert "customers.id" in out
+        # PENDING and REJECTED FKs are hidden from the LLM.
+        assert "crm_customers.id" not in out
+        assert "legacy_customers.id" not in out
+
+
+class TestFkInfoAppliesReviewGate:
+    def test_only_gate_passing_fks_reach_the_mapping(self):
+        # _fk_info drives which column becomes an rr:parentTriplesMap join
+        # in build_r2rml. Before the fix a PENDING/REJECTED FK sorting first
+        # became a live Ontop join. Now the gate applies here too.
+        from coa_ontology.inducer.strategies.rigor_ontology import RigorOntologyStrategy
+
+        t = CatalogTable(
+            id="db.orders",
+            name="orders",
+            fullyQualifiedName="db.orders",
+            columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
+            tableConstraints=[
+                # PENDING listed first — under the old first-wins would have
+                # been chosen as the FK target.
+                CatalogConstraint(
+                    constraintType="FOREIGN_KEY",
+                    columns=["customer_id"],
+                    referredColumns=["pending_customers.id"],
+                    relationshipType="AI_INFERRED",
+                    reviewStatus="PENDING_REVIEW",
+                ),
+                CatalogConstraint(
+                    constraintType="FOREIGN_KEY",
+                    columns=["customer_id"],
+                    referredColumns=["customers.id"],
+                    relationshipType="DETERMINISTIC",
+                ),
+            ],
+        )
+        target, col = RigorOntologyStrategy._fk_info("customer_id", t)
+        assert target == "customers"
+        assert col == "id"
+
+    def test_all_rejected_yields_no_fk(self):
+        from coa_ontology.inducer.strategies.rigor_ontology import RigorOntologyStrategy
+
+        t = CatalogTable(
+            id="db.orders",
+            name="orders",
+            fullyQualifiedName="db.orders",
+            columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
+            tableConstraints=[
+                CatalogConstraint(
+                    constraintType="FOREIGN_KEY",
+                    columns=["customer_id"],
+                    referredColumns=["customers.id"],
+                    relationshipType="AI_INFERRED",
+                    reviewStatus="REJECTED",
+                ),
+            ],
+        )
+        target, col = RigorOntologyStrategy._fk_info("customer_id", t)
+        assert target is None
+        assert col is None
+
 
 # ── Strategy registry ───────────────────────────────────────────────────
 
@@ -853,23 +949,32 @@ class TestBuildR2rmlDefault:
         ) in g
 
     def test_fk_column_gets_referencing_object_map(self, strategy):
-        table = CatalogTable(
-            id="orders",
-            name="orders",
-            fullyQualifiedName="db.orders",
-            columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
-            tableConstraints=[
-                CatalogConstraint(
-                    constraintType="FOREIGN_KEY",
-                    columns=["customer_id"],
-                    referredColumns=["customers.id"],
-                ),
-            ],
-        )
+        tables = [
+            CatalogTable(
+                id="customers",
+                name="customers",
+                fullyQualifiedName="db.customers",
+                columns=[CatalogColumn(name="id", dataType="BIGINT")],
+                tableConstraints=[CatalogConstraint(constraintType="PRIMARY_KEY", columns=["id"])],
+            ),
+            CatalogTable(
+                id="orders",
+                name="orders",
+                fullyQualifiedName="db.orders",
+                columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
+                tableConstraints=[
+                    CatalogConstraint(
+                        constraintType="FOREIGN_KEY",
+                        columns=["customer_id"],
+                        referredColumns=["customers.id"],
+                    ),
+                ],
+            ),
+        ]
         g = strategy.build_r2rml(
             "http://ex.org/ind#",
-            [table],
-            {"orders"},
+            tables,
+            {"orders", "customers"},
             Graph(),
         )
         from coa_ontology.inducer.strategies.base import RR
@@ -1070,20 +1175,29 @@ class TestBuildR2rmlDefault:
     def test_fk_target_extracted_from_two_part_referredcolumns(self, strategy):
         """Bug 2a: referredColumns format is 'TargetTable.column' — parts[0] is the table name.
         induce_catalog.py always writes two-part format so this is the canonical path."""
-        table = CatalogTable(
-            id="t",
-            name="orders",
-            fullyQualifiedName="db.orders",
-            columns=[CatalogColumn(name="customer_id", dataType="INT")],
-            tableConstraints=[
-                CatalogConstraint(
-                    constraintType="FOREIGN_KEY",
-                    columns=["customer_id"],
-                    referredColumns=["customers.id"],
-                ),
-            ],
-        )
-        g = strategy.build_r2rml("http://ex.org/ind#", [table], {"orders"}, Graph())
+        tables = [
+            CatalogTable(
+                id="customers",
+                name="customers",
+                fullyQualifiedName="db.customers",
+                columns=[CatalogColumn(name="id", dataType="INT")],
+                tableConstraints=[CatalogConstraint(constraintType="PRIMARY_KEY", columns=["id"])],
+            ),
+            CatalogTable(
+                id="t",
+                name="orders",
+                fullyQualifiedName="db.orders",
+                columns=[CatalogColumn(name="customer_id", dataType="INT")],
+                tableConstraints=[
+                    CatalogConstraint(
+                        constraintType="FOREIGN_KEY",
+                        columns=["customer_id"],
+                        referredColumns=["customers.id"],
+                    ),
+                ],
+            ),
+        ]
+        g = strategy.build_r2rml("http://ex.org/ind#", tables, {"orders", "customers"}, Graph())
         from coa_ontology.inducer.strategies.base import RR
 
         om = URIRef("http://ex.org/ind#TriplesMap_Orders/POM_CustomerId/ObjectMap")
@@ -1264,6 +1378,16 @@ class TestBuildR2rmlRigorOverride:
                 URIRef(f"{prefix.rstrip('#/')}/provenance/orders"),
             )
         )
+        # Class for the in-run target 'customers' so the FK target resolves to a
+        # minted TriplesMap rather than degrading to a literal.
+        g.add((ns.Customer, RDF.type, OWL.Class))
+        g.add(
+            (
+                ns.Customer,
+                PROV.wasDerivedFrom,
+                URIRef(f"{prefix.rstrip('#/')}/provenance/customers"),
+            )
+        )
         # Object property for customer FK
         g.add((ns.placedBy, RDF.type, OWL.ObjectProperty))
         g.add((ns.placedBy, RDFS.domain, ns.Order))
@@ -1277,23 +1401,32 @@ class TestBuildR2rmlRigorOverride:
             )
         )
 
-        table = CatalogTable(
-            id="orders",
-            name="orders",
-            fullyQualifiedName="db.orders",
-            columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
-            tableConstraints=[
-                CatalogConstraint(
-                    constraintType="FOREIGN_KEY",
-                    columns=["customer_id"],
-                    referredColumns=["customers.id"],
-                ),
-            ],
-        )
+        tables = [
+            CatalogTable(
+                id="customers",
+                name="customers",
+                fullyQualifiedName="db.customers",
+                columns=[CatalogColumn(name="id", dataType="BIGINT")],
+                tableConstraints=[CatalogConstraint(constraintType="PRIMARY_KEY", columns=["id"])],
+            ),
+            CatalogTable(
+                id="orders",
+                name="orders",
+                fullyQualifiedName="db.orders",
+                columns=[CatalogColumn(name="customer_id", dataType="BIGINT")],
+                tableConstraints=[
+                    CatalogConstraint(
+                        constraintType="FOREIGN_KEY",
+                        columns=["customer_id"],
+                        referredColumns=["customers.id"],
+                    ),
+                ],
+            ),
+        ]
         r = RigorOntologyStrategy().build_r2rml(
             prefix,
-            [table],
-            {"orders"},
+            tables,
+            {"orders", "customers"},
             g,
         )
         from coa_ontology.inducer.strategies.base import RR

@@ -176,7 +176,8 @@ class CompositeQueryExecutor:
                 #
                 # `sql` here is post-substitution (contains caller-supplied
                 # dimension values — potential PII). Log length only, not the
-                # statement; mirrors the orchestrator's SQL-log discipline.
+                # statement; mirrors the orchestrator's SQL-log discipline. The
+                # sqlglot error message echoes a SQL snippet, so log its type only.
                 #
                 # Do NOT forward the untranspiled Trino SQL to the JDBC engine:
                 # Trino-only constructs run with different (silently wrong) semantics
@@ -187,7 +188,7 @@ class CompositeQueryExecutor:
                     "jdbc_trino_transpile_failed_fallback_athena",
                     target_dialect=target_dialect,
                     sql_len=len(sql),
-                    error=str(exc),
+                    error_type=type(exc).__name__,
                 )
                 logger.info("composite_dispatch", route="athena_federation", data_source_id=data_source_id or "")
                 return await self._athena.execute(
@@ -211,7 +212,13 @@ class CompositeQueryExecutor:
             # bare/qualified join) could reference a schema OUTSIDE the namespace's
             # authorized scope and execute unauthorized on the source credential.
             # Checked on the pre-transpile Trino SQL, which carries the qualifiers.
-            await self._authorize_qualified_references(sql, namespace)
+            discovered_schemas = jdbc_source.get("discoveredSchemas")
+            selected_source_schemas = frozenset(
+                str(schema).lower()
+                for schema in (discovered_schemas if isinstance(discovered_schemas, list) else [])
+                if isinstance(schema, str)
+            )
+            await self._authorize_qualified_references(sql, namespace, selected_source_schemas)
             return await self._source_db.execute(  # type: ignore[union-attr]
                 transpiled_sql,
                 namespace=namespace,
@@ -267,7 +274,12 @@ class CompositeQueryExecutor:
             timeout_seconds=timeout_seconds,
         )
 
-    async def _authorize_qualified_references(self, sql: str, namespace: str) -> None:
+    async def _authorize_qualified_references(
+        self,
+        sql: str,
+        namespace: str,
+        selected_source_schemas: frozenset[str],
+    ) -> None:
         """Deny qualified references outside ``namespace`` before the JDBC route runs.
 
         Mirrors ``AthenaQueryExecutor._authorize_qualified_references`` /
@@ -293,12 +305,11 @@ class CompositeQueryExecutor:
                 federated_catalog_schemas=scope.federated_catalog_schemas,
                 default_catalog="awsdatacatalog",
                 # The direct-JDBC connection supplies the catalog, so a bare
-                # "schema.table" (the single-source metric form) is authorized on
-                # its schema against ANY authorized catalog — not pinned to
-                # awsdatacatalog, which would deny a federated JDBC source whose
-                # schema lives under its own nested catalog. An explicit 3-part
-                # name is still checked catalog-strict.
+                # "schema.table" is authorized only when that schema belongs to
+                # the selected source whose credentials will execute the query.
+                # An explicit 3-part name is still checked catalog-strict.
                 schema_only=True,
+                selected_source_schemas=selected_source_schemas,
             )
         except NamespaceSQLScopeError as exc:
             logger.warning(
@@ -397,7 +408,19 @@ class CompositeQueryExecutor:
         ``db_adapters.is_direct_query_engine`` — so the route choice and the
         engine->dialect mapping can never disagree about which engines are enabled.
         A source with no parseable engine keeps the historical behavior (the
-        PostgreSQL default), matching ``get_adapter(None)``.
+        PostgreSQL default), matching ``get_adapter(None)``. That default is load
+        bearing: a legacy direct-JDBC record whose ``configuration`` predates the
+        ``engine`` key must keep taking the direct route, so this cannot be
+        tightened to "unknown engine → no direct route" without rerouting those
+        sources to Athena.
+
+        The consequence for a sub-type whose configuration has no ``engine`` member
+        at all — a connector-backed one such as ``DATABRICKS_SQL_WAREHOUSE`` — is
+        that this would answer True for it. It is never asked: the caller only
+        reaches here with a record ``_fetch_jdbc_source`` returned, and that gate
+        requires ``queryEngine == "JDBC"``, which those sub-types never carry (they
+        resolve ATHENA and are served through federation). The two guards are
+        therefore ordered deliberately, and the ordering is pinned by a test.
         """
         if not source or self._sources is None:
             return False

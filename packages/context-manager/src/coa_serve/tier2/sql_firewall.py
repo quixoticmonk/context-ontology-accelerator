@@ -31,6 +31,12 @@ from typing import Any
 
 import sqlglot
 import structlog
+from coa_common.sql_safety import (
+    contains_mysql_executable_comment,
+    dangerous_sql_ast_reason,
+    dangerous_sql_functions,
+    executable_select_shape_error,
+)
 
 from .cedar_authorizer import CedarAuthorizer, NullCedarAuthorizer, RealCedarAuthorizer
 
@@ -41,22 +47,6 @@ _COMMENT_PATTERN = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 _BLOCKED_STATEMENTS = re.compile(
     r"^\s*(MSCK\s+REPAIR|CREATE|DROP|ALTER|INSERT|DELETE|UPDATE|MERGE|UNLOAD|PREPARE|EXECUTE|EXPLAIN)\b",
     re.IGNORECASE,
-)
-
-_DANGEROUS_FUNCTIONS = frozenset(
-    {
-        "pg_read_file",
-        "pg_read_binary_file",
-        "pg_ls_dir",
-        "pg_stat_file",
-        "dblink",
-        "dblink_exec",
-        "dblink_connect",
-        "lo_import",
-        "lo_export",
-        "copy",
-        "pg_sleep",
-    }
 )
 
 # Allowlist: only these top-level AST node types pass validation.
@@ -90,6 +80,72 @@ _DATA_MODIFYING_NODES: tuple[type[sqlglot.exp.Expression], ...] = (
 # grant API (tableAllowlist: list[str], columnDenylist: dict[str, list[str]]).
 _TABLE_ALLOWLIST_KEY = "tableAllowlist"
 _COLUMN_DENYLIST_KEY = "columnDenylist"
+
+
+def _normalized_table_allowlist(allowlist_raw: list[Any] | tuple[Any, ...] | None) -> set[str] | None:
+    """Lower-cased ``tableAllowlist``, or None when the grant sets no table constraint.
+
+    The one place the allowlist is normalized, shared by :meth:`SQLFirewall.evaluate`
+    and :func:`tables_visible_to` so the SQL gate and the trace filter cannot
+    disagree about which tables a principal may see.
+
+    SQL identifiers are case-insensitive for unquoted names, so the allowlist must
+    not be bypassed by varying case (e.g. ``SELECT * FROM ORDERS``).
+
+    ``is not None``, not truthiness: an ABSENT allowlist means "no table
+    constraint", but an explicitly EMPTY one means "no tables permitted".
+    Collapsing the two made a deny-all grant fail OPEN — the empty list was
+    falsy, so the restriction was dropped and every table was allowed.
+
+    Raises:
+        TypeError: If a member cannot be converted (callers fail closed).
+    """
+    if allowlist_raw is None:
+        return None
+    return {str(t).lower() for t in allowlist_raw}
+
+
+def _bare_table_name(name: str) -> str:
+    """Last identifier component of a table name, unquoted and lower-cased.
+
+    Mirrors how :meth:`SQLFirewall._analyze_refs` keys a referenced table
+    (sqlglot's ``Table.name``, lower-cased), so ``db.Orders`` and ``"orders"``
+    both match an allowlist entry ``orders`` — exactly the tables the firewall
+    would let a query read.
+    """
+    last = str(name).strip().rsplit(".", 1)[-1]
+    return last.strip().strip('"`[]').lower()
+
+
+def tables_visible_to(tables: list[str] | None, profile: dict[str, Any] | None) -> list[str]:
+    """Drop the table names the principal's ``tableAllowlist`` does not permit.
+
+    Use on every table list that reaches the caller (trace step details, response
+    metadata). The firewall already stops SQL against a table outside the
+    allowlist; this keeps the NAMES of such tables — surfaced by retrieval or the
+    FK walk, never queried — out of what the caller sees.
+
+    No allowlist on the grant: the list is returned unchanged (as a new list). A
+    malformed allowlist: nothing is returned (fails closed, as the firewall
+    denies every query for such a grant).
+    """
+    names = list(tables or [])
+    allowlist_raw = (profile or {}).get(_TABLE_ALLOWLIST_KEY)
+    if allowlist_raw is None:
+        return names
+    if not isinstance(allowlist_raw, (list, tuple)):
+        logger.warning("trace_table_filter_malformed_allowlist", reason="expected list")
+        return []
+    try:
+        allowlist = _normalized_table_allowlist(allowlist_raw)
+    except TypeError:
+        logger.warning("trace_table_filter_malformed_allowlist", reason="non-iterable members")
+        return []
+    if allowlist is None:
+        return names
+    # A name that normalizes to nothing ("", ".", "db.") is not a table; never let
+    # it match an empty-string allowlist entry.
+    return [t for t in names if (bare := _bare_table_name(t)) and bare in allowlist]
 
 
 class UnsafeSQLError(ValueError):
@@ -197,24 +253,34 @@ class SQLFirewall:
             UnsafeSQLError: If SQL is not a safe read-only statement.
         """
         self.check_statement_type(sql)
+        if contains_mysql_executable_comment(sql, dialect):
+            raise UnsafeSQLError("MySQL executable comments are not allowed")
 
         try:
             parsed = sqlglot.parse_one(sql, read=dialect)
-        except sqlglot.errors.ParseError as e:
+        except (sqlglot.errors.SqlglotError, RecursionError) as e:
             raise UnsafeSQLError("Failed to parse SQL statement") from e
 
         if not isinstance(parsed, _SAFE_STATEMENT_TYPES):
             raise UnsafeSQLError(f"Only SELECT statements are allowed, got: {type(parsed).__name__}")
+
+        shape_error = executable_select_shape_error(parsed)
+        if shape_error:
+            raise UnsafeSQLError(shape_error)
 
         # Deep scan: reject data-modifying nodes hidden anywhere in the AST
         # (e.g. data-modifying CTEs, SELECT INTO, DML inside subqueries).
         for node in parsed.walk():
             if isinstance(node, _DATA_MODIFYING_NODES):
                 raise UnsafeSQLError(f"Data-modifying operation '{type(node).__name__}' found inside statement")
+            dangerous_reason = dangerous_sql_ast_reason(node, dialect, sql)
+            if dangerous_reason:
+                raise UnsafeSQLError(f"Unsafe operation '{dangerous_reason}' found inside statement")
 
+        blocked_functions = dangerous_sql_functions(dialect)
         for func in parsed.find_all(sqlglot.exp.Anonymous, sqlglot.exp.Func):
             func_name = getattr(func, "name", "").lower()
-            if func_name in _DANGEROUS_FUNCTIONS:
+            if func_name in blocked_functions:
                 raise UnsafeSQLError(f"Function not allowed: {func_name}")
 
     def evaluate(
@@ -262,21 +328,10 @@ class SQLFirewall:
         if denylist_raw is not None and not isinstance(denylist_raw, dict):
             return self._deny("Invalid columnDenylist format: expected mapping")
 
-        # Normalize to lower-case for case-insensitive comparison. SQL identifiers
-        # are case-insensitive for unquoted names; the allowlist/denylist must
-        # not be bypassed by varying case (e.g. `SELECT * FROM ORDERS`).
-        #
-        # ``is not None``, not truthiness: an ABSENT allowlist means "no table
-        # constraint", but an explicitly EMPTY one means "no tables permitted".
-        # Collapsing the two made a deny-all grant fail OPEN — the empty list was
-        # falsy, so the restriction was dropped and the unrestricted path below
-        # allowed every table.
-        allowlist: set[str] | None = None
-        if allowlist_raw is not None:
-            try:
-                allowlist = {str(t).lower() for t in allowlist_raw}
-            except TypeError:
-                return self._deny("Invalid tableAllowlist format: non-iterable members")
+        try:
+            allowlist = _normalized_table_allowlist(allowlist_raw)
+        except TypeError:
+            return self._deny("Invalid tableAllowlist format: non-iterable members")
 
         denylist: dict[str, set[str]] = {}
         if denylist_raw:
@@ -422,6 +477,7 @@ class SQLFirewall:
         federated_catalog_schemas: frozenset[tuple[str, str]],
         default_catalog: str,
         schema_only: bool = False,
+        selected_source_schemas: frozenset[str] = frozenset(),
     ) -> bool:
         """Authorize qualified table references against one namespace's sources.
 
@@ -442,14 +498,11 @@ class SQLFirewall:
         cte_names = {cte.alias_or_name.lower() for cte in parsed.find_all(sqlglot.exp.CTE)}
         checked = False
         default_catalog_lc = (default_catalog or "AwsDataCatalog").lower()
-        # On the direct-JDBC route the catalog is supplied by the JDBC CONNECTION,
-        # not by an Athena DataCatalog, so a bare "schema.table" (the form a
-        # single-source metric emits) legitimately carries no Athena catalog and
-        # must be authorized on its SCHEMA alone — against the union of every schema
-        # the namespace owns under any authorized catalog. Pinning it to
-        # awsdatacatalog/native_databases (the Athena rule) would wrongly deny a
-        # federated JDBC source whose schema lives in federated_catalog_schemas.
-        schema_scope = set(native_databases) | {schema for _cat, schema in federated_catalog_schemas}
+        # A direct-JDBC two-part name is resolved by the selected connection, so
+        # it must be authorized against that source's schemas — not the union of
+        # schemas registered to other sources in the namespace. Three-part names
+        # still use the namespace-wide catalog-pinned checks below.
+        selected_source_schema_scope = {schema.lower() for schema in selected_source_schemas}
 
         for table in parsed.find_all(sqlglot.exp.Table):
             if not table.name or (not table.db and table.name.lower() in cte_names):
@@ -464,10 +517,9 @@ class SQLFirewall:
                 raise NamespaceSQLScopeError("SQL reference is not available in the requested namespace")
 
             if schema_only and not catalog:
-                # JDBC route, unqualified catalog: authorize on schema membership in
-                # ANY authorized catalog. A 3-part name still carries an explicit
-                # catalog and falls through to the strict catalog-pinned check below.
-                allowed = bool(database) and database in schema_scope
+                # JDBC route, unqualified catalog: the selected connection supplies
+                # the catalog, so authorize only schemas registered to that source.
+                allowed = bool(database) and database in selected_source_schema_scope
             else:
                 effective_catalog = catalog or default_catalog_lc
                 if effective_catalog == "awsdatacatalog":
@@ -503,7 +555,8 @@ class SQLFirewall:
         try:
             parsed = sqlglot.parse_one(sql)
         except sqlglot.errors.ParseError:
-            logger.warning("sql_firewall_parse_error", sql_preview=sql)
+            # SQL may carry caller-supplied literal values (potential PII); log length only.
+            logger.warning("sql_firewall_parse_error", sql_len=len(sql))
             return None
         if parsed is None:
             return None
@@ -571,7 +624,8 @@ class SQLFirewall:
         try:
             parsed = sqlglot.parse_one(sql, read="trino")
         except sqlglot.errors.ParseError:
-            logger.warning("sql_firewall_parse_error", sql_preview=sql)
+            # SQL may carry caller-supplied literal values (potential PII); log length only.
+            logger.warning("sql_firewall_parse_error", sql_len=len(sql))
             return []
 
         tables: list[str] = []
