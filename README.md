@@ -1,5 +1,18 @@
 # ✦ Context Ontology Accelerator
 
+> **Downstream fork — Terraform infrastructure.**
+> This fork replaces the upstream CDK infrastructure (`infra/`) with
+> Terraform under `infra-tf/`. Application code, Smithy models, web app,
+> and connectors stay in sync with upstream via periodic release-tag
+> syncs; the upstream `infra/` tree is deliberately absent.
+>
+> **Synced to upstream:** [`v0.3.5`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.5)
+> (commit `052b5a2`, synced 2026-10-14 from
+> [github.com/aws/context-ontology-accelerator](https://github.com/aws/context-ontology-accelerator)).
+> Sync procedure: [`COA_sync_releases_TF.md`](COA_sync_releases_TF.md).
+> Each sync commit carries an `Upstream-Release:` git trailer so the
+> next sync can discover the previous base from git log.
+
 An open-source semantic context layer for AWS that combines knowledge graphs, formal ontologies, and rule-based systems with modern AI — enabling agents to retrieve context, validate it against business logic, and determine correct actions.
 
 ## Architecture
