@@ -60,6 +60,7 @@ module "ontology" {
   bedrock_chat_model_id          = var.bedrock_chat_model_id
   bedrock_embed_dimensions       = var.bedrock_embed_dimensions
   bedrock_embed_model_id         = var.bedrock_embed_model_id
+  bedrock_grounding_llm_model_id = var.bedrock_grounding_llm_model_id
   bedrock_induction_llm_model_id = var.bedrock_induction_llm_model_id
   ecr_repository_url             = local.ontology_ecr_repository_url
   ecs_security_group_id          = local.ecs_security_group_id

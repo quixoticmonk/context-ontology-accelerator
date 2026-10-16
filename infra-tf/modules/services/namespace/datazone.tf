@@ -262,6 +262,11 @@ resource "aws_datazone_form_type" "coa_table_metadata" {
       "    tags: smithy.api#String",
       "    enrichmentSource: smithy.api#String",
       "    reviewStatus: smithy.api#String",
+      # JSON-encoded list of the table fields COA generated in full
+      # ("description", "synonyms", "glossaryTerms", "tags"). Optional:
+      # assets written before this member existed omit it and read as
+      # an empty set, which proves nothing.
+      "    generatedFields: smithy.api#String",
       "    primaryKeyColumns: smithy.api#String",
       "    primaryKeySource: smithy.api#String",
       "    primaryKeyConfidence: smithy.api#Float",

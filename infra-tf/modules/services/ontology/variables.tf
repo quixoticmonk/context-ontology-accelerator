@@ -28,8 +28,25 @@ variable "bedrock_embed_model_id" {
 }
 
 variable "bedrock_induction_llm_model_id" {
-  description = "Bedrock LLM model ID for ontology induction, grounding rerank, and description generation. Injected as LLM_MODEL_ID / DESCRIPTION_LLM_MODEL_ID."
+  description = "Bedrock LLM model ID for ontology induction and description generation. Injected as LLM_MODEL_ID / DESCRIPTION_LLM_MODEL_ID. Grounding rerank no longer uses this — it has its own `bedrock_grounding_llm_model_id`."
   type        = string
+}
+
+variable "bedrock_grounding_llm_model_id" {
+  description = "Bedrock LLM model ID for the ontology-engine grounding reranker (GROUNDING_LLM_MODEL_ID). Grounding reranks concept candidates — a cheap, high-volume call — so it defaults to the chat model (Haiku-class) rather than the heavier induction model. Set a region-valid profile here to override on a non-US deploy (GH #236). Accepts geo inference profiles and bare in-region IDs. When null, falls back to `bedrock_chat_model_id`."
+  type        = string
+  default     = null
+}
+
+variable "oops_endpoint" {
+  description = "Optional OoPS! (Ontology Pitfall Scanner) endpoint for Tier-3 validation. The validator sends the serialised ontology to this URL, so it is opt-in: when empty, the OOPS_ENDPOINT env var is omitted and the validator makes no request. HTTPS required — the scan POSTs the whole ontology."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.oops_endpoint == "" || can(regex("^(?i)https://", var.oops_endpoint))
+    error_message = "oops_endpoint must be an https:// URL — the OoPS! scan sends the serialised ontology to it."
+  }
 }
 
 variable "component" {

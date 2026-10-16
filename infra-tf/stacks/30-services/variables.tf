@@ -31,6 +31,12 @@ variable "bedrock_induction_llm_model_id" {
   default = "us.anthropic.claude-sonnet-5"
 }
 
+variable "bedrock_grounding_llm_model_id" {
+  description = "Bedrock LLM model ID for the ontology-engine grounding reranker (GROUNDING_LLM_MODEL_ID). Defaults to the chat model when null — grounding reranks concept candidates, a cheap high-volume call. Set a region-valid profile here to override on a non-US deploy (GH #236). Accepts geo inference profiles and bare in-region IDs."
+  type        = string
+  default     = null
+}
+
 variable "env" {
   type    = string
   default = "dev"

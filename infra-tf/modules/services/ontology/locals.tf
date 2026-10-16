@@ -35,10 +35,18 @@ locals {
   # Cross-region inference profiles (us.* prefix) have NO region path segment
   # in the profile ARN. Grant the profile itself AND the underlying
   # foundation-model (prefix stripped) so the first-hop InvokeModel resolves.
+  #
+  # Grounding reranker (GROUNDING_LLM_MODEL_ID) falls back to the chat model
+  # — matching the ontology-engine FALLBACK_CHAT_MODEL_ID default and
+  # upstream OntologyStack's `?? chatModelId`. When set explicitly, we add
+  # it to the Bedrock model set so IAM grants cover it too.
+  grounding_model_id = coalesce(var.bedrock_grounding_llm_model_id, var.bedrock_chat_model_id)
+
   bedrock_models = toset([
     var.bedrock_embed_model_id,
     var.bedrock_induction_llm_model_id,
     var.bedrock_chat_model_id,
+    local.grounding_model_id,
   ])
 
   inference_profile_arns = [

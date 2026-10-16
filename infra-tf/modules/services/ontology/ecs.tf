@@ -40,36 +40,47 @@ resource "aws_ecs_task_definition" "this" {
         },
       ]
 
-      environment = [
-        { name = "WORKBENCH_BACKEND", value = "opensearch_neptune" },
-        { name = "NDB_ENDPOINT", value = "https://${var.neptune_endpoint}:8182" },
-        { name = "NDB_IAM_AUTH", value = "true" },
-        { name = "NDB_REGION", value = var.region },
-        { name = "OSS_ENDPOINT", value = var.opensearch_endpoint },
-        { name = "OSS_REGION", value = var.region },
-        { name = "OSS_INDEX", value = var.opensearch_collection_name },
-        { name = "OSS_DIMENSIONS", value = tostring(var.bedrock_embed_dimensions) },
-        { name = "ONTOLOGY_ARTIFACTS_BUCKET", value = var.ontology_bucket_name },
-        { name = "DYNAMODB_TABLE", value = aws_dynamodb_table.this.name },
-        { name = "DYNAMODB_REGION", value = var.region },
-        { name = "BEDROCK_REGION", value = var.region },
-        { name = "BEDROCK_EMBED_MODEL_ID", value = var.bedrock_embed_model_id },
-        { name = "BEDROCK_EMBED_DIMENSIONS", value = tostring(var.bedrock_embed_dimensions) },
-        { name = "LLM_MODEL_ID", value = var.bedrock_induction_llm_model_id },
-        { name = "DESCRIPTION_LLM_MODEL_ID", value = var.bedrock_induction_llm_model_id },
-        { name = "BEDROCK_CHAT_MODEL_ID", value = var.bedrock_chat_model_id },
-        { name = "LLM_REGION", value = var.region },
-        { name = "GUARDRAIL_SSM_PARAM", value = "${var.ssm_prefix}/bedrock/guardrail-id" },
-        { name = "CATALOG_SOURCE", value = "smus" },
-        { name = "SMUS_DOMAIN_ID", value = var.smus_domain_id },
-        { name = "NAMESPACES_TABLE", value = var.namespaces_table_name },
-        { name = "DATASOURCES_TABLE", value = var.sources_table_name },
-        { name = "SOURCES_TABLE", value = var.sources_table_name },
-        { name = "PROJECT_ACCESS_ROLE_ARN", value = var.smus_project_access_role_arn },
-        { name = "SOURCES_API_FN_NAME", value = local.sources_api_fn_name },
-        { name = "INDUCE_OUTPUT_DIR", value = "/tmp/induce" },
-        { name = "PORT", value = tostring(var.container_port) },
-      ]
+      environment = concat(
+        [
+          { name = "WORKBENCH_BACKEND", value = "opensearch_neptune" },
+          { name = "NDB_ENDPOINT", value = "https://${var.neptune_endpoint}:8182" },
+          { name = "NDB_IAM_AUTH", value = "true" },
+          { name = "NDB_REGION", value = var.region },
+          { name = "OSS_ENDPOINT", value = var.opensearch_endpoint },
+          { name = "OSS_REGION", value = var.region },
+          { name = "OSS_INDEX", value = var.opensearch_collection_name },
+          { name = "OSS_DIMENSIONS", value = tostring(var.bedrock_embed_dimensions) },
+          { name = "ONTOLOGY_ARTIFACTS_BUCKET", value = var.ontology_bucket_name },
+          { name = "DYNAMODB_TABLE", value = aws_dynamodb_table.this.name },
+          { name = "DYNAMODB_REGION", value = var.region },
+          { name = "BEDROCK_REGION", value = var.region },
+          { name = "BEDROCK_EMBED_MODEL_ID", value = var.bedrock_embed_model_id },
+          { name = "BEDROCK_EMBED_DIMENSIONS", value = tostring(var.bedrock_embed_dimensions) },
+          { name = "LLM_MODEL_ID", value = var.bedrock_induction_llm_model_id },
+          { name = "DESCRIPTION_LLM_MODEL_ID", value = var.bedrock_induction_llm_model_id },
+          { name = "BEDROCK_CHAT_MODEL_ID", value = var.bedrock_chat_model_id },
+          # Grounding reranker (ontology-engine). Defaults to the chat (Haiku-
+          # class) model via local.grounding_model_id; override via
+          # var.bedrock_grounding_llm_model_id for a region-valid profile on a
+          # non-US deploy (GH #236).
+          { name = "GROUNDING_LLM_MODEL_ID", value = local.grounding_model_id },
+          { name = "LLM_REGION", value = var.region },
+          { name = "GUARDRAIL_SSM_PARAM", value = "${var.ssm_prefix}/bedrock/guardrail-id" },
+          { name = "CATALOG_SOURCE", value = "smus" },
+          { name = "SMUS_DOMAIN_ID", value = var.smus_domain_id },
+          { name = "NAMESPACES_TABLE", value = var.namespaces_table_name },
+          { name = "DATASOURCES_TABLE", value = var.sources_table_name },
+          { name = "SOURCES_TABLE", value = var.sources_table_name },
+          { name = "PROJECT_ACCESS_ROLE_ARN", value = var.smus_project_access_role_arn },
+          { name = "SOURCES_API_FN_NAME", value = local.sources_api_fn_name },
+          { name = "INDUCE_OUTPUT_DIR", value = "/tmp/induce" },
+          { name = "PORT", value = tostring(var.container_port) },
+        ],
+        # Optional OoPS! pitfall scan (Tier-3 validation). It sends the
+        # serialised ontology to this endpoint, so it is opt-in: absent
+        # setting leaves the variable unset and the validator makes no request.
+        var.oops_endpoint != "" ? [{ name = "OOPS_ENDPOINT", value = var.oops_endpoint }] : [],
+      )
 
       logConfiguration = {
         logDriver = "awslogs"

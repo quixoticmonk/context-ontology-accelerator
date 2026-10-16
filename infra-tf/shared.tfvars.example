@@ -23,6 +23,11 @@ azs = ["us-east-1a", "us-east-1b"]
 # bedrock_chat_model_id          = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 # bedrock_induction_llm_model_id = "us.anthropic.claude-sonnet-5"
 # bedrock_llm_model_id           = "us.anthropic.claude-sonnet-5"
+# Grounding reranker (ontology-engine, GROUNDING_LLM_MODEL_ID). Grounding
+# reranks concept candidates — a cheap, high-volume call — so when unset it
+# falls back to the chat model (Haiku-class). Set a region-valid profile
+# here to override on a non-US deploy (GH #236).
+# bedrock_grounding_llm_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 # ── AOSS NEXTGEN capacity ────────────────────────────────────────────
 # aoss_min_ocu = 2
