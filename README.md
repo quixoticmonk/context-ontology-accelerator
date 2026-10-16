@@ -6,8 +6,8 @@
 > and connectors stay in sync with upstream via periodic release-tag
 > syncs; the upstream `infra/` tree is deliberately absent.
 >
-> **Synced to upstream:** [`v0.3.5`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.5)
-> (commit `052b5a2`, synced 2026-10-14 from
+> **Synced to upstream:** [`v0.3.6`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.6)
+> (commit `00fed8d`, synced 2026-10-15 from
 > [github.com/aws/context-ontology-accelerator](https://github.com/aws/context-ontology-accelerator)).
 > Sync procedure: [`COA_sync_releases_TF.md`](COA_sync_releases_TF.md).
 > Each sync commit carries an `Upstream-Release:` git trailer so the
@@ -31,7 +31,10 @@ Access is governed by namespace isolation and role-based access control: namespa
 
 - Python 3.12, Node.js 22+, Docker
 - [pnpm](https://pnpm.io/) (Node package manager — installed via `mise` or `npm install -g pnpm`)
-- Java 17+ and Gradle (for Smithy codegen)
+- Java 17–24 (21 recommended) and Gradle (for Smithy codegen). JDK 25+ is not
+  supported yet — the Smithy toolchain fails on it. `mise install` provides a
+  supported JDK from `.mise.toml`; alternatively `brew install --cask corretto@21`
+  and `export JAVA_HOME=$(/usr/libexec/java_home -v 21)`.
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 
 ### Setup

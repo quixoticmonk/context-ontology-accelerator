@@ -700,6 +700,7 @@
                           "name": "sales-analytics",
                           "displayName": "Sales Analytics",
                           "status": "ACTIVE",
+                          "language": "en",
                           "sourceCount": 3,
                           "createdAt": "2026-07-23T14:30:00Z",
                           "updatedAt": "2026-07-23T15:00:00Z"
@@ -829,7 +830,8 @@
                     "name": "sales-analytics",
                     "displayName": "Sales Analytics",
                     "description": "Q3 revenue data and dashboards",
-                    "owner": "data-team@example.com"
+                    "owner": "data-team@example.com",
+                    "language": "ja"
                   }
                 }
               }
@@ -869,6 +871,7 @@
                         "description": "Q3 revenue data and dashboards",
                         "owner": "data-team@example.com",
                         "status": "ACTIVE",
+                        "language": "ja",
                         "createdAt": "2026-07-23T14:30:00Z"
                       }
                     }
@@ -1152,6 +1155,7 @@
                         "description": "Q3 revenue data and dashboards",
                         "owner": "data-team@example.com",
                         "status": "ACTIVE",
+                        "language": "en",
                         "sourceCount": 3,
                         "createdAt": "2026-07-23T14:30:00Z",
                         "updatedAt": "2026-07-23T15:00:00Z"
@@ -1307,7 +1311,7 @@
         }
       },
       "put": {
-        "description": "Update the mutable fields (display name, description) of an existing namespace.",
+        "description": "Update the mutable fields (display name, description) of an existing namespace.\nThe namespace language is immutable and cannot be changed here.",
         "operationId": "UpdateNamespace",
         "requestBody": {
           "content": {
@@ -1382,6 +1386,7 @@
                         "description": "Full-year revenue data and dashboards",
                         "owner": "data-team@example.com",
                         "status": "ACTIVE",
+                        "language": "en",
                         "createdAt": "2026-07-23T14:30:00Z",
                         "updatedAt": "2026-07-23T16:45:00Z"
                       }
@@ -9295,6 +9300,28 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "ServiceUnavailableError 503 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableErrorResponseContent"
+                }
+              }
+            }
           }
         }
       }
@@ -11223,7 +11250,7 @@
         }
       },
       "post": {
-        "description": "Get presigned S3 PUT URLs for uploading a large revised proposal Turtle\ndirectly to S3, bypassing the API payload cap. After uploading, call\nUpdateProposal with `ontologyUploaded` / `r2rmlUploaded` set (instead of\nsending the Turtle inline). The write-side mirror of the presigned-GET\nread path exposed on GetProposal.",
+        "description": "Get create-only presigned S3 PUT URLs for a large revised proposal Turtle.\nEach direct PUT must send `If-None-Match: *`, which is a signed S3 header,\nand may create its artifact key only once. After every requested upload\nsucceeds, call UpdateProposal with `ontologyUploaded` / `r2rmlUploaded` set.\nA 409, 412, or ambiguous network outcome requires requesting a fresh\nrevision and re-uploading every changed artifact; callers must not reuse the\nprior URLs or assume that an uncertain write succeeded.",
         "operationId": "GetProposalUploadUrls",
         "parameters": [
           {
@@ -11292,6 +11319,7 @@
                     "summary": "Get presigned PUT URLs for a large proposal revision",
                     "description": "",
                     "value": {
+                      "revisionId": "d3bc58e9-52a4-43cf-b8b2-44a2f05b43f8",
                       "ontologyPutUrl": "https://coa-proposals.s3.amazonaws.com/ont-sales-2026/ontology.ttl?X-Amz-Signature=abc123",
                       "r2rmlPutUrl": "https://coa-proposals.s3.amazonaws.com/ont-sales-2026/mappings.ttl?X-Amz-Signature=def456"
                     }
@@ -17312,6 +17340,7 @@
                         "displayName": "Sales Analytics",
                         "owner": "data-team@example.com",
                         "status": "ARCHIVED",
+                        "language": "en",
                         "createdAt": "2026-07-23T14:30:00Z",
                         "updatedAt": "2026-07-23T17:10:00Z"
                       }
@@ -18834,6 +18863,10 @@
             "type": "string",
             "description": "Source table the match originates from."
           },
+          "sourceTableIdentity": {
+            "type": "string",
+            "description": "Stable data-source-qualified identity for the source table. New\nstructured inductions populate this so same-named tables remain\ndistinguishable; absent on legacy and unstructured matches."
+          },
           "sourceColumn": {
             "type": "string",
             "description": "Source column the match originates from."
@@ -19117,6 +19150,13 @@
             "minLength": 6,
             "pattern": "^[A-Za-z0-9!$%&'*+/=?^_{}~-]+(\\.[A-Za-z0-9!$%&'*+/=?^_{}~-]+)*@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,63}$",
             "description": "Owner email address. The local part allows the RFC 5322 atext characters\nexcept # | and backtick (the owner also becomes a grant principalId)."
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[ \\t]*[A-Za-z]{2,8}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?[ \\t]*$",
+            "description": "Language of the sources, ontology and knowledge graph this\nnamespace will hold. Defaults to `en` when omitted. Cannot be\nchanged after creation."
           }
         },
         "required": [
@@ -20384,15 +20424,27 @@
       "GetProposalUploadUrlsResponseContent": {
         "type": "object",
         "properties": {
+          "revisionId": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "description": "Revision containing both create-only upload targets. Pass this value\nto UpdateProposal as uploadRevisionId only after every requested PUT\nsucceeds."
+          },
           "ontologyPutUrl": {
             "type": "string",
-            "description": "Presigned S3 PUT URL for uploading the revised OWL ontology Turtle."
+            "description": "Create-only S3 PUT URL for the revised OWL ontology Turtle. Send\n`If-None-Match: *`; after 409, 412, or an ambiguous outcome, request\na fresh revision rather than reusing this URL."
           },
           "r2rmlPutUrl": {
             "type": "string",
-            "description": "Presigned S3 PUT URL for uploading the revised R2RML Turtle."
+            "description": "Create-only S3 PUT URL for the revised R2RML Turtle. Send\n`If-None-Match: *`; after 409, 412, or an ambiguous outcome, request\na fresh revision rather than reusing this URL."
           }
-        }
+        },
+        "required": [
+          "ontologyPutUrl",
+          "r2rmlPutUrl",
+          "revisionId"
+        ]
       },
       "GetProposalValidationJobResponseContent": {
         "type": "object",
@@ -20965,6 +21017,16 @@
           "STANDARD",
           "ENHANCED"
         ]
+      },
+      "GroundingOverrideMap": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1,
+          "description": "Non-empty absolute grounding target URI. Runtime validation also rejects\nwhitespace, non-printable characters, and relative references for callers\nthat bypass generated Smithy clients."
+        },
+        "description": "Source-table grounding choices. Values are candidate ontology class URIs."
       },
       "HealthCheckResponseContent": {
         "type": "object",
@@ -21976,6 +22038,13 @@
           "status": {
             "$ref": "#/components/schemas/NamespaceStatus"
           },
+          "language": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[ \\t]*[A-Za-z]{2,8}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?[ \\t]*$",
+            "description": "Immutable namespace language (canonical BCP 47 tag), set at creation.\nNamespaces created before the language field existed report `en`."
+          },
           "dataZoneProjectId": {
             "type": "string",
             "description": "Amazon DataZone project ID linked to this namespace, when applicable."
@@ -22010,6 +22079,7 @@
         },
         "required": [
           "createdAt",
+          "language",
           "name",
           "namespaceId",
           "owner",
@@ -22055,6 +22125,13 @@
           "status": {
             "$ref": "#/components/schemas/NamespaceStatus"
           },
+          "language": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[ \\t]*[A-Za-z]{2,8}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?[ \\t]*$",
+            "description": "Immutable namespace language (canonical BCP 47 tag). Namespaces created\nbefore the language field existed report `en`."
+          },
           "sourceCount": {
             "type": "number",
             "description": "Number of data sources registered in the namespace."
@@ -22069,6 +22146,7 @@
           }
         },
         "required": [
+          "language",
           "name",
           "namespaceId",
           "status"
@@ -23096,6 +23174,19 @@
           "EVENT"
         ]
       },
+      "ServiceUnavailableErrorResponseContent": {
+        "type": "object",
+        "description": "Returned with HTTP 503 when a required dependency is temporarily unavailable.",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Human-readable description of the unavailable dependency or operation."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
       "SourceScanJobStatus": {
         "type": "string",
         "description": "Status of a database scan job execution.",
@@ -23536,6 +23627,16 @@
             "type": "string",
             "description": "Revised R2RML mappings in Turtle format."
           },
+          "groundingOverrides": {
+            "$ref": "#/components/schemas/GroundingOverrideMap"
+          },
+          "novelTables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Source tables whose grounding should be cleared so they remain\nnovel, keyed like groundingOverrides. Kept separate from\ngroundingOverrides because OpenAPI map values cannot faithfully\npreserve Smithy sparse-map nulls."
+          },
           "ontologyUploaded": {
             "type": "boolean",
             "description": "Set true when the revised OWL ontology was uploaded directly to S3\nvia a presigned PUT (see GetProposalUploadUrls) instead of being sent\ninline in `ontologyTurtle` \u2014 for large proposals exceeding the API\npayload cap. Defaults to false (inline)."
@@ -23543,6 +23644,13 @@
           "r2rmlUploaded": {
             "type": "boolean",
             "description": "Set true when the revised R2RML was uploaded via presigned PUT\ninstead of inline `r2rmlTurtle`. Defaults to false (inline)."
+          },
+          "uploadRevisionId": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "description": "Immutable revision returned by GetProposalUploadUrls. Required when\neither uploaded flag is true so an upload cannot overwrite the\nproposal's currently active artifacts before validation succeeds."
           }
         },
         "required": [
