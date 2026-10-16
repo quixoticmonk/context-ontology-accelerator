@@ -134,6 +134,25 @@ plan-%: FORCE ## terraform plan for stack % (writes tfplan)
 apply-%: FORCE ## terraform apply for stack % (auto-approved; unset AUTO_APPROVE for prompt)
 	@echo "==> apply stacks/$*"; cd stacks/$* && $(TF) apply $(AUTO_APPROVE) -var-file=$(VAR_FILE)
 
+# ── Build-step prerequisites for stacks that consume build artifacts ──
+# A targeted `make apply-NN` now triggers the right build steps first,
+# so an interrupted `up-all` cannot leave service stacks pointing at
+# empty ECR repos (what happened in the v0.3.6 deploy pass: build-images
+# never ran because the user ran targeted apply-NN after an earlier
+# stack failed, bypassing up-all's $(MAKE) build-images chain).
+#
+# build-lambdas has no stack prereq — Lambda zips are built locally.
+# build-images depends on apply-25-ecr — the push target cannot write
+# to an ECR repo that does not exist yet.
+# build-openapi + build-web are pure local artifact builds.
+apply-20-namespace:  build-lambdas
+apply-30-services:   build-images
+apply-40-sources:    build-images
+apply-50-agentcore:  build-images
+apply-55-data-layer: build-lambdas
+apply-60-api-edge:   build-lambdas build-openapi build-web
+build-images:        apply-25-ecr
+
 apply-plan-%: FORCE ## terraform apply on a previously-generated plan
 	@cd stacks/$* && $(TF) apply tfplan
 
