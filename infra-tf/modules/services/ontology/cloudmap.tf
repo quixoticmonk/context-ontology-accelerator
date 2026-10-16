@@ -37,4 +37,15 @@ resource "aws_service_discovery_service" "ontology_engine" {
   health_check_custom_config {}
 
   tags = local.tags
+
+  # The AWS provider's refresh does not populate `health_check_custom_config`
+  # in state even when the live service has it (service type is DNS_HTTP, which
+  # Cloud Map only reports when custom health is enabled). Without this
+  # ignore, every plan sees the block as "to be added" and forces replacement
+  # of a resource holding registered ECS task instances. Replacement fails
+  # with ResourceInUse. The block is write-once at create time anyway, so
+  # ignoring drift on it is correct.
+  lifecycle {
+    ignore_changes = [health_check_custom_config]
+  }
 }
