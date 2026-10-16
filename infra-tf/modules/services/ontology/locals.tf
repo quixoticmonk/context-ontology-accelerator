@@ -51,7 +51,7 @@ locals {
 
   inference_profile_arns = [
     for m in local.bedrock_models :
-    "arn:aws:bedrock:${var.region}::inference-profile/${m}"
+    "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/${m}"
   ]
 
   foundation_model_arns = [
