@@ -126,8 +126,8 @@ or the bare in-region model ID. The models to check:
 
 | Model | Used for |
 |-------|----------|
-| Claude Sonnet 4.6 | Induction, grounding |
-| Claude Haiku 4.5 | Rerank, enrichment, document ingestion |
+| Claude Sonnet 4.6 | Induction |
+| Claude Haiku 4.5 | Grounding rerank, enrichment, document ingestion |
 | Claude Sonnet 5 | Serve query resolution (NL-to-SPARQL, synthesis) |
 | Cohere Embed v4 | All embeddings |
 
@@ -151,7 +151,8 @@ none of them behaves exactly as it does today.
 | `bedrock_llm_model_id` | Serve query LLM (NL-to-SPARQL, synthesis) | `us.anthropic.claude-sonnet-5` |
 | `bedrock_embed_model_id` | **All** embeddings — induction, doc-KG-build, metric matching, serve retrieval | `us.cohere.embed-v4:0` |
 | `bedrock_embed_dimensions` | Vector dimension for the embedding model above | `1024` |
-| `bedrock_induction_llm_model_id` | Ontology induction, grounding rerank, description generation | `us.anthropic.claude-sonnet-5` |
+| `bedrock_induction_llm_model_id` | Ontology induction, description generation | `us.anthropic.claude-sonnet-5` |
+| `bedrock_grounding_llm_model_id` | Ontology-engine grounding reranker (`GROUNDING_LLM_MODEL_ID`) | *follows `bedrock_chat_model_id`* |
 | `bedrock_chat_model_id` | Source enrichment, constraint inference, document-ingestion extraction | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 
 Both **geographic inference profiles** (`us.`, `eu.`, `apac.`, `jp.`, `global.`) and **bare in-region model
@@ -159,6 +160,14 @@ IDs** (e.g. `cohere.embed-v4:0`) are accepted — bare IDs matter because some m
 profiles for only a subset of regions. The same resolved values also drive the Bedrock IAM grants and
 the CloudWatch dashboards' `ModelId` dimensions, so permissions and cost widgets follow your
 configuration automatically.
+
+Grounding rerank is a cheap, high-volume call, so `bedrock_grounding_llm_model_id` defaults to
+whatever `bedrock_chat_model_id` resolves to (a Haiku-class model) rather than the heavier
+induction model. Set it to a region-valid profile id (e.g. a `jp.`/`global.` Haiku) when
+deploying outside the US so the rerank call does not reject the default `us.` profile.
+It feeds the ontology-engine `GROUNDING_LLM_MODEL_ID` environment variable; the
+grounding region follows `LLM_REGION` (the deploy region). Like the other model keys it is
+geography-validated when the ontology ECS task starts.
 
 Example `infra-tf/shared.tfvars` for an `ap-northeast-1` deployment (a bare
 in-region ID for the embedding model because Cohere Embed v4 publishes no
@@ -311,7 +320,7 @@ The 10 stacks under `infra-tf/stacks/`:
 | Stack | Purpose |
 |-------|---------|
 | `00-network` | VPC, subnets, security groups, Cloud Map namespace, VPC endpoints |
-| `10-foundation` | S3, DynamoDB, OpenSearch Serverless, Neptune, Cognito, Guardrails, WAF |
+| `10-foundation` | S3, DynamoDB, OpenSearch Serverless, Neptune, Cognito, Guardrails, WAF, [ENI pre-warm](#eni-pre-warm) |
 | `20-namespace` | DataZone + namespace-deletion pipeline |
 | `25-ecr` | ECR repositories for all container images |
 | `30-services` | Metric service, VKG, ontology engine |
@@ -328,6 +337,27 @@ and cross-stack SSM dependency waits account for most of that time —
 individual stacks vary widely and several sub-resources run in parallel,
 so a per-stack breakdown understates the real end-to-end wall-clock time.
 
+#### ENI pre-warm
+
+Inside `10-foundation`, a dedicated `eni-warm` module creates four
+never-invoked Lambda functions, one per (subnet, security-group-set)
+combination the platform uses (`lambda`, `lambdaocsp`, `ecs`, `authorizer`).
+A Lambda function in a VPC reaches it through a
+[Hyperplane ENI](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html#configuration-vpc-enis),
+which Lambda shares between all functions with the same subnets and
+security groups. The first function to use a new combination waits
+about four minutes for that interface to be created; later ones take
+seconds. The warm-up runs in parallel with the storage sub-module
+(Neptune provisioning) during `apply-10-foundation`, so by the time
+service stacks (`20-namespace` onward) create their first VPC Lambda,
+the Hyperplane ENI already exists and the function creates in ~10
+seconds instead of ~228. The pre-warm Lambdas themselves raise
+`RuntimeError` if invoked by mistake — they are only alive to hold
+the ENI. Service stacks data-source `/{prefix}/network/eni-warm-ready-marker`
+(an SSM parameter the foundation stack publishes) so Terraform refuses
+to plan them until the warmer has applied, enforcing the ordering
+without an explicit `depends_on` across stacks.
+
 !!! warning "First-time setup adds significant time"
     The ~1.5 hour figure above is Terraform provisioning time only. On a fresh machine or first-time deploy, budget additional time on top of that for: installing `mise`-managed toolchains, `uv sync`/`pnpm install`, Smithy/Gradle codegen (`make generate` — first run downloads Gradle wrappers, openapi-generator, and builds TypeScript clients from scratch), and Docker image builds. Subsequent deploys after initial setup are faster since dependencies and generated artifacts are cached, though provisioning time for a fresh set of resources remains similar.
 
@@ -340,8 +370,11 @@ carries every configurable value. Common overrides:
 # Custom resource prefix (default: coa)
 resource_prefix = "myproject"
 
-# Import an existing VPC instead of creating one (BYOVPC)
-vpc_id = "vpc-abc123"
+# Import an existing VPC instead of creating one (BYOVPC).
+# Set the Name tag of the VPC — the network module resolves it via
+# tag:Name = vpc_name, then reads private subnets whose tag:Name
+# matches private_subnet_name_pattern (default: *private*).
+vpc_name = "my-shared-vpc"
 
 # Custom domain for the web app and API — all-or-nothing group
 ui_domain_name      = "ontology.example.com"
@@ -356,6 +389,34 @@ hosted_zone_id      = "Z0123456789ABCDEFGHIJ"
 
 !!! warning "Multi-region deployments"
     S3 buckets and IAM roles are globally scoped, not region-isolated. Deploying the same `resource_prefix` + `env` to a second region **will collide** with an existing deployment. Use a distinct `resource_prefix` per region (e.g., `coa-w2` for `us-west-2`) — do not rely on region alone to disambiguate.
+
+#### OoPS! ontology pitfall scan (opt-in, Tier-3 validation)
+
+The ontology-engine's Tier-3 validation can run the OoPS!
+([Ontology Pitfall Scanner](https://oops.linkeddata.es/)). To do so it
+POSTs the whole serialised ontology to a configured endpoint — class
+and property names, labels, comments, and sampled literal values. It
+is therefore **off by default** — with no endpoint configured,
+validation makes no outbound request and reports one `info` finding,
+`OOPS_NOT_CONFIGURED`, while the rest of Tier 3 runs as usual.
+
+To enable it, set `oops_endpoint` in `shared.tfvars`; the ontology
+module writes it to the `OOPS_ENDPOINT` environment variable on the
+ontology-engine container. The variable has a `validation` block that
+requires an `https://` URL — `terraform plan` fails otherwise.
+
+```hcl
+# infra-tf/shared.tfvars — opt in
+oops_endpoint = "https://oops.example.internal/rest"
+```
+
+!!! warning "Point this at a self-hosted OoPS! instance"
+    The scanner receives the full serialised ontology (schema plus
+    sampled literals), so unless you are content for your schema to
+    leave your network, point it at a self-hosted OoPS! deployment.
+    Releases before this one defaulted to the public OoPS! service;
+    deployments that relied on that must now set the endpoint
+    explicitly or opt back in to the public service with eyes open.
 
 #### Tier-1 metric execution timeout
 

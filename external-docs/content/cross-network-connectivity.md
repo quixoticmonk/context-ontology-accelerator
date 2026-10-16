@@ -106,7 +106,7 @@ overrides the default).
 The rest of this page walks through **VPC peering** end to end (the common
 case), then summarizes TGW and PrivateLink. COA can also manage any of these
 for you declaratively — see
-[Let COA manage connectivity](#let-coa-manage-the-connectivity-cdk).
+[Let COA manage connectivity](#let-coa-manage-the-connectivity-terraform).
 
 ---
 
@@ -253,41 +253,53 @@ endpoint rather than route between whole VPCs.
 
 ---
 
-## Let COA manage the connectivity (CDK)
+## Let COA manage the connectivity (Terraform)
 
-If COA **creates** its own VPC (the default — you did not pass a `vpc_id`
-context key), it can provision the peering / TGW / PrivateLink **and the
-routes** for you from CDK context. This keeps the network path in
+If COA **creates** its own VPC (the default — you did not set `vpc_name` in
+`shared.tfvars`), it can provision the peering / TGW / PrivateLink **and the
+routes** for you from Terraform variables. This keeps the network path in
 infrastructure-as-code so a redeploy does not lose it.
 
-Pass the context keys at deploy time (`-c key=value`) or in `cdk.json`:
+Set the variables in `infra-tf/shared.tfvars` (preferred) or pass with `-var`
+on an ad-hoc apply:
 
 === "VPC peering"
 
-    ```bash
-    cdk deploy -c jdbc_peer_vpc_id=<db-vpc-id> \
-               -c jdbc_peer_cidrs=<db-vpc-cidr>[,<cidr2>] \
-               [-c jdbc_peer_owner_id=<db-account>] \
-               [-c jdbc_peer_region=<db-region>]
+    ```hcl
+    # infra-tf/shared.tfvars
+    jdbc_peer_vpc_id   = "<db-vpc-id>"
+    jdbc_peer_cidrs    = ["<db-vpc-cidr>", "<cidr2>"]
+    jdbc_peer_owner_id = "<db-account>"      # cross-account only
+    jdbc_peer_region   = "<db-region>"       # cross-region only
     ```
     `jdbc_peer_vpc_id` and `jdbc_peer_cidrs` are **required together**;
-    `jdbc_peer_cidrs` is comma-separated. Add `jdbc_peer_owner_id` for
-    cross-account and `jdbc_peer_region` for cross-Region.
+    `jdbc_peer_cidrs` is a list. Add `jdbc_peer_owner_id` for cross-account
+    and `jdbc_peer_region` for cross-Region.
 
 === "Transit Gateway"
 
-    ```bash
-    cdk deploy -c jdbc_tgw_id=<tgw-id> \
-               -c jdbc_tgw_cidrs=<remote-cidr>[,<cidr2>]
+    ```hcl
+    # infra-tf/shared.tfvars
+    jdbc_tgw_id    = "<tgw-id>"
+    jdbc_tgw_cidrs = ["<remote-cidr>", "<cidr2>"]
     ```
 
 === "PrivateLink"
 
-    ```bash
-    cdk deploy -c jdbc_privatelink_service=com.amazonaws.vpce.<region>.vpce-svc-xxxx \
-               -c jdbc_privatelink_port=<port> \
-               [-c jdbc_privatelink_private_dns=<name>]
+    ```hcl
+    # infra-tf/shared.tfvars
+    jdbc_privatelink_service     = "com.amazonaws.vpce.<region>.vpce-svc-xxxx"
+    jdbc_privatelink_port        = <port>
+    jdbc_privatelink_private_dns = "<name>"   # optional
     ```
+
+After editing `shared.tfvars`, apply the network stack:
+
+```bash
+make -C infra-tf apply-00-network
+# or, equivalently:
+cd infra-tf/stacks/00-network && terraform apply -var-file=../../shared.tfvars
+```
 
 COA wires the resulting routes and SG rules to **both** connector security
 groups (`{prefix}-lambda-sg` and `{prefix}-connector-sg`). You still add the
@@ -295,16 +307,17 @@ inbound rule on the **database** security group (step 3) — that lives in the
 database's account/VPC, which COA does not manage.
 
 !!! warning "Imported VPCs manage their own connectivity"
-    If you deploy COA into an **existing** VPC (`-c vpc_id=<id>`), COA does
-    **not** provision any peering/TGW/PrivateLink or routes — it assumes the
-    imported VPC already brings its own. Set up the network path manually as in
-    the sections above.
+    If you deploy COA into an **existing** VPC (set `vpc_name = "<Name-tag>"`
+    in `shared.tfvars`), COA does **not** provision any peering/TGW/
+    PrivateLink or routes — it assumes the imported VPC already brings its
+    own. Set up the network path manually as in the sections above.
 
 !!! danger "Manual routes are lost on VPC replacement"
     Routes and peering you add by hand (the manual sections above) are **not**
-    tracked by COA's CDK. If a later `cdk deploy` replaces COA's VPC or subnets,
-    those routes are gone and the datasource times out again. Prefer the context
-    keys above for a COA-created VPC so the path is part of the stack.
+    tracked by COA's Terraform state. If a later `terraform apply` replaces
+    COA's VPC or subnets, those routes are gone and the datasource times out
+    again. Prefer the variables above for a COA-created VPC so the path is
+    part of the stack.
 
 !!! note "Integration-test automation"
     The maintainers' CI wires a cross-network path to companion test databases
