@@ -37,6 +37,7 @@ module "vkg" {
   ecr_repository_url          = local.vkg_ecr_repository_url
   ecs_security_group_id       = local.ecs_security_group_id
   event_source_prefix         = local.event_source_prefix
+  image_tag_file              = "${path.root}/../../artifacts/images/vkg.tag"
   lambda_reserved_concurrency = var.lambda_reserved_concurrency
   lambda_security_group_id    = local.lambda_security_group_id
   logs_kms_key_arn            = local.logs_kms_key_arn
@@ -64,6 +65,7 @@ module "ontology" {
   bedrock_induction_llm_model_id = var.bedrock_induction_llm_model_id
   ecr_repository_url             = local.ontology_ecr_repository_url
   ecs_security_group_id          = local.ecs_security_group_id
+  image_tag_file                 = "${path.root}/../../artifacts/images/ontology-engine.tag"
   lambda_security_group_id       = local.lambda_security_group_id
   logs_kms_key_arn               = local.logs_kms_key_arn
   name_prefix                    = local.name_prefix
