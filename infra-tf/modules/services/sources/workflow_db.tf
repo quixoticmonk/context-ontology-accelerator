@@ -239,6 +239,11 @@ locals {
                   { Name = "SCAN_JOB_ID", "Value.$" = "$.scanJobId" },
                   { Name = "SCAN_JOB_SK", "Value.$" = "$.scanJobSK" },
                   { Name = "NAMESPACE_ID", "Value.$" = "$.namespaceId" },
+                  # Namespace-language snapshot resolved by the Sources API
+                  # when the scan was triggered. Enrichment uses it as-is
+                  # and never re-reads the namespace, so a retried task
+                  # keeps the language its job started with.
+                  { Name = "NAMESPACE_LANGUAGE", "Value.$" = "$.namespaceLanguage" },
                   { Name = "SCAN_TYPE", "Value.$" = "$.scanType" },
                   # Re-scan marker (string "true"/"false", always
                   # present in the execution input via the trigger).

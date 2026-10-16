@@ -430,6 +430,15 @@ data "aws_iam_policy_document" "doc_trigger" {
     actions   = ["states:StartExecution"]
     resources = [aws_sfn_state_machine.doc_ingestion.arn]
   }
+
+  # Minimal read of the namespace metadata item for pre-snapshot
+  # messages; deliberately GetItem only, not grantReadData (Query /
+  # Scan / Batch).
+  statement {
+    sid       = "ReadNamespaceLanguage"
+    actions   = ["dynamodb:GetItem"]
+    resources = [var.namespaces_table_arn]
+  }
 }
 
 resource "aws_iam_policy" "doc_trigger" {

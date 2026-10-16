@@ -228,6 +228,10 @@ locals {
               Environment = [
                 { Name = "DOC_SOURCE_ID", "Value.$" = "$.doc_source_id" },
                 { Name = "NAMESPACE_ID", "Value.$" = "$.namespace_id" },
+                # Namespace-language snapshot resolved by the Sources API
+                # when the ingestion was triggered (always present via the
+                # trigger Lambda).
+                { Name = "NAMESPACE_LANGUAGE", "Value.$" = "$.namespace_language" },
                 { Name = "TENANT_ID", "Value.$" = "$.tenant_id" },
                 { Name = "STAGING_PREFIX", "Value.$" = "$.preprocessResult.staging_prefix" },
                 { Name = "EXTRACTION_MODE", "Value.$" = "$.extraction_config.extraction_mode" },

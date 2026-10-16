@@ -178,6 +178,10 @@ resource "aws_lambda_function" "doc_trigger" {
     variables = {
       STATE_MACHINE_ARN = aws_sfn_state_machine.doc_ingestion.arn
       BEDROCK_MODEL_ARN = local.bedrock_model_arn
+      # Read only to resolve the namespace language for a message that
+      # predates the API-side snapshot (queued before deploy or redriven
+      # from the DLQ). Current messages carry it and need no read.
+      NAMESPACES_TABLE = var.namespaces_table_name
     }
   }
 

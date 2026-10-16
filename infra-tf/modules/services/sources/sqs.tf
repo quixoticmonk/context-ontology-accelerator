@@ -213,6 +213,12 @@ resource "aws_sqs_queue" "glue_event" {
 # plus deny non-TLS. The CDK merged the two into one policy document;
 # we do the same here so both statements apply as one queue policy.
 data "aws_iam_policy_document" "glue_event" {
+  # The sources-api Lambda names every per-source rule
+  # `<name_prefix>-sources-glue-rescan-<sourceId>` and puts it on the
+  # default event bus (whose rule ARNs are `rule/<name>`). One ARN pattern
+  # serves both this queue policy and the API Lambda's rule-management
+  # grant in iam_db.tf, so the two cannot drift: a rule the Lambda may
+  # create is exactly a rule the queue accepts.
   statement {
     sid     = "AllowEventBridgeSend"
     effect  = "Allow"
@@ -226,6 +232,15 @@ data "aws_iam_policy_document" "glue_event" {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
       values   = [data.aws_caller_identity.current.account_id]
+    }
+    # Allow only this deployment's own Glue re-scan rules to deliver.
+    # Without this, any rule anyone in the account creates against the
+    # default event bus could deliver here — the account check alone
+    # admits every sibling deployment's rules too.
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:events:${var.region}:${data.aws_caller_identity.current.account_id}:rule/${var.name_prefix}-sources-glue-rescan-*"]
     }
   }
 
