@@ -84,6 +84,33 @@ module "edge_waf" {
   waf_rate_limit_per_5min = 2000
 }
 
+# ── ENI pre-warming ───────────────────────────────────────────────────
+# Runs in parallel with the storage module (no ordering between them —
+# Terraform's dag parallelises them automatically). The ~228 s per-combo
+# Hyperplane ENI wait is spent here, not inside each service stack's
+# first VPC Lambda. Depends on the KMS module for the Logs CMK.
+module "eni_warm" {
+  source = "../../modules/foundation/eni-warm"
+
+  name_prefix                      = local.name_prefix
+  private_subnet_ids               = local.private_subnet_ids
+  lambda_security_group_id         = local.lambda_security_group_id
+  discovery_ocsp_security_group_id = local.discovery_ocsp_security_group_id
+  ecs_security_group_id            = local.ecs_security_group_id
+  authorizer_security_group_id     = local.authorizer_security_group_id
+  logs_kms_key_arn                 = module.kms.logs_key_arn
+  tags                             = local.common_tags
+}
+
+# Opaque marker — service stacks data-source this to form an implicit
+# dependency on the warmers' creation. Value changes whenever the warmer
+# set changes, forcing a re-plan on dependents.
+resource "aws_ssm_parameter" "eni_warm_ready" {
+  name  = "${local.ssm_prefix}/network/eni-warm-ready-marker"
+  type  = "String"
+  value = module.eni_warm.ready_marker
+}
+
 # ── Stack-added SSM writes for downstream consumers ──────────────────
 # Storage module already writes all its outputs to SSM. auth-idp writes
 # user_pool_id/userpool_client_id/mcp_client_id/issuer/group_token_name.

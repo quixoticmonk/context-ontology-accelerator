@@ -62,8 +62,15 @@ locals {
   userpool_client_id = data.aws_ssm_parameter.userpool_client_id.value
 
   # Service ARNs consumed by MCP
-  metric_service_lambda_arn = data.aws_ssm_parameter.metric_api_fn_arn.value
-  ontology_proxy_lambda_arn = data.aws_ssm_parameter.ontology_api_fn_arn.value
+  # ── Backend Lambda ARNs for MCP discovery tools ──────────────────
+  # Built from the Lambda's fixed name (matches CDK's prefixedLambdaArn
+  # helper, mirroring v0.3.6 McpStack): avoids a cross-stack SSM read
+  # against 30-services, so this stack plans and applies without needing
+  # 30-services to have published those params. The two function names
+  # are stable platform conventions (metric-service and ontology stacks
+  # construct the same names from `prefixed()`).
+  metric_service_lambda_arn = "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${local.name_prefix}-metric-api"
+  ontology_proxy_lambda_arn = "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${local.name_prefix}-ontology-api-proxy"
 
   # AgentCore-supported AZ names resolved by stack 00-network.
   agentcore_az_names = split(",", nonsensitive(data.aws_ssm_parameter.agentcore_supported_az_names.value))
@@ -104,8 +111,15 @@ data "aws_ssm_parameter" "issuer" { name = "${local.ssm_prefix}/issuer" }
 data "aws_ssm_parameter" "mcp_client_id" { name = "${local.ssm_prefix}/mcp-client-id" }
 data "aws_ssm_parameter" "userpool_client_id" { name = "${local.ssm_prefix}/userpool-client-id" }
 
-data "aws_ssm_parameter" "metric_api_fn_arn" { name = "${local.ssm_prefix}/metric/api-fn-arn" }
-data "aws_ssm_parameter" "ontology_api_fn_arn" { name = "${local.ssm_prefix}/ontology-engine/api-fn-arn" }
+# Partition + account id for constructing Lambda ARNs by name (metric-service
+# and ontology-engine API lambdas — see locals above).
+data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
+
+# metric_api_fn_arn / ontology_api_fn_arn SSM reads dropped per v0.3.6
+# McpStack refactor — ARNs are built from the Lambdas' fixed names (see
+# locals.metric_service_lambda_arn / ontology_proxy_lambda_arn) so this
+# stack no longer waits on 30-services to publish those params.
 
 data "aws_ssm_parameter" "agentcore_supported_az_names" { name = "${local.ssm_prefix}/network/agentcore-supported-az-names" }
 
@@ -113,3 +127,13 @@ data "aws_ssm_parameter" "context_manager_ecr_url" { name = "${local.ssm_prefix}
 data "aws_ssm_parameter" "context_manager_ecr_arn" { name = "${local.ssm_prefix}/ecr/context-manager/arn" }
 data "aws_ssm_parameter" "mcp_server_ecr_url" { name = "${local.ssm_prefix}/ecr/mcp-server/url" }
 data "aws_ssm_parameter" "mcp_server_ecr_arn" { name = "${local.ssm_prefix}/ecr/mcp-server/arn" }
+
+# ── ENI pre-warm gate ────────────────────────────────────────────────
+# Reading this parameter blocks `plan` until 10-foundation has published
+# it (the eni-warm module runs there, in parallel with storage, and
+# pre-creates the Hyperplane ENIs for every (subnet, SG-set) combination
+# this stack's VPC Lambdas use). Without this, the first VPC Lambda in
+# this stack pays the full ~228 s ENI create on initial deploy.
+data "aws_ssm_parameter" "eni_warm_ready_marker" {
+  name = "${local.ssm_prefix}/network/eni-warm-ready-marker"
+}

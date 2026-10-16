@@ -14,11 +14,15 @@
 data "aws_partition" "current" {}
 
 locals {
-  cognito_patch_enabled = (
-    var.user_pool_id != "" &&
-    var.userpool_client_id != "" &&
-    var.cognito_callback_patch_zip_path != ""
-  )
+  # Enabled when a zip path is provided. The patch is a one-shot fix-up
+  # Lambda that runs after the Cognito user pool exists; its user_pool_id
+  # and userpool_client_id inputs always flow in from the auth-idp module
+  # when a patch is wanted, so gating on them at plan time would make
+  # the module impossible to apply in a single pass (they are known-
+  # after-apply on first create). The zip path is a static input and is
+  # the plan-time-evaluable gate. To opt out, pass
+  # `cognito_callback_patch_zip_path = ""`.
+  cognito_patch_enabled = var.cognito_callback_patch_zip_path != ""
 }
 
 data "aws_iam_policy_document" "cognito_patch_trust" {

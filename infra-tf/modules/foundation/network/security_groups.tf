@@ -168,6 +168,39 @@ resource "aws_vpc_security_group_egress_rule" "lambda_db_ports" {
 }
 
 # ═════════════════════════════════════════════════════════════════════
+#  3b. Authorizer SG — API Gateway JWT authorizer Lambda
+# ═════════════════════════════════════════════════════════════════════
+# Dedicated SG with unrestricted outbound: the authorizer fetches the
+# identity provider's JWKS, and an external OIDC IdP may serve the keys
+# on any port (not just 443). Isolated from the shared Lambda SG so the
+# broader egress stance does not leak to every other VPC Lambda.
+# Defined here (not inside the API module) so EniWarmStack can pre-warm
+# the Hyperplane ENI for this SG combination.
+
+resource "aws_security_group" "authorizer" {
+  # checkov:skip=CKV2_AWS_5:Attached to the API Gateway authorizer Lambda in modules/services/api via var.authorizer_security_group_id.
+  name        = "${var.name_prefix}-authorizer-sg"
+  description = "API authorizer security group - unrestricted egress for IdP JWKS fetches"
+  vpc_id      = local.vpc_id
+
+  tags = {
+    Name      = "${var.name_prefix}-authorizer-sg"
+    Component = var.component
+  }
+
+  lifecycle { create_before_destroy = true }
+}
+
+resource "aws_vpc_security_group_egress_rule" "authorizer_all_outbound" {
+  security_group_id = aws_security_group.authorizer.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+  description       = "All outbound - external OIDC IdP JWKS may be on any port"
+
+  tags = { Component = var.component }
+}
+
+# ═════════════════════════════════════════════════════════════════════
 #  4. AOSS VPC endpoint SG — ingress-gated by consumer SGs
 # ═════════════════════════════════════════════════════════════════════
 

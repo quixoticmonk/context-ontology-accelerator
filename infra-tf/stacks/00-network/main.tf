@@ -97,6 +97,12 @@ resource "aws_ssm_parameter" "discovery_ocsp_security_group_id" {
   value = module.network.discovery_ocsp_security_group_id
 }
 
+resource "aws_ssm_parameter" "authorizer_security_group_id" {
+  name  = "${local.ssm_prefix}/network/authorizer-security-group-id"
+  type  = "String"
+  value = module.network.authorizer_security_group_id
+}
+
 resource "aws_ssm_parameter" "service_namespace_arn" {
   count = var.create_service_discovery_namespace ? 1 : 0
 

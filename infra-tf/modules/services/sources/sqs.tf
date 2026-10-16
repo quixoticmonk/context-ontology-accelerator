@@ -278,8 +278,11 @@ resource "aws_sqs_queue_policy" "glue_event" {
 # pre-existing queues that upstream retrofitted.
 
 locals {
+  # Queues that need ONLY the fleet-wide TLS-deny policy (no bespoke
+  # permissions). `db_connector_dlq` is deliberately absent: it has a
+  # merged policy in compute_db.tf (SendMessage grant + DenyInsecure
+  # in one resource) because SQS allows only one policy per queue.
   tls_deny_queues = {
-    db_connector_dlq  = aws_sqs_queue.db_connector_dlq.arn
     db_scan           = aws_sqs_queue.db_scan.arn
     db_scan_dlq       = aws_sqs_queue.db_scan_dlq.arn
     bulk_review_dlq   = aws_sqs_queue.bulk_review_dlq.arn
@@ -316,7 +319,6 @@ resource "aws_sqs_queue_policy" "tls_deny" {
   # Resolve from each key, since queue_url/aws_sqs_queue.XXX.id can't
   # be dynamically indexed on the ARN alone.
   queue_url = {
-    db_connector_dlq  = aws_sqs_queue.db_connector_dlq.id
     db_scan           = aws_sqs_queue.db_scan.id
     db_scan_dlq       = aws_sqs_queue.db_scan_dlq.id
     bulk_review_dlq   = aws_sqs_queue.bulk_review_dlq.id

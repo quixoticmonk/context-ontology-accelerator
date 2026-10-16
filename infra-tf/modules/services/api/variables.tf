@@ -73,7 +73,11 @@ variable "expensive_api_operations" {
 }
 
 variable "lambda_security_group_id" {
-  description = "Lambda security group ID (from network) for authorizer + cache_invalidation Lambdas."
+  description = "Lambda security group ID (from network) for the cache-invalidation Lambda (HTTPS/DDB egress). The API authorizer uses the separate `authorizer_security_group_id` instead."
+  type        = string
+}
+variable "authorizer_security_group_id" {
+  description = "API authorizer Lambda security group ID (from network). Dedicated SG with unrestricted outbound so an external OIDC IdP's JWKS endpoint can be reached on any port."
   type        = string
 }
 variable "logs_kms_key_arn" {

@@ -29,9 +29,10 @@ locals {
   } : null
 
   # Network handoff
-  vpc_id                   = data.aws_ssm_parameter.vpc_id.value
-  private_subnet_ids       = nonsensitive(split(",", data.aws_ssm_parameter.private_subnet_ids.value))
-  lambda_security_group_id = data.aws_ssm_parameter.lambda_security_group_id.value
+  vpc_id                       = data.aws_ssm_parameter.vpc_id.value
+  private_subnet_ids           = nonsensitive(split(",", data.aws_ssm_parameter.private_subnet_ids.value))
+  lambda_security_group_id     = data.aws_ssm_parameter.lambda_security_group_id.value
+  authorizer_security_group_id = data.aws_ssm_parameter.authorizer_security_group_id.value
 
   # AuthNZ handoff (ARNs)
   cache_invalidation_table_arn            = data.aws_ssm_parameter.cache_invalidation_table_arn.value
@@ -67,6 +68,7 @@ locals {
 data "aws_ssm_parameter" "vpc_id" { name = "${local.ssm_prefix}/network/vpc-id" }
 data "aws_ssm_parameter" "private_subnet_ids" { name = "${local.ssm_prefix}/network/private-subnet-ids" }
 data "aws_ssm_parameter" "lambda_security_group_id" { name = "${local.ssm_prefix}/network/lambda-security-group-id" }
+data "aws_ssm_parameter" "authorizer_security_group_id" { name = "${local.ssm_prefix}/network/authorizer-security-group-id" }
 
 data "aws_ssm_parameter" "cache_invalidation_table_arn" { name = "${local.ssm_prefix}/authnz/cache-invalidation-table-arn" }
 data "aws_ssm_parameter" "cache_invalidation_table_name" { name = "${local.ssm_prefix}/authnz/cache-invalidation-table-name" }
@@ -103,4 +105,14 @@ data "aws_ssm_parameter" "userpool_client_id" {
 data "aws_ssm_parameter" "userpool_domain" {
   count = var.idp_type != "OIDC" ? 1 : 0
   name  = "${local.ssm_prefix}/userpool-domain"
+}
+
+# ── ENI pre-warm gate ────────────────────────────────────────────────
+# Reading this parameter blocks `plan` until 10-foundation has published
+# it (the eni-warm module runs there, in parallel with storage, and
+# pre-creates the Hyperplane ENIs for every (subnet, SG-set) combination
+# this stack's VPC Lambdas use). Without this, the first VPC Lambda in
+# this stack pays the full ~228 s ENI create on initial deploy.
+data "aws_ssm_parameter" "eni_warm_ready_marker" {
+  name = "${local.ssm_prefix}/network/eni-warm-ready-marker"
 }

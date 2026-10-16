@@ -128,9 +128,19 @@ resource "aws_s3_bucket_versioning" "website" {
 resource "aws_s3_bucket_server_side_encryption_configuration" "website" {
   bucket = aws_s3_bucket.website.id
 
+  # AES256 (SSE-S3), not SSE-KMS. CloudFront OAC can't decrypt objects
+  # encrypted with the AWS-managed `aws/s3` KMS key — the service
+  # principal can't be added to that key's policy (AWS-managed keys
+  # have fixed policies). SSE-KMS on this bucket would require a
+  # customer-managed KMS key with an explicit `kms:Decrypt` grant to
+  # the CloudFront OAC source ARN, which is the only secure way to
+  # keep KMS here. For a public static UI assets bucket, SSE-KMS adds
+  # no security benefit over SSE-S3 — the objects are already served
+  # publicly through CloudFront. NG.9 encryption exception: documented
+  # here, mirrors the lambda-artifacts bucket precedent.
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "aws:kms"
+      sse_algorithm = "AES256"
     }
   }
 }
@@ -198,29 +208,43 @@ resource "aws_s3_bucket_policy" "website" {
 }
 
 # ── Website content sync ───────────────────────────────────────────
-# One object per file under website_content_path; etag = filemd5 triggers a
-# per-file redeploy on change. runtime-config.json is written separately so
-# it always reflects the current backends.
+# One object per file under website_content_path. Two drift triggers:
+#   - etag = filemd5(...) — content hash; re-uploads when the local file
+#     changes.
+#   - server_side_encryption = "AES256" — declared SSE; re-uploads when
+#     the object on S3 is encrypted differently (e.g. aws:kms from a
+#     prior deploy before the bucket default was flipped to AES256).
+# runtime-config.json is written separately so it always reflects the
+# current backends.
 resource "aws_s3_object" "website" {
   for_each = local.website_files
 
-  bucket       = aws_s3_bucket.website.id
-  key          = each.value
-  source       = "${var.website_content_path}/${each.value}"
-  etag         = filemd5("${var.website_content_path}/${each.value}")
-  content_type = lookup(local.mime_types, element(reverse(split(".", each.value)), 0), "application/octet-stream")
+  bucket                 = aws_s3_bucket.website.id
+  key                    = each.value
+  source                 = "${var.website_content_path}/${each.value}"
+  etag                   = filemd5("${var.website_content_path}/${each.value}")
+  server_side_encryption = "AES256"
+  content_type           = lookup(local.mime_types, element(reverse(split(".", each.value)), 0), "application/octet-stream")
 
   tags = { Component = var.component }
+
+  # Must land after the bucket's default encryption is set to AES256.
+  # Otherwise S3 rejects the AES256 PutObject override on a bucket whose
+  # default is the AWS-managed `aws/s3` KMS key.
+  depends_on = [aws_s3_bucket_server_side_encryption_configuration.website]
 }
 
 resource "aws_s3_object" "runtime_config" {
-  bucket        = aws_s3_bucket.website.id
-  key           = "runtime-config.json"
-  content       = jsonencode(local.runtime_config)
-  content_type  = "application/json"
-  cache_control = "no-store, max-age=0"
+  bucket                 = aws_s3_bucket.website.id
+  key                    = "runtime-config.json"
+  content                = jsonencode(local.runtime_config)
+  content_type           = "application/json"
+  cache_control          = "no-store, max-age=0"
+  server_side_encryption = "AES256"
 
   tags = { Component = var.component }
+
+  depends_on = [aws_s3_bucket_server_side_encryption_configuration.website]
 }
 
 # =====================================================================

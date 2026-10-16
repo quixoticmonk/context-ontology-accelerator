@@ -80,7 +80,7 @@ resource "aws_lambda_function" "authorizer" {
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
-    security_group_ids = [var.lambda_security_group_id]
+    security_group_ids = [var.authorizer_security_group_id]
   }
 
   environment {

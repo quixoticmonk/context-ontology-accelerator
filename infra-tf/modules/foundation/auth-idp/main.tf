@@ -206,6 +206,15 @@ resource "random_password" "admin_temp" {
   special          = true
   override_special = "!@#$%^&*()-_=+"
 
+  # random_password only ALLOWS these character classes by default — it does
+  # not guarantee one appears. With the Cognito password policy requiring all
+  # four, force at least one of each so a probabilistically unlucky draw
+  # (e.g. zero digits in 16 chars) cannot fail AdminCreateUser.
+  min_lower   = 1
+  min_upper   = 1
+  min_numeric = 1
+  min_special = 1
+
   # Only regenerate when the admin email changes (an intentional rotation),
   # not on every apply.
   keepers = {

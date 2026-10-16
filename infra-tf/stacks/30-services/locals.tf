@@ -94,3 +94,13 @@ data "aws_ssm_parameter" "ontology_ecr_url" { name = "${local.ssm_prefix}/ecr/on
 data "aws_ssm_parameter" "vkg_ecr_url" { name = "${local.ssm_prefix}/ecr/vkg/url" }
 
 data "aws_ssm_parameter" "logs_kms_key_arn" { name = "${local.ssm_prefix}/kms/logs-key-arn" }
+
+# ── ENI pre-warm gate ────────────────────────────────────────────────
+# Reading this parameter blocks `plan` until 10-foundation has published
+# it (the eni-warm module runs there, in parallel with storage, and
+# pre-creates the Hyperplane ENIs for every (subnet, SG-set) combination
+# this stack's VPC Lambdas use). Without this, the first VPC Lambda in
+# this stack pays the full ~228 s ENI create on initial deploy.
+data "aws_ssm_parameter" "eni_warm_ready_marker" {
+  name = "${local.ssm_prefix}/network/eni-warm-ready-marker"
+}

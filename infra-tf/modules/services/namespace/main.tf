@@ -62,6 +62,11 @@ resource "aws_dynamodb_table" "namespaces" {
   }
 
   tags = local.tags
+
+  # DDB UpdateTable rejects no-op SSE updates — see authnz module for details.
+  lifecycle {
+    ignore_changes = [server_side_encryption]
+  }
 }
 
 # ── SSM writes ─────────────────────────────────────────────────────

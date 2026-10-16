@@ -80,18 +80,37 @@ resource "aws_lambda_function" "db_connector" {
   tags = local.tags
 }
 
-# The Lambda-native DLQ requires SendMessage permission on the DLQ.
+# db_connector_dlq policy serves two intents in one resource (SQS allows
+# ONE policy per queue):
+#   1. Lambda-native DLQ SendMessage grant for the connector role.
+#   2. DenyInsecureConnections — the fleet-wide TLS enforcement, usually
+#      covered by `aws_sqs_queue_policy.tls_deny` in sqs.tf. db_connector_dlq
+#      is excluded from that for_each because it needs this bespoke merged
+#      policy. Removing either statement without preserving the other reopens
+#      a prior collision bug (two policies on the same queue, last-writer-
+#      wins, non-deterministic which one was live).
 resource "aws_sqs_queue_policy" "db_connector_dlq" {
   queue_url = aws_sqs_queue.db_connector_dlq.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { AWS = aws_iam_role.db_connector.arn }
-      Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.db_connector_dlq.arn
-    }]
+    Statement = [
+      {
+        Sid       = "AllowConnectorRoleSend"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_role.db_connector.arn }
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.db_connector_dlq.arn
+      },
+      {
+        Sid       = "DenyInsecureConnections"
+        Effect    = "Deny"
+        Principal = { AWS = "*" }
+        Action    = "sqs:*"
+        Resource  = aws_sqs_queue.db_connector_dlq.arn
+        Condition = { Bool = { "aws:SecureTransport" = "false" } }
+      },
+    ]
   })
 }
 

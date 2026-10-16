@@ -15,11 +15,14 @@
 # resources (`infra/lib/stacks/services/web-stack.ts:317-386`).
 
 locals {
-  api_cors_patch_enabled = (
-    var.api_rest_api_id != "" &&
-    var.api_stage_name != "" &&
-    var.api_cors_patch_zip_path != ""
-  )
+  # Enabled when a zip path is provided. The patch is a one-shot fix-up
+  # Lambda that runs after the API Gateway stage exists; its rest_api_id
+  # and stage_name inputs always flow in from the same stack's API module
+  # when a patch is wanted, so gating on them at plan time would make the
+  # module impossible to apply in a single pass (they are known-after-
+  # apply on first create). The zip path is a static input and is the
+  # plan-time-evaluable gate. To opt out, pass `api_cors_patch_zip_path = ""`.
+  api_cors_patch_enabled = var.api_cors_patch_zip_path != ""
 }
 
 data "aws_iam_policy_document" "api_cors_patch_trust" {

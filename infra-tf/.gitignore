@@ -17,6 +17,10 @@
 # truth for the composed graph; per-module locks are throwaway artifacts.
 modules/**/.terraform.lock.hcl
 
+# Per-module build directories (e.g. eni-warm's inline-handler zip
+# materialised via local_file + archive_file). All regenerated on apply.
+modules/**/.build/
+
 # tfvars — never commit anything but the example. Real tfvars can carry
 # secrets (OIDC client secrets, admin emails, cert ARNs, VPC IDs).
 *.tfvars

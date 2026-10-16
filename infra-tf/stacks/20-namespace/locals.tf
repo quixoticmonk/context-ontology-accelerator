@@ -49,3 +49,13 @@ data "aws_ssm_parameter" "resource_role_mappings_table_arn" { name = "${local.ss
 data "aws_ssm_parameter" "resource_role_mappings_table_name" { name = "${local.ssm_prefix}/authnz/resource-role-mappings-table-name" }
 data "aws_ssm_parameter" "roles_table_arn" { name = "${local.ssm_prefix}/authnz/roles-table-arn" }
 data "aws_ssm_parameter" "roles_table_name" { name = "${local.ssm_prefix}/authnz/roles-table-name" }
+
+# ── ENI pre-warm gate ────────────────────────────────────────────────
+# Reading this parameter blocks `plan` until 10-foundation has published
+# it (the eni-warm module runs there, in parallel with storage, and
+# pre-creates the Hyperplane ENIs for every (subnet, SG-set) combination
+# this stack's VPC Lambdas use). Without this, the first VPC Lambda in
+# this stack pays the full ~228 s ENI create on initial deploy.
+data "aws_ssm_parameter" "eni_warm_ready_marker" {
+  name = "${local.ssm_prefix}/network/eni-warm-ready-marker"
+}

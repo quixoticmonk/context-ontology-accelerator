@@ -6,6 +6,11 @@ output "aoss_security_group_id" {
   value       = aws_security_group.aoss.id
 }
 
+output "authorizer_security_group_id" {
+  description = "API authorizer Lambda security group ID. Dedicated SG with unrestricted outbound so an external OIDC IdP's JWKS endpoint can be reached on any port. Isolated from the shared Lambda SG so the broader egress stance does not leak to every other VPC Lambda."
+  value       = aws_security_group.authorizer.id
+}
+
 output "aoss_vpc_endpoint_id" {
   description = "AOSS data-plane VPC endpoint ID. Null when create_vpc_endpoints is false."
   value       = local.create_vpc_endpoints ? aws_vpc_endpoint.interface["aoss_data"].id : null

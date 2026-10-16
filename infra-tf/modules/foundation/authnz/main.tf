@@ -54,6 +54,14 @@ resource "aws_dynamodb_table" "roles" {
   tags = {
     Component = var.component
   }
+
+  # AWS DynamoDB UpdateTable rejects SSE updates when the table is already
+  # encrypted with the specified key (even on a no-op): "Table is already
+  # encrypted with given KMSMasterKeyId." Pin SSE at creation; a real key
+  # rotation (uncommon) requires taint + recreate.
+  lifecycle {
+    ignore_changes = [server_side_encryption]
+  }
 }
 
 # ── ResourceRoleMappings ───────────────────────────────────────────
@@ -123,6 +131,12 @@ resource "aws_dynamodb_table" "resource_role_mappings" {
   tags = {
     Component = var.component
   }
+
+  # See `aws_dynamodb_table.roles` above — same DDB UpdateTable SSE
+  # no-op rejection applies here.
+  lifecycle {
+    ignore_changes = [server_side_encryption]
+  }
 }
 
 # ── CacheInvalidation ──────────────────────────────────────────────
@@ -157,6 +171,12 @@ resource "aws_dynamodb_table" "cache_invalidation" {
 
   tags = {
     Component = var.component
+  }
+
+  # See `aws_dynamodb_table.roles` above — same DDB UpdateTable SSE
+  # no-op rejection applies here.
+  lifecycle {
+    ignore_changes = [server_side_encryption]
   }
 }
 

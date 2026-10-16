@@ -28,11 +28,15 @@ locals {
   allowed_origin = local.custom_domain_enabled ? "https://${var.ui_domain_name}" : "*"
 
   # Read from 00-network SSM
-  aoss_security_group_id    = data.aws_ssm_parameter.aoss_security_group_id.value
-  aoss_vpc_endpoint_id_raw  = data.aws_ssm_parameter.aoss_vpc_endpoint_id.value
-  aoss_vpc_endpoint_id      = local.aoss_vpc_endpoint_id_raw == "none" ? null : local.aoss_vpc_endpoint_id_raw
-  neptune_security_group_id = data.aws_ssm_parameter.neptune_security_group_id.value
-  private_subnet_ids        = nonsensitive(split(",", data.aws_ssm_parameter.private_subnet_ids.value))
+  aoss_security_group_id           = data.aws_ssm_parameter.aoss_security_group_id.value
+  aoss_vpc_endpoint_id_raw         = data.aws_ssm_parameter.aoss_vpc_endpoint_id.value
+  aoss_vpc_endpoint_id             = local.aoss_vpc_endpoint_id_raw == "none" ? null : local.aoss_vpc_endpoint_id_raw
+  neptune_security_group_id        = data.aws_ssm_parameter.neptune_security_group_id.value
+  private_subnet_ids               = nonsensitive(split(",", data.aws_ssm_parameter.private_subnet_ids.value))
+  lambda_security_group_id         = data.aws_ssm_parameter.lambda_security_group_id.value
+  discovery_ocsp_security_group_id = data.aws_ssm_parameter.discovery_ocsp_security_group_id.value
+  ecs_security_group_id            = data.aws_ssm_parameter.ecs_security_group_id.value
+  authorizer_security_group_id     = data.aws_ssm_parameter.authorizer_security_group_id.value
 }
 
 data "aws_ssm_parameter" "aoss_security_group_id" {
@@ -49,4 +53,20 @@ data "aws_ssm_parameter" "neptune_security_group_id" {
 
 data "aws_ssm_parameter" "private_subnet_ids" {
   name = "${local.ssm_prefix}/network/private-subnet-ids"
+}
+
+data "aws_ssm_parameter" "lambda_security_group_id" {
+  name = "${local.ssm_prefix}/network/lambda-security-group-id"
+}
+
+data "aws_ssm_parameter" "discovery_ocsp_security_group_id" {
+  name = "${local.ssm_prefix}/network/discovery-ocsp-security-group-id"
+}
+
+data "aws_ssm_parameter" "ecs_security_group_id" {
+  name = "${local.ssm_prefix}/network/ecs-security-group-id"
+}
+
+data "aws_ssm_parameter" "authorizer_security_group_id" {
+  name = "${local.ssm_prefix}/network/authorizer-security-group-id"
 }
