@@ -601,6 +601,7 @@ judgment calls.
 | `external-docs/content/deploying.md` | Terraform doc rewrite | Feature sections referencing CDK constructs (`VkgStack`, `cdk synth`) | Keep ours; port additions in a **separate** doc-translation commit using Reference R2 |
 | `.gitignore` | Our ignore entries | New ignore entries | Additive merge — **except** skip CDK-only entries (`cdk.out/`, `cdk.context.json`) |
 | `pnpm-workspace.yaml` | CDK workspace entries removed; supply-chain config at top level | Similar structural fix | Keep ours if already top-level; never restore CDK entries |
+| `coa-skills/control-plane/SKILL.md` | Quick Start reads the Terraform SSM names: hosted-UI domain from `/<prefix>/userpool-domain` (CDK publishes `/<prefix>/cognito-domain-prefix`, which TF does not create), and `API` from `apiEndpoint` in the SPA's `runtime-config.json` (located via `/<prefix>/web/distribution-domain-name`). `userpool-client-id` and `mcp-client-id` are the same name on both | Lifecycle notes, new API rows, Quick Start rewording | Take upstream, re-apply the SSM-name edits. After the merge, `grep -n cognito-domain-prefix coa-skills/` MUST return nothing, and every `aws ssm get-parameter --name` in the file MUST name a parameter some `infra-tf` stack writes (`grep -rn '<name>' infra-tf --include=*.tf`) |
 
 **Terraform-side files** (upstream never touches these, but regenerating a
 module from scratch to port a CDK feature can undo them):

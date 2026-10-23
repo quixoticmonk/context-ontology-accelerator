@@ -47,12 +47,13 @@ The control plane rejects `mcp` tokens with 403 "explicit deny". The `web` redir
 
 Run these from the repository root. The script is at `coa-skills/control-plane/scripts/coa_login.py`.
 
-1. Set three values. `COA_DOMAIN` is the OAuth base URL that serves `/oauth2/authorize` and `/oauth2/token`: the Cognito hosted-UI domain by default, or a custom domain in front of it. On a Cognito deployment, read all three from SSM (`<prefix>` is the deployment's `resource_prefix`):
+1. Set four values. `COA_DOMAIN` is the OAuth base URL that serves `/oauth2/authorize` and `/oauth2/token`: the Cognito hosted-UI domain by default, or a custom domain in front of it. `API` is the REST API base URL — read it from the SPA's `runtime-config.json` rather than constructing it, so the value is whatever the deployer wired up (direct `execute-api`, CloudFront+path origin, or a custom API domain). On a Cognito deployment, read the first three from SSM and `API` from `runtime-config.json` (`<prefix>` is the deployment's `resource_prefix`):
    ```bash
    P=<prefix>; R=<region>
-   export COA_DOMAIN=https://$(aws ssm get-parameter --name /$P/cognito-domain-prefix --query Parameter.Value --output text).auth.$R.amazoncognito.com
+   export COA_DOMAIN=https://$(aws ssm get-parameter --name /$P/userpool-domain --query Parameter.Value --output text).auth.$R.amazoncognito.com
    export COA_WEB_CLIENT_ID=$(aws ssm get-parameter --name /$P/userpool-client-id --query Parameter.Value --output text)
    export COA_MCP_CLIENT_ID=$(aws ssm get-parameter --name /$P/mcp-client-id --query Parameter.Value --output text)
+   export API=$(curl -s "https://$(aws ssm get-parameter --name /$P/web/distribution-domain-name --query Parameter.Value --output text)/runtime-config.json" | jq -r .apiEndpoint)
    ```
 2. Sign in once. The browser must run on the same machine as the script:
    ```bash
