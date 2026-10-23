@@ -76,7 +76,7 @@ $(ZIP): $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@# symlink issue (see infra/lib/utils/python-bundling.ts for the full
 	@# rationale). --only-binary :all: forces wheels so nothing tries to
 	@# native-compile against the host toolchain.
-	@echo "==> uv pip install $(PIP_DEPS)"
+	@echo '==> uv pip install $(PIP_DEPS)'
 	@uv pip install \
 	  --target $(OUT_DIR) \
 	  --python-platform x86_64-manylinux2014 \

@@ -62,6 +62,12 @@ SMITHY_SCRIPT   := $(REPO_ROOT)/scripts/smithy-generate.sh
 WEB_APP_DIR     := $(REPO_ROOT)/packages/web-app
 WEB_APP_DIST    := $(WEB_APP_DIR)/dist
 
+# Prefer the workspace-pinned pnpm (root package.json devDependency) over
+# whatever is first on PATH: a newer global pnpm (e.g. Homebrew 11.x) sees a
+# node_modules laid out by the pinned 10.x, tries to purge it, and aborts
+# with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY in non-interactive runs.
+PNPM ?= $(if $(wildcard $(REPO_ROOT)/node_modules/.bin/pnpm),$(REPO_ROOT)/node_modules/.bin/pnpm,pnpm)
+
 OPENAPI_MERGE_DIR := $(CURDIR)/modules/services/api/openapi
 OPENAPI_MERGED    := $(CURDIR)/artifacts/openapi/merged.json
 
@@ -89,16 +95,16 @@ build-openapi: smithy-generate ## Merge control-plane + data-layer OpenAPI into 
 
 build-web: ## Build the Vite web app to packages/web-app/dist (uploaded by 60-api-edge)
 	@echo "==> build-web: $(WEB_APP_DIR)"
-	@command -v pnpm >/dev/null 2>&1 || { \
+	@command -v $(PNPM) >/dev/null 2>&1 || { \
 	  echo "ERROR: pnpm not on PATH. Install with 'brew install pnpm' or 'npm install -g pnpm'."; \
 	  echo "This repo is a pnpm workspace — npm/yarn will fail on 'workspace:*' protocol."; \
 	  exit 1; \
 	}
 	@if [ ! -d "$(REPO_ROOT)/node_modules" ]; then \
 	  echo "==> installing workspace dependencies (pnpm install at repo root)"; \
-	  cd $(REPO_ROOT) && pnpm install; \
+	  cd $(REPO_ROOT) && $(PNPM) install; \
 	fi
-	@cd $(REPO_ROOT) && pnpm --filter coa-web-app build
+	@cd $(REPO_ROOT) && $(PNPM) --filter coa-web-app build
 	@echo "==> built $(WEB_APP_DIST)"
 
 build-images: smithy-generate ## Build and push every container image to ECR
@@ -218,6 +224,7 @@ fmt-all: ## terraform fmt -check across every stack + modules
 
 fmt-write: ## terraform fmt across every stack + modules (rewrite)
 	$(TF) fmt -recursive modules stacks
+
 
 # ── Clean ───────────────────────────────────────────────────────────
 .PHONY: clean clean-artifacts
