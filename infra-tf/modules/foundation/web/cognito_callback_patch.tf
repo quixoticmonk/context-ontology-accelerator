@@ -103,10 +103,11 @@ action "aws_lambda_invoke" "cognito_callback_patch" {
   config {
     function_name = aws_lambda_function.cognito_patch[0].function_name
     payload = jsonencode({
-      user_pool_id = var.user_pool_id
-      client_id    = var.userpool_client_id
-      callback_url = local.cognito_patch_callback_url
-      logout_url   = local.cognito_patch_logout_url
+      user_pool_id        = var.user_pool_id
+      client_id           = var.userpool_client_id
+      callback_url        = local.cognito_patch_callback_url
+      logout_url          = local.cognito_patch_logout_url
+      extra_callback_urls = var.cognito_extra_callback_urls
     })
   }
 }
@@ -117,7 +118,7 @@ action "aws_lambda_invoke" "cognito_callback_patch" {
 resource "terraform_data" "cognito_callback_patch_trigger" {
   count = local.cognito_patch_enabled ? 1 : 0
 
-  input = "${aws_cloudfront_distribution.this.domain_name}::${local.cognito_patch_callback_url}"
+  input = "${aws_cloudfront_distribution.this.domain_name}::${local.cognito_patch_callback_url}::${join(",", sort(var.cognito_extra_callback_urls))}"
 
   lifecycle {
     action_trigger {

@@ -106,6 +106,17 @@ variable "cognito_callback_patch_zip_path" {
   default     = ""
 }
 
+variable "cognito_extra_callback_urls" {
+  description = "Additional callback URLs merged onto the Cognito web client alongside the CloudFront `/authenticate/` URL, e.g. `http://localhost:5173/authenticate/` so local `pnpm dev` and `coa-skills/control-plane/scripts/coa_login.py --client web` can sign in. Mirrors the CDK web-stack, which adds that URL on dev only."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for u in var.cognito_extra_callback_urls : can(regex("^(https://|http://localhost(:[0-9]+)?/)", u))])
+    error_message = "Each extra callback URL must be https:// or an http://localhost[:port]/ loopback URL."
+  }
+}
+
 variable "cognito_hosted_ui_origin" {
   description = "Full origin (scheme + host) of the Cognito hosted UI domain, e.g. `https://coa-dev-auth-697621333100.auth.us-east-1.amazoncognito.com`. Added to the CSP connect-src allowlist so the SPA can POST to /oauth2/token. Empty string when Cognito is not the IdP (OIDC mode)."
   type        = string

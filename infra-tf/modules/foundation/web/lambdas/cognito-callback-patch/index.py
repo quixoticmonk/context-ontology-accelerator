@@ -16,7 +16,8 @@ Event schema:
         "user_pool_id":  "us-east-1_ABCDEF",
         "client_id":     "1a2b3c4d",
         "callback_url":  "https://d1uez2kb8lo309.cloudfront.net/authenticate/",
-        "logout_url":    "https://d1uez2kb8lo309.cloudfront.net/"
+        "logout_url":    "https://d1uez2kb8lo309.cloudfront.net/",
+        "extra_callback_urls": ["http://localhost:5173/authenticate/"]   # optional
     }
 """
 
@@ -44,6 +45,9 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     client_id = event["client_id"]
     callback_url = event["callback_url"]
     logout_url = event.get("logout_url", callback_url.rsplit("/authenticate", 1)[0] + "/")
+    # Optional extra callbacks, e.g. http://localhost:5173/authenticate/ on
+    # dev for local `pnpm dev` and coa_login.py --client web.
+    wanted_cb = {callback_url, *(event.get("extra_callback_urls") or [])}
 
     client = boto3.client("cognito-idp", region_name=REGION)
     desc = client.describe_user_pool_client(
@@ -53,11 +57,11 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
     current_cb = set(upc.get("CallbackURLs") or [])
     current_lo = set(upc.get("LogoutURLs") or [])
-    if callback_url in current_cb and logout_url in current_lo:
+    if wanted_cb <= current_cb and logout_url in current_lo:
         log.info("callback + logout already registered; no update needed")
         return {"changed": False, "callback_url": callback_url}
 
-    new_cb = sorted(current_cb | {callback_url})
+    new_cb = sorted(current_cb | wanted_cb)
     new_lo = sorted(current_lo | {logout_url})
 
     payload = {k: v for k, v in upc.items() if k not in _READ_ONLY_FIELDS}

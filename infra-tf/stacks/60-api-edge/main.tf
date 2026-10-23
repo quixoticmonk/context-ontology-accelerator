@@ -163,8 +163,11 @@ module "web" {
   user_pool_id                    = var.idp_type != "OIDC" ? nonsensitive(data.aws_ssm_parameter.user_pool_id[0].value) : ""
   userpool_client_id              = var.idp_type != "OIDC" ? nonsensitive(data.aws_ssm_parameter.userpool_client_id[0].value) : ""
   cognito_callback_patch_zip_path = "${path.root}/../../artifacts/lambdas/cognito-callback-patch.zip"
-  cognito_hosted_ui_origin        = var.idp_type != "OIDC" ? "https://${nonsensitive(data.aws_ssm_parameter.userpool_domain[0].value)}.auth.${var.region}.amazoncognito.com" : ""
-  api_cors_patch_zip_path         = "${path.root}/../../artifacts/lambdas/api-cors-patch.zip"
+  # Dev only, matching CDK web-stack: lets local `pnpm dev` (Vite on 5173)
+  # and coa_login.py --client web complete the OAuth redirect.
+  cognito_extra_callback_urls = var.env == "dev" ? ["http://localhost:5173/authenticate/"] : []
+  cognito_hosted_ui_origin    = var.idp_type != "OIDC" ? "https://${nonsensitive(data.aws_ssm_parameter.userpool_domain[0].value)}.auth.${var.region}.amazoncognito.com" : ""
+  api_cors_patch_zip_path     = "${path.root}/../../artifacts/lambdas/api-cors-patch.zip"
 }
 
 # ── Stack-added SSM writes for observability ─────────────────────────
