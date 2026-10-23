@@ -38,6 +38,16 @@ variable "bedrock_grounding_llm_model_id" {
   default     = null
 }
 
+variable "idempotency_table_arn" {
+  description = "ARN of the shared idempotency-record DynamoDB table (from 10-foundation SSM /authnz/idempotency-table-arn). Create-operation Lambdas get Get/Put/Update/DeleteItem on it only."
+  type        = string
+}
+
+variable "idempotency_table_name" {
+  description = "Name of the shared idempotency-record DynamoDB table (from 10-foundation SSM /authnz/idempotency-table-name). Injected as IDEMPOTENCY_TABLE for coa_common.idempotency."
+  type        = string
+}
+
 variable "oops_endpoint" {
   description = "Optional OoPS! (Ontology Pitfall Scanner) endpoint for Tier-3 validation. The validator sends the serialised ontology to this URL, so it is opt-in: when empty, the OOPS_ENDPOINT env var is omitted and the validator makes no request. HTTPS required — the scan POSTs the whole ontology."
   type        = string

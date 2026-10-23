@@ -43,6 +43,7 @@ locals {
       RESOURCE_PREFIX              = "${var.name_prefix}-"
       TAG_PREFIX                   = var.resource_prefix
       DELETION_STATE_MACHINE_ARN   = aws_sfn_state_machine.namespace_deletion.arn
+      IDEMPOTENCY_TABLE            = var.idempotency_table_name
     },
     var.ontology_engine_endpoint != null ? { ONTOLOGY_ENGINE_ENDPOINT = var.ontology_engine_endpoint } : {},
     var.vkg_cluster_arn != null ? { VKG_CLUSTER_ARN = var.vkg_cluster_arn } : {},
@@ -425,6 +426,7 @@ resource "aws_lambda_function" "grants_api" {
       ROLES_TABLE                  = var.roles_table_name
       RESOURCE_ROLE_MAPPINGS_TABLE = var.resource_role_mappings_table_name
       ALLOWED_ORIGIN               = var.allowed_origin
+      IDEMPOTENCY_TABLE            = var.idempotency_table_name
     }
   }
 

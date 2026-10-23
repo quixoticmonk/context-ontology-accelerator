@@ -19,6 +19,8 @@ module "sources" {
   db_enrichment_image_tag_file       = "${path.root}/../../artifacts/images/sources-db-enrichment.tag"
   db_scan_enrichment_timeout_minutes = 120
   ecs_security_group_id              = local.ecs_security_group_id
+  idempotency_table_arn              = local.idempotency_table_arn
+  idempotency_table_name             = local.idempotency_table_name
   kg_build_ecr_repository_url        = local.kg_build_ecr_repository_url
   kg_build_image_tag_file            = "${path.root}/../../artifacts/images/sources-kg-build.tag"
   lakeformation_admin_zip_path       = "${path.root}/../../artifacts/lambdas/lakeformation-admin.zip"

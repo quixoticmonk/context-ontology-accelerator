@@ -34,6 +34,8 @@ locals {
   resource_role_mappings_table_arn  = data.aws_ssm_parameter.resource_role_mappings_table_arn.value
   resource_role_mappings_table_name = data.aws_ssm_parameter.resource_role_mappings_table_name.value
   roles_table_arn                   = data.aws_ssm_parameter.roles_table_arn.value
+  idempotency_table_arn             = data.aws_ssm_parameter.idempotency_table_arn.value
+  idempotency_table_name            = data.aws_ssm_parameter.idempotency_table_name.value
   roles_table_name                  = data.aws_ssm_parameter.roles_table_name.value
 }
 
@@ -49,6 +51,11 @@ data "aws_ssm_parameter" "resource_role_mappings_table_arn" { name = "${local.ss
 data "aws_ssm_parameter" "resource_role_mappings_table_name" { name = "${local.ssm_prefix}/authnz/resource-role-mappings-table-name" }
 data "aws_ssm_parameter" "roles_table_arn" { name = "${local.ssm_prefix}/authnz/roles-table-arn" }
 data "aws_ssm_parameter" "roles_table_name" { name = "${local.ssm_prefix}/authnz/roles-table-name" }
+
+# Idempotency-record table (10-foundation authnz) — clientToken retry records
+# for the create operations this stack's Lambdas serve.
+data "aws_ssm_parameter" "idempotency_table_arn" { name = "${local.ssm_prefix}/authnz/idempotency-table-arn" }
+data "aws_ssm_parameter" "idempotency_table_name" { name = "${local.ssm_prefix}/authnz/idempotency-table-name" }
 
 # ── ENI pre-warm gate ────────────────────────────────────────────────
 # Reading this parameter blocks `plan` until 10-foundation has published

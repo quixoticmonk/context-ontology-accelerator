@@ -307,6 +307,7 @@ resource "aws_lambda_function" "sources_api" {
   environment {
     variables = {
       SOURCES_TABLE                   = aws_dynamodb_table.sources.name
+      IDEMPOTENCY_TABLE               = var.idempotency_table_name
       SOURCE_SCAN_JOBS_TABLE          = aws_dynamodb_table.source_scan_jobs.name
       NAMESPACES_TABLE                = var.namespaces_table_name
       SCAN_QUEUE_URL                  = aws_sqs_queue.db_scan.url

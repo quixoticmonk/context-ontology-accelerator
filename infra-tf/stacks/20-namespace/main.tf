@@ -11,6 +11,8 @@ module "namespace" {
   cache_invalidation_table_name     = local.cache_invalidation_table_name
   cloud_map_namespace_id            = local.cloud_map_namespace_id
   control_plane_zip_path            = "${path.root}/../../artifacts/lambdas/control-plane.zip"
+  idempotency_table_arn             = local.idempotency_table_arn
+  idempotency_table_name            = local.idempotency_table_name
   lambda_security_group_id          = local.lambda_security_group_id
   name_prefix                       = local.name_prefix
   ontology_bucket_name              = local.ontology_bucket_name

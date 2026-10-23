@@ -16,6 +16,16 @@ output "cache_invalidation_table_stream_arn" {
   value       = aws_dynamodb_table.cache_invalidation.stream_arn
 }
 
+output "idempotency_table_arn" {
+  description = "ARN of the idempotency-record table (clientToken retry records)."
+  value       = aws_dynamodb_table.idempotency.arn
+}
+
+output "idempotency_table_name" {
+  description = "Name of the idempotency-record table (clientToken retry records)."
+  value       = aws_dynamodb_table.idempotency.name
+}
+
 output "resource_role_mappings_table_arn" {
   description = "ARN of the resource-role-mappings table."
   value       = aws_dynamodb_table.resource_role_mappings.arn

@@ -77,6 +77,16 @@ variable "db_enrichment_image_tag_file" {
   default     = null
 }
 
+variable "idempotency_table_arn" {
+  description = "ARN of the shared idempotency-record DynamoDB table (from 10-foundation SSM /authnz/idempotency-table-arn). Create-operation Lambdas get Get/Put/Update/DeleteItem on it only."
+  type        = string
+}
+
+variable "idempotency_table_name" {
+  description = "Name of the shared idempotency-record DynamoDB table (from 10-foundation SSM /authnz/idempotency-table-name). Injected as IDEMPOTENCY_TABLE for coa_common.idempotency."
+  type        = string
+}
+
 variable "kg_build_ecr_repository_url" {
   description = "ECR repository URL for the sources-doc-kg-build image (from stack 25-ecr)."
   type        = string

@@ -57,6 +57,10 @@ locals {
   neptune_endpoint           = data.aws_ssm_parameter.neptune_endpoint.value
   neptune_cluster_arn        = data.aws_ssm_parameter.neptune_cluster_arn.value
 
+  # Idempotency handoff (10-foundation authnz)
+  idempotency_table_arn  = data.aws_ssm_parameter.idempotency_table_arn.value
+  idempotency_table_name = data.aws_ssm_parameter.idempotency_table_name.value
+
   # Namespace handoff
   namespaces_table_name        = data.aws_ssm_parameter.namespaces_table_name.value
   smus_domain_id               = data.aws_ssm_parameter.smus_domain_id.value
@@ -87,6 +91,11 @@ data "aws_ssm_parameter" "neptune_endpoint" { name = "${local.ssm_prefix}/storag
 data "aws_ssm_parameter" "neptune_cluster_arn" { name = "${local.ssm_prefix}/storage/neptune-cluster-arn-full" }
 
 data "aws_ssm_parameter" "namespaces_table_name" { name = "${local.ssm_prefix}/namespace/namespaces-table-name" }
+
+# Idempotency-record table (10-foundation authnz) — clientToken retry records
+# for the create operations this stack's Lambdas serve.
+data "aws_ssm_parameter" "idempotency_table_arn" { name = "${local.ssm_prefix}/authnz/idempotency-table-arn" }
+data "aws_ssm_parameter" "idempotency_table_name" { name = "${local.ssm_prefix}/authnz/idempotency-table-name" }
 data "aws_ssm_parameter" "smus_domain_id" { name = "${local.ssm_prefix}/smus/domain-id" }
 data "aws_ssm_parameter" "smus_project_access_role_arn" { name = "${local.ssm_prefix}/smus/dz-project-access-role-arn" }
 

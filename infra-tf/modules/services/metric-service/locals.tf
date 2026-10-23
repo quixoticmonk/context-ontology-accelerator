@@ -89,6 +89,7 @@ locals {
       ALLOWED_ORIGIN       = var.allowed_origin
       IMPORT_QUEUE_URL     = aws_sqs_queue.import.url
       IMPORT_JOBS_TABLE    = aws_dynamodb_table.import_jobs.name
+      IDEMPOTENCY_TABLE    = var.idempotency_table_name
     },
   )
 

@@ -7,6 +7,7 @@ locals {
   roles_table_name                  = "${var.name_prefix}-roles"
   resource_role_mappings_table_name = "${var.name_prefix}-resource-role-mappings"
   cache_invalidation_table_name     = "${var.name_prefix}-cache-invalidation"
+  idempotency_table_name            = "${var.name_prefix}-idempotency"
 
   # ── Removal protection ─────────────────────────────────────────────
   # CDK uses RETAIN removal policy in prod and DESTROY elsewhere. The

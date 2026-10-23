@@ -41,6 +41,10 @@ locals {
   athena_spill_bucket_arn    = data.aws_ssm_parameter.athena_spill_bucket_arn.value
   athena_spill_bucket_name   = data.aws_ssm_parameter.athena_spill_bucket_name.value
 
+  # Idempotency handoff (10-foundation authnz)
+  idempotency_table_arn  = data.aws_ssm_parameter.idempotency_table_arn.value
+  idempotency_table_name = data.aws_ssm_parameter.idempotency_table_name.value
+
   # Namespace handoff
   namespaces_table_arn         = data.aws_ssm_parameter.namespaces_table_arn.value
   namespaces_table_name        = data.aws_ssm_parameter.namespaces_table_name.value
@@ -76,6 +80,11 @@ data "aws_ssm_parameter" "athena_spill_bucket_name" { name = "${local.ssm_prefix
 
 data "aws_ssm_parameter" "namespaces_table_arn" { name = "${local.ssm_prefix}/namespace/namespaces-table-arn" }
 data "aws_ssm_parameter" "namespaces_table_name" { name = "${local.ssm_prefix}/namespace/namespaces-table-name" }
+
+# Idempotency-record table (10-foundation authnz) — clientToken retry records
+# for CreateSource.
+data "aws_ssm_parameter" "idempotency_table_arn" { name = "${local.ssm_prefix}/authnz/idempotency-table-arn" }
+data "aws_ssm_parameter" "idempotency_table_name" { name = "${local.ssm_prefix}/authnz/idempotency-table-name" }
 data "aws_ssm_parameter" "smus_domain_id" { name = "${local.ssm_prefix}/smus/domain-id" }
 data "aws_ssm_parameter" "smus_project_access_role_arn" { name = "${local.ssm_prefix}/smus/dz-project-access-role-arn" }
 

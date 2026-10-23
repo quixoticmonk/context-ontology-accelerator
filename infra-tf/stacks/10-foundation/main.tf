@@ -115,7 +115,7 @@ resource "aws_ssm_parameter" "eni_warm_ready" {
 # Storage module already writes all its outputs to SSM. auth-idp writes
 # user_pool_id/userpool_client_id/mcp_client_id/issuer/group_token_name.
 # authnz writes roles_table_name/resource_role_mappings_table_name/
-# cache_invalidation_table_name. Guardrail writes guardrail_id/version
+# cache_invalidation_table_name/idempotency_table_name. Guardrail writes guardrail_id/version
 # + retrieval_guardrail_id/version. Everything downstream needs is
 # already there — additions below are ARNs (modules write names only).
 
@@ -147,6 +147,12 @@ resource "aws_ssm_parameter" "cache_invalidation_table_arn" {
   name  = "${local.ssm_prefix}/authnz/cache-invalidation-table-arn"
   type  = "String"
   value = module.authnz.cache_invalidation_table_arn
+}
+
+resource "aws_ssm_parameter" "idempotency_table_arn" {
+  name  = "${local.ssm_prefix}/authnz/idempotency-table-arn"
+  type  = "String"
+  value = module.authnz.idempotency_table_arn
 }
 
 resource "aws_ssm_parameter" "ontology_bucket_arn" {

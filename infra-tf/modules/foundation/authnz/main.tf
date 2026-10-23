@@ -8,6 +8,8 @@
 #   - resource-role-mappings — principal <-> resource <-> role grants with
 #                              PrincipalIndex and NamespaceGrantsIndex GSIs
 #   - cache-invalidation     — version counter for auth cache busting
+#   - idempotency            — clientToken records that make the API's create
+#                              operations retry-safe (PK only, TTL on `ttl`)
 #
 # All tables use PAY_PER_REQUEST billing, AWS-managed encryption, and PITR.
 # Streams (NEW_AND_OLD_IMAGES) are enabled on roles and resource-role-mappings
@@ -180,6 +182,49 @@ resource "aws_dynamodb_table" "cache_invalidation" {
   }
 }
 
+# ── Idempotency ────────────────────────────────────────────────────
+# One record per (operation, caller, scope, clientToken) hash, written by
+# coa_common.idempotency. Records expire after 24 h via TTL on `ttl`.
+# Consumers (namespace + grants APIs, sources API, metric API, ontology
+# api-proxy) read the name/ARN from SSM and get Get/Put/Update/DeleteItem
+# on this table only. Ported from AuthnzStack IdempotencyTable (COA v0.3.7).
+resource "aws_dynamodb_table" "idempotency" {
+  name         = local.idempotency_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+
+  deletion_protection_enabled = local.deletion_protection
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = data.aws_kms_alias.dynamodb.target_key_arn
+  }
+
+  tags = {
+    Component = var.component
+  }
+
+  # See `aws_dynamodb_table.roles` above — same DDB UpdateTable SSE
+  # no-op rejection applies here.
+  lifecycle {
+    ignore_changes = [server_side_encryption]
+  }
+}
+
 # ── Group -> role seed items ───────────────────────────────────────
 # One item per (group, role) pair from claims_mappings, written into
 # resource-role-mappings. Item shape and key derivations mirror the
@@ -285,6 +330,16 @@ resource "aws_ssm_parameter" "cache_invalidation_table_name" {
   name  = "${var.ssm_prefix}/authnz/cache-invalidation-table-name"
   type  = "String"
   value = aws_dynamodb_table.cache_invalidation.name
+
+  tags = {
+    Component = var.component
+  }
+}
+
+resource "aws_ssm_parameter" "idempotency_table_name" {
+  name  = "${var.ssm_prefix}/authnz/idempotency-table-name"
+  type  = "String"
+  value = aws_dynamodb_table.idempotency.name
 
   tags = {
     Component = var.component

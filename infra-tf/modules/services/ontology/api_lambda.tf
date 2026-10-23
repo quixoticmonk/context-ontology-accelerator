@@ -99,6 +99,7 @@ resource "aws_lambda_function" "api_proxy" {
       NEPTUNE_ENDPOINT         = var.neptune_endpoint
       OPENSEARCH_ENDPOINT      = var.opensearch_endpoint
       ALLOWED_ORIGIN           = var.allowed_origin
+      IDEMPOTENCY_TABLE        = var.idempotency_table_name
     }
   }
 

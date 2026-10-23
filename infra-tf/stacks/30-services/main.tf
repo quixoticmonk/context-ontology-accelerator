@@ -13,6 +13,8 @@ module "metric_service" {
   aoss_security_group_id       = local.aoss_security_group_id
   bedrock_embed_model_id       = var.bedrock_embed_model_id
   brand_env                    = local.brand_env
+  idempotency_table_arn        = local.idempotency_table_arn
+  idempotency_table_name       = local.idempotency_table_name
   lambda_security_group_id     = local.lambda_security_group_id
   metric_service_zip_path      = "${path.root}/../../artifacts/lambdas/metric-service.zip"
   name_prefix                  = local.name_prefix
@@ -65,6 +67,8 @@ module "ontology" {
   bedrock_induction_llm_model_id = var.bedrock_induction_llm_model_id
   ecr_repository_url             = local.ontology_ecr_repository_url
   ecs_security_group_id          = local.ecs_security_group_id
+  idempotency_table_arn          = local.idempotency_table_arn
+  idempotency_table_name         = local.idempotency_table_name
   image_tag_file                 = "${path.root}/../../artifacts/images/ontology-engine.tag"
   lambda_security_group_id       = local.lambda_security_group_id
   logs_kms_key_arn               = local.logs_kms_key_arn

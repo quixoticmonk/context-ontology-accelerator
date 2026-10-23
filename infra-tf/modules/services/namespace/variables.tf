@@ -30,6 +30,16 @@ variable "control_plane_zip_path" {
   type        = string
 }
 
+variable "idempotency_table_arn" {
+  description = "ARN of the shared idempotency-record DynamoDB table (from 10-foundation SSM /authnz/idempotency-table-arn). Create-operation Lambdas get Get/Put/Update/DeleteItem on it only."
+  type        = string
+}
+
+variable "idempotency_table_name" {
+  description = "Name of the shared idempotency-record DynamoDB table (from 10-foundation SSM /authnz/idempotency-table-name). Injected as IDEMPOTENCY_TABLE for coa_common.idempotency."
+  type        = string
+}
+
 variable "lambda_security_group_id" {
   description = "Lambda security group ID (from network module)."
   type        = string
