@@ -117,7 +117,7 @@ docs:
 	else echo "⚠ docs/ not available (stripped from public mirror); see external-docs/"; fi
 
 web-dev:
-	cd packages/web-app && pnpm install && pnpm dev
+	cd packages/web-app && pnpm install --frozen-lockfile && pnpm dev
 
 vkg-dev:
 	docker build -t vkg-local packages/vkg/

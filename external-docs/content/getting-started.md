@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3.12 (pinned via `.python-version` — uv will use this automatically)
-- Node.js 22+ (for the web-app and Smithy TypeScript client build)
+- Node.js 22.23.4+ (for the web-app and Smithy TypeScript client build)
 - [pnpm](https://pnpm.io/) (Node package manager — installed via `mise` or `npm install -g pnpm`)
 - Docker (for local dev services and container image builds)
 - Java 17+ and Gradle (for Smithy codegen)
@@ -207,7 +207,7 @@ If you don't edit `.smithy` files, you don't need to run this.
 cd packages/web-app
 cp public/runtime-config.example.json public/runtime-config.json
 # Edit runtime-config.json with your OIDC provider details (authority, clientId)
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev        # opens at http://localhost:5173
 ```
 

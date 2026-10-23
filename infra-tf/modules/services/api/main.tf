@@ -136,16 +136,23 @@ resource "aws_api_gateway_stage" "this" {
     # API Gateway rejects access-log configs that don't include either
     # $context.requestId or $context.extendedRequestId — it's the only
     # way to correlate an access-log line back to an execution log.
+    #
+    # principalId: this API uses a custom Lambda authorizer, so
+    # $context.identity.caller/user are always "-"; the real caller is
+    # $context.authorizer.principalId (the validated token's email, set by
+    # the authorizer's _build_policy). Ported from api-stack.ts custom
+    # access-log format (COA v0.3.7, V2298834436).
     format = jsonencode({
       requestId      = "$context.requestId"
-      caller         = "$context.identity.caller"
-      httpMethod     = "$context.httpMethod"
       ip             = "$context.identity.sourceIp"
-      protocol       = "$context.protocol"
       requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
       resourcePath   = "$context.resourcePath"
-      responseLength = "$context.responseLength"
       status         = "$context.status"
+      protocol       = "$context.protocol"
+      responseLength = "$context.responseLength"
+      principalId    = "$context.authorizer.principalId"
+      caller         = "$context.identity.caller"
       user           = "$context.identity.user"
     })
   }

@@ -6,8 +6,8 @@
 > and connectors stay in sync with upstream via periodic release-tag
 > syncs; the upstream `infra/` tree is deliberately absent.
 >
-> **Synced to upstream:** [`v0.3.6`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.6)
-> (commit `00fed8d`, synced 2026-10-15 from
+> **Synced to upstream:** [`v0.3.7`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.7)
+> (commit `5c432ab`, synced 2026-10-23 from
 > [github.com/aws/context-ontology-accelerator](https://github.com/aws/context-ontology-accelerator)).
 > Sync procedure: [`COA_sync_releases_TF.md`](COA_sync_releases_TF.md).
 > Each sync commit carries an `Upstream-Release:` git trailer so the
@@ -29,7 +29,7 @@ Access is governed by namespace isolation and role-based access control: namespa
 
 ### Prerequisites
 
-- Python 3.12, Node.js 22+, Docker
+- Python 3.12, Node.js 22.23.4+, Docker
 - [pnpm](https://pnpm.io/) (Node package manager — installed via `mise` or `npm install -g pnpm`)
 - Java 17–24 (21 recommended) and Gradle (for Smithy codegen). JDK 25+ is not
   supported yet — the Smithy toolchain fails on it. `mise install` provides a
@@ -76,6 +76,7 @@ semantic-context/
 ├── libs/common/         # Shared Python config, logging, exceptions
 ├── libs/ts-shared/      # Shared TypeScript interfaces and constants
 ├── connectors/          # Athena federation connectors: toolkit, reference connector, Databricks
+├── coa-skills/          # Agent skills for driving a deployed COA (control-plane)
 ├── scripts/             # CI-agnostic build/test/deploy scripts
 └── external-docs/       # Published documentation (getting-started, deployment guides)
 ```
