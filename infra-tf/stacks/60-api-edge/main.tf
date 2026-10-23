@@ -149,12 +149,13 @@ module "web" {
     ui_certificate_arn = var.ui_certificate_arn
     hosted_zone_id     = var.hosted_zone_id
   } : null
-  is_cognito_mode      = var.idp_type != "OIDC"
-  name_prefix          = local.name_prefix
-  serve_runtime_arn    = local.serve_runtime_arn
-  ssm_prefix           = local.ssm_prefix
-  web_acl_arn          = var.cloudfront_web_acl_arn
-  website_content_path = "${path.root}/../../../packages/web-app/dist"
+  edge_auth_version_arn = var.edge_auth_version_arn
+  is_cognito_mode       = var.idp_type != "OIDC"
+  name_prefix           = local.name_prefix
+  serve_runtime_arn     = local.serve_runtime_arn
+  ssm_prefix            = local.ssm_prefix
+  web_acl_arn           = var.cloudfront_web_acl_arn
+  website_content_path  = "${path.root}/../../../packages/web-app/dist"
 
   # Wire the Cognito callback patch — CloudFront domain isn't known
   # until this stack applies, so patching the pool client is deferred

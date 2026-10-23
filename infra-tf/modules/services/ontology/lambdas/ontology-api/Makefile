@@ -42,7 +42,10 @@ PIP_DEPS := \
   "structlog>=24.0" \
   "cryptography>=43.0" \
   "PyJWT>=2.9.0" \
-  "requests>=2.32.0"
+  "requests>=2.32.0" \
+  "certifi>=2026.10.19"
+# certifi: first release without the roots behind the compromised emSign
+# intermediates (COA v0.3.7).
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build

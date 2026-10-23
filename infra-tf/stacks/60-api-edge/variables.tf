@@ -21,6 +21,12 @@ variable "cloudfront_web_acl_arn" {
   default = null
 }
 
+variable "edge_auth_version_arn" {
+  description = "Versioned ARN (us-east-1) of a Lambda@Edge viewer-request authorizer (e.g. cloudfront-oidc-auth) that gates the web distribution. Null leaves the distribution ungated."
+  type        = string
+  default     = null
+}
+
 variable "env" {
   type    = string
   default = "dev"

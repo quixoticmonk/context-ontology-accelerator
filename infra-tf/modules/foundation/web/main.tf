@@ -323,6 +323,15 @@ resource "aws_cloudfront_distribution" "this" {
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+
+    dynamic "lambda_function_association" {
+      for_each = local.edge_auth_associations
+      content {
+        event_type   = lambda_function_association.value
+        lambda_arn   = var.edge_auth_version_arn
+        include_body = false
+      }
+    }
   }
 
   # runtime-config.json must never be cached — it carries per-environment
@@ -335,6 +344,40 @@ resource "aws_cloudfront_distribution" "this" {
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+
+    dynamic "lambda_function_association" {
+      for_each = local.edge_auth_associations
+      content {
+        event_type   = lambda_function_association.value
+        lambda_arn   = var.edge_auth_version_arn
+        include_body = false
+      }
+    }
+  }
+
+  # The edge authorizer's own routes (login / callback / logout), only when
+  # edge_auth_version_arn is set. Caching MUST be disabled: each response
+  # carries a unique OAuth `state`, so a cached one would hand a viewer
+  # someone else's login attempt. The function answers these itself; the S3
+  # origin behind them is never reached. Ported from public-ui-construct.ts
+  # (COA v0.3.7).
+  dynamic "ordered_cache_behavior" {
+    for_each = var.edge_auth_version_arn != null ? ["/__auth/*"] : []
+    content {
+      path_pattern               = ordered_cache_behavior.value
+      target_origin_id           = "s3-website"
+      viewer_protocol_policy     = "redirect-to-https"
+      allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+      cached_methods             = ["GET", "HEAD"]
+      cache_policy_id            = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+      response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+
+      lambda_function_association {
+        event_type   = "viewer-request"
+        lambda_arn   = var.edge_auth_version_arn
+        include_body = false
+      }
+    }
   }
 
   # SPA routing: serve index.html for 403/404 so client-side routing works.

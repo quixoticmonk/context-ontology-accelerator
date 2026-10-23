@@ -44,6 +44,17 @@ variable "custom_domain" {
   default = null
 }
 
+variable "edge_auth_version_arn" {
+  description = "Versioned ARN of a Lambda@Edge viewer-request authorizer (e.g. the cloudfront-oidc-auth function) that gates the distribution. When set, it is associated with EVERY cache behavior as viewer-request so no path reaches the origin unauthenticated, plus a caching-disabled `/__auth/*` behavior for the authorizer's own login/callback/logout routes. MUST be a published version (never $LATEST) of a function in us-east-1. Null leaves the distribution ungated."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.edge_auth_version_arn == null || can(regex("^arn:aws[a-z-]*:lambda:us-east-1:[0-9]{12}:function:[A-Za-z0-9_-]+:[0-9]+$", var.edge_auth_version_arn))
+    error_message = "edge_auth_version_arn must be a versioned Lambda ARN in us-east-1 (arn:aws:lambda:us-east-1:<account>:function:<name>:<version>)."
+  }
+}
+
 variable "is_cognito_mode" {
   description = "Whether the auth stack provisioned a Cognito User Pool. In the CDK this gated a callback-URL patch on the user pool client; that patch is owned by the auth-idp module here, so this flag is retained for parity and drives no resource in this module."
   type        = bool

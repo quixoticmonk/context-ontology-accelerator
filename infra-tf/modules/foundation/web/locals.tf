@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 locals {
+  # Optional Lambda@Edge viewer-request authorizer, attached to EVERY cache
+  # behavior so no path reaches the origin without a valid session — a
+  # behavior left ungated is an open door to the same origin.
+  edge_auth_associations = var.edge_auth_version_arn != null ? ["viewer-request"] : []
+
   account_id = data.aws_caller_identity.this.account_id
   region     = data.aws_region.this.region
 

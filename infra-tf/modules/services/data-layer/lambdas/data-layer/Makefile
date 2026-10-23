@@ -39,7 +39,15 @@ SRC_DIRS := \
 # pip requirements — matches CDK's pipDeps in data-layer-stack.ts.
 # The package's own requirements.txt is empty; these are the transitive
 # deps pulled in by importing coa_common.
-PIP_DEPS := pydantic pydantic-settings structlog
+# certifi: runtime boto3 prefers a bundled certifi to the CA bundle
+# botocore ships; 2026.10.19 is the first certifi without the roots behind
+# the compromised emSign intermediates (COA v0.3.7). Each spec is quoted so
+# `>=` is not read as a shell redirect.
+PIP_DEPS := \
+  "pydantic" \
+  "pydantic-settings" \
+  "structlog" \
+  "certifi>=2026.10.19"
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build
