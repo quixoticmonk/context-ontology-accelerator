@@ -15,10 +15,10 @@ end-to-end.
 | AWS Account | — | Target deployment account |
 | AWS CLI v2 | 2.x | Credential management |
 | Terraform | 1.14+ | Infrastructure provisioning (`40-sources` uses lifecycle action blocks — 1.14 required) |
-| Node.js | 22+ | Web-app build |
+| Node.js | 22.23.4+ | Web-app build |
 | Python | 3.12 | Backend services |
 | pnpm | 10+ | TypeScript package management (workspace-aware; npm/yarn will not work) |
-| uv | 0.4+ | Python package management |
+| uv | 0.13.4+ | Python package management (`pyproject.toml` sets `required-version`: older uv embeds roots that trust the compromised emSign intermediates) |
 | Java | 17+ | Smithy code generation |
 | Docker | — | Container image builds |
 | jq | — | Deploy helper scripts |
@@ -241,7 +241,7 @@ curl https://mise.run | sh
 mise install
 
 # make setup runs smithy-generate.sh (make generate) + setup-dev.sh
-# (uv sync --all-packages, pnpm install, pre-commit hooks)
+# (uv sync --all-packages, pnpm install --frozen-lockfile, pre-commit hooks)
 make setup
 ```
 
@@ -959,8 +959,9 @@ gone.
 
 **Cause:** AgentCore Runtime provisions VPC network interfaces (ENIs)
 directly, outside Terraform. Runtime deletion doesn't synchronously release
-them — in practice this has been observed to take **several hours, and
-sometimes days**, not the few minutes originally expected. Terraform has no
+them: AWS documents that the ENIs may persist for **up to 8 hours** after
+the runtime is deleted, and they are shared across runtimes that use the
+same subnets and security group. Terraform has no
 visibility into these ENIs and tries to delete the security group
 immediately, before they're gone.
 
@@ -1142,7 +1143,7 @@ the Terraform module under `infra-tf/modules/`. Substitute your own
 | **Amazon ECS on Fargate** | Long-running containers: enrichment, doc ingestion, Ontop VKG | `services/sources`, `services/ontology`, `services/vkg` |
 | **Amazon Neptune** | Knowledge-graph store (RDF/SPARQL) | `foundation/storage` |
 | **Amazon OpenSearch Serverless** | Vector search for retrieval and grounding | `foundation/storage` (collection); every service module (access policies) |
-| **Amazon DynamoDB** | Job/proposal state, roles, grants, Cedar policies, sessions | `foundation/authnz`, `services/api`, `services/sources`, `services/ontology`, `services/namespace`, `services/metric-service`, `services/serve`, `services/mcp` |
+| **Amazon DynamoDB** | Job/proposal state, roles, grants, Cedar policies, sessions, `clientToken` retry records (`foundation/authnz` idempotency table: on-demand, 24-hour TTL; if it is unreachable, creates that carry a `clientToken` return `503`) | `foundation/authnz`, `services/api`, `services/sources`, `services/ontology`, `services/namespace`, `services/metric-service`, `services/serve`, `services/mcp` |
 | **Amazon S3** | Ontology artifacts, staged documents, web assets, access logs | `foundation/storage`, `services/sources`, `services/ontology`, `services/vkg`, `services/metric-service`, `foundation/web` |
 | **Amazon Bedrock** | All LLM and embedding inference | Called by `services/ontology`, `services/sources`, `services/serve`, `services/mcp` |
 | **Bedrock Guardrails** | Content/PII filtering on guarded calls | `foundation/guardrail` |
@@ -1267,7 +1268,7 @@ deploy that looks stuck is usually waiting on one of them — check
 intervening.
 
 **Teardown is not symmetric with deploy.** AgentCore Runtime provisions ENIs
-outside Terraform and can hold them for hours to days after runtime deletion,
+outside Terraform and holds them for up to 8 hours after runtime deletion,
 blocking security-group deletion. VKG creates ECS services outside Terraform
 (one per namespace, via the ontology-reload Lambda), and DataZone domains
 need a force-delete. Budget for teardown taking longer than deploy, and see
