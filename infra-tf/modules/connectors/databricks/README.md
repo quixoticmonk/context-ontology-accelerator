@@ -168,3 +168,94 @@ at COA v0.3.5. If you need to port a feature upstream added later,
 check the CDK code first — the Java jar is the shared behaviour, and
 anything above it (env wiring, grants, SSM) is translated into this
 module.
+
+<!-- BEGIN_TF_DOCS -->
+## Requirements
+
+| Name | Version |
+|------|---------|
+| terraform | >= 1.14 |
+| archive | ~> 2.4 |
+| aws | ~> 6.0 |
+| local | ~> 2.5 |
+
+## Providers
+
+| Name | Version |
+|------|---------|
+| archive | ~> 2.4 |
+| aws | ~> 6.0 |
+| local | ~> 2.5 |
+
+## Resources
+
+| Name | Type |
+|------|------|
+| [aws_cloudwatch_log_group.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_log_group) | resource |
+| [aws_iam_policy.managed_config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
+| [aws_iam_policy.secrets_env](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
+| [aws_iam_policy.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
+| [aws_iam_role.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
+| [aws_iam_role_policy_attachment.basic_execution](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
+| [aws_iam_role_policy_attachment.managed_config](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
+| [aws_iam_role_policy_attachment.secrets_env](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
+| [aws_iam_role_policy_attachment.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
+| [aws_iam_role_policy_attachment.vpc_access](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
+| [aws_kms_alias.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/kms_alias) | resource |
+| [aws_kms_key.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/kms_key) | resource |
+| [aws_kms_key_policy.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/kms_key_policy) | resource |
+| [aws_lambda_function.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function) | resource |
+| [aws_lambda_permission.invoke](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_permission) | resource |
+| [aws_s3_bucket.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
+| [aws_s3_bucket_lifecycle_configuration.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_lifecycle_configuration) | resource |
+| [aws_s3_bucket_policy.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_policy) | resource |
+| [aws_s3_bucket_policy.spill_with_invokers](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_policy) | resource |
+| [aws_s3_bucket_public_access_block.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_public_access_block) | resource |
+| [aws_s3_bucket_server_side_encryption_configuration.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_server_side_encryption_configuration) | resource |
+| [aws_s3_bucket_versioning.spill](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_versioning) | resource |
+| [aws_security_group.lambda](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
+| [aws_ssm_parameter.function_arn](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ssm_parameter) | resource |
+| [aws_ssm_parameter.role_arn](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ssm_parameter) | resource |
+| [local_file.staging](https://registry.terraform.io/providers/hashicorp/local/latest/docs/resources/file) | resource |
+
+## Inputs
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| jar\_path | Local filesystem path to the Databricks connector fat jar (built from connectors/databricks via `mvn package`, published as `databricks-connector-<version>.jar`). The module uploads it to a temp zip at plan time; keep the file stable so Lambda doesn't redeploy on every apply. | `string` | n/a | yes |
+| alarm\_topic\_arn | Optional SNS topic ARN. When set, every CloudWatch alarm this module creates publishes to it on breach. | `string` | `null` | no |
+| config\_source | Which configuration shape the connector reads at request time:  - `environment` (default) — single Databricks endpoint, config from Lambda   env vars (DATABRICKS\_WORKSPACE\_HOST, DATABRICKS\_WAREHOUSE\_ID,   DATABRICKS\_CATALOG, DATABRICKS\_SCHEMA, CREDENTIAL\_SECRET\_ARN).   Customer-deployed in the customer's own AWS account against one   workspace+warehouse.  - `coa-managed` — one Lambda serves EVERY DATABRICKS\_SQL\_WAREHOUSE   source in one COA environment. Config per source is resolved from   SSM Parameter Store under `/<resource_prefix>/<env>/connectors/   databricks/sources/<sourceId>`. The sources API (`infra-tf/modules/   services/sources`) owns writing those parameters. | `string` | `"environment"` | no |
+| credential\_kms\_key\_arn | Optional. Required when `credential_secret_arn` is encrypted with a customer-managed key — no existing grant covers it and every read fails `AccessDenied` without it. | `string` | `null` | no |
+| credential\_secret\_arn | `environment` mode only. Secrets Manager ARN pointing to a secret with either `{token: ...}` (personal access token) or `{client_id: ..., client_secret: ...}` (OAuth m2m). A secret carrying both is refused. | `string` | `null` | no |
+| databricks\_catalog | `environment` mode only. Unity Catalog name scoped by the credential. | `string` | `null` | no |
+| databricks\_max\_rows\_per\_table | Row ceiling the connector applies to any single table read. Must match the Java default (DEFAULT\_MAX\_ROWS\_PER\_TABLE in `coa_sources_connectors_databricks`) if left null, which is 2,000,000. Set higher only when a legitimately large table is being truncated. The `ConnectorRowsReturned` CloudWatch alarm threshold tracks this value. | `number` | `null` | no |
+| databricks\_schema | `environment` mode only. Default schema within the Unity Catalog. Required when the credential has access to more than one schema — scope exactly to what you intend to expose. | `string` | `null` | no |
+| databricks\_warehouse\_id | `environment` mode only. Databricks SQL Warehouse id. | `string` | `null` | no |
+| databricks\_workspace\_host | `environment` mode only. Databricks workspace host, e.g. `dbc-abcd-ef01.cloud.databricks.com`. | `string` | `null` | no |
+| env | Deployment environment name (e.g. `dev`, `prd`). Combined with `resource_prefix` to build the function name. In the COA-managed mode, SSM parameter paths are also scoped by this value. | `string` | `"dev"` | no |
+| log\_retention\_in\_days | CloudWatch Logs retention for `/aws/lambda/<function_name>`. Default 30 days matches the CDK. | `number` | `30` | no |
+| memory\_size\_mb | Lambda memory in MB. Default 3008 matches upstream — the connector reads the whole predicate-matching row set to answer `GROUP BY` (Athena federation can't express aggregation). | `number` | `3008` | no |
+| query\_role\_arns | IAM role ARNs allowed to invoke the connector Lambda and read its spill. In a COA-integrated deployment this is COA's serve runtime role plus the sources discovery role (reading /<prefix>/<env>/serve/runtime-role-arn and /<prefix>/<env>/sources/db-connector-role-arn from SSM). Leave empty for a connector-only test deploy. | `list(string)` | `[]` | no |
+| resource\_prefix | Deployment resource prefix, e.g. `coa`. Function name is `<resource_prefix>-<env>-databricks-coa-connector` for customer deployments or `<resource_prefix>-<env>-managed-databricks-coa-connector` for COA-managed. The `-managed-` segment is reserved. | `string` | `"coa"` | no |
+| retain\_spill\_on\_destroy | When true (prod convention), the spill bucket + CMK survive `terraform destroy` so an in-flight investigation of a hung query doesn't lose evidence. Default false — spill is scratch, every query older than itself is garbage. | `bool` | `false` | no |
+| security\_group\_ids | Optional security groups for the Lambda. When null and VPC is set, the module creates one with HTTPS egress only (443/tcp to 0.0.0.0/0). | `list(string)` | `null` | no |
+| subnet\_ids | Private subnets with egress route to the Databricks workspace (NAT or PrivateLink endpoint), Secrets Manager, KMS, and S3. See connectors/README.md. | `list(string)` | `[]` | no |
+| tags | Additional tags to apply to every resource. The module always applies `coa:connector = true` on the Lambda and `coa:connector-spill = true` on the KMS key, since those tags are the invoke contract — do not override them. | `map(string)` | `{}` | no |
+| timeout\_seconds | Lambda timeout in seconds. Default 600 covers a stopped SQL Warehouse resuming ahead of a large read. A runaway read is bounded by `databricks_max_rows_per_table` and the statement/socket timeouts inside the jar. | `number` | `600` | no |
+| vpc\_id | Optional VPC id. When set, the Lambda runs with VPC attachments. Required for workspaces reachable only via PrivateLink. Both `vpc_id` and `subnet_ids` must be set together, or both left null. | `string` | `null` | no |
+
+## Outputs
+
+| Name | Description |
+|------|-------------|
+| function\_arn | Connector Lambda ARN. Register as an Athena LAMBDA data catalog with `aws athena create-data-catalog --type LAMBDA --parameters function=<this>`. |
+| function\_arn\_ssm\_parameter | SSM Parameter Store path where the function ARN is published. |
+| function\_name | Connector Lambda function name. Carries the reserved `-managed-` segment in COA-managed mode. |
+| log\_group\_name | CloudWatch Logs group backing the connector Lambda. |
+| role\_arn | Connector execution role ARN. A customer's trust policy references this role when `datasource-access` roles trust the connector. |
+| role\_arn\_ssm\_parameter | SSM Parameter Store path where the role ARN is published. |
+| role\_name | Connector execution role name. |
+| spill\_bucket\_arn | Spill bucket ARN. |
+| spill\_bucket\_name | Spill bucket name. |
+| spill\_kms\_key\_arn | Spill CMK ARN. Carries the `<resource_prefix>:connector-spill = true` tag that COA's query role's kms:Decrypt grant matches on. |
+<!-- END_TF_DOCS -->

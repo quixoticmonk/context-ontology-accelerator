@@ -225,6 +225,38 @@ fmt-all: ## terraform fmt -check across every stack + modules
 fmt-write: ## terraform fmt across every stack + modules (rewrite)
 	$(TF) fmt -recursive modules stacks
 
+# ── Module docs (terraform-docs) ────────────────────────────────────
+# Generates the Inputs/Outputs/Resources tables in each module's
+# README.md between BEGIN_TF_DOCS / END_TF_DOCS markers. Hand-written
+# prose outside the markers is left alone. Modules without a README get
+# one seeded with a title and empty markers. Config: .terraform-docs.yml.
+.PHONY: docs docs-check
+TERRAFORM_DOCS ?= terraform-docs
+TF_DOCS_CONFIG := $(CURDIR)/.terraform-docs.yml
+MODULE_DIRS    := $(sort $(patsubst %/,%,$(dir $(wildcard modules/*/*.tf modules/*/*/*.tf))))
+
+docs: ## Regenerate terraform-docs tables in every modules/**/README.md
+	@command -v $(TERRAFORM_DOCS) >/dev/null 2>&1 || { \
+	  echo "ERROR: terraform-docs not on PATH. Install with 'brew install terraform-docs' or 'mise use terraform-docs'."; \
+	  exit 1; \
+	}
+	@for d in $(MODULE_DIRS); do \
+	  if [ ! -f "$$d/README.md" ]; then \
+	    printf '# %s\n\n<!-- BEGIN_TF_DOCS -->\n<!-- END_TF_DOCS -->\n' "$$d" > "$$d/README.md"; \
+	  elif ! grep -q 'BEGIN_TF_DOCS' "$$d/README.md"; then \
+	    printf '\n<!-- BEGIN_TF_DOCS -->\n<!-- END_TF_DOCS -->\n' >> "$$d/README.md"; \
+	  fi; \
+	  $(TERRAFORM_DOCS) -c $(TF_DOCS_CONFIG) "$$d" >/dev/null || exit 1; \
+	  echo "==> docs: $$d/README.md"; \
+	done
+
+docs-check: ## Fail if any module README is out of date with its .tf files
+	@command -v $(TERRAFORM_DOCS) >/dev/null 2>&1 || { echo "ERROR: terraform-docs not on PATH."; exit 1; }
+	@rc=0; for d in $(MODULE_DIRS); do \
+	  if ! $(TERRAFORM_DOCS) -c $(TF_DOCS_CONFIG) --output-check "$$d" >/dev/null 2>&1; then \
+	    echo "STALE: $$d/README.md (run 'make docs')"; rc=1; \
+	  fi; \
+	done; exit $$rc
 
 # ── Clean ───────────────────────────────────────────────────────────
 .PHONY: clean clean-artifacts
