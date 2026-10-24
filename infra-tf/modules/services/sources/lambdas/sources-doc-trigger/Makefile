@@ -13,7 +13,9 @@ SHELL       := /bin/bash
 
 REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../../../../../..)
 ARTIFACTS := $(REPO_ROOT)/infra-tf/artifacts/lambdas
-SRC_DIRS  := $(REPO_ROOT)/packages/sources/documents/trigger $(REPO_ROOT)/libs/common/src
+# Handler lives under the package src tree (CDK Paths.sourcesDocumentsTrigger);
+# packages/sources/documents/trigger only holds requirements.txt.
+SRC_DIRS  := $(REPO_ROOT)/packages/sources/src/coa_sources/documents/trigger $(REPO_ROOT)/libs/common/src
 OUT_DIR   := $(ARTIFACTS)/sources-doc-trigger
 ZIP       := $(ARTIFACTS)/sources-doc-trigger.zip
 REQS      := $(REPO_ROOT)/packages/sources/documents/trigger/requirements.txt
