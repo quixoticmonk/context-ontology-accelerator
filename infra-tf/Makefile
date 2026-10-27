@@ -140,21 +140,21 @@ plan-%: FORCE ## terraform plan for stack % (writes tfplan)
 apply-%: FORCE ## terraform apply for stack % (auto-approved; unset AUTO_APPROVE for prompt)
 	@echo "==> apply stacks/$*"; cd stacks/$* && $(TF) apply $(AUTO_APPROVE) -var-file=$(VAR_FILE)
 
-# ── Build-step prerequisites for stacks that consume build artifacts ──
-# A targeted `make apply-NN` now triggers the right build steps first,
-# so an interrupted `up-all` cannot leave service stacks pointing at
-# empty ECR repos (what happened in the v0.3.6 deploy pass: build-images
-# never ran because the user ran targeted apply-NN after an earlier
-# stack failed, bypassing up-all's $(MAKE) build-images chain).
+# ── Build-step prerequisites for stacks that consume LOCAL build artifacts ──
+# Lambda zips, merged OpenAPI and the web bundle rebuild idempotently from
+# source, so making them prerequisites of their consuming stacks is safe and
+# protects a targeted `make apply-NN` after an interrupted `up-all`.
 #
-# build-lambdas has no stack prereq — Lambda zips are built locally.
-# build-images depends on apply-25-ecr — the push target cannot write
-# to an ECR repo that does not exist yet.
-# build-openapi + build-web are pure local artifact builds.
+# Container images are deliberately NOT prerequisites of the service stacks.
+# ECR tags are immutable, so re-pushing an already-built commit fails. up-all
+# pushes the images exactly once (its explicit `build-images` step, right
+# after apply-25-ecr); stacks 30/40/50 then consume the pushed tags via the
+# .tag files build-images wrote. For a standalone apply-30/40/50, run
+# `make build-images` yourself first if the current commit isn't pushed yet.
+#
+# build-images depends on apply-25-ecr — the push target cannot write to an
+# ECR repo that does not exist yet.
 apply-20-namespace:  build-lambdas
-apply-30-services:   build-images
-apply-40-sources:    build-images
-apply-50-agentcore:  build-images
 apply-55-data-layer: build-lambdas
 apply-60-api-edge:   build-lambdas build-openapi build-web
 build-images:        apply-25-ecr
