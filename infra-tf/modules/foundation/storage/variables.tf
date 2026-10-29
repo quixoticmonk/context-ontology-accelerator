@@ -39,7 +39,7 @@ variable "aoss_security_group_id" {
 }
 
 variable "aoss_vpc_endpoint_id" {
-  description = "AOSS data-plane VPC endpoint ID (from the network module). Referenced by the AOSS network security policy to scope collection + dashboard access to VPC-internal traffic. In `dev` an additional AllowFromPublic rule is added; every other env is VPCE-only."
+  description = "AOSS data-plane VPC endpoint ID (from the network module). Referenced by the AOSS network security policy to scope collection + dashboard access to VPC-internal traffic. VPCE-only on every environment, including dev."
   type        = string
 }
 

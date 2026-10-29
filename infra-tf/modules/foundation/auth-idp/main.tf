@@ -25,6 +25,14 @@ resource "aws_cognito_user_pool" "this" {
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
 
+  # Grants are resolved by the email in the user's ID token, so a user's own
+  # email change must not take effect until they verify the new address;
+  # until then Cognito keeps the old value in the pool and in tokens. Mirrors
+  # the CDK user pool's `keepOriginal: { email: true }` (idp-authentication-stack.ts).
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
+
   admin_create_user_config {
     allow_admin_create_user_only = true
   }

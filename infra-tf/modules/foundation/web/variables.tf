@@ -71,6 +71,12 @@ variable "serve_runtime_arn" {
   default     = null
 }
 
+variable "mcp_runtime_arn" {
+  description = "MCP server AgentCore Runtime ARN (from the mcp module). Injected into runtime-config.json so the console's MCP page can surface the endpoint and a copy-paste client config for this deployment."
+  type        = string
+  default     = null
+}
+
 variable "ssm_prefix" {
   description = "SSM parameter root (e.g. /coa). CloudFront distribution coordinates are published under this path for runtime consumers."
   type        = string

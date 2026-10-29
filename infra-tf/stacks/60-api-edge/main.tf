@@ -153,6 +153,7 @@ module "web" {
   is_cognito_mode       = var.idp_type != "OIDC"
   name_prefix           = local.name_prefix
   serve_runtime_arn     = local.serve_runtime_arn
+  mcp_runtime_arn       = local.mcp_runtime_arn
   ssm_prefix            = local.ssm_prefix
   web_acl_arn           = var.cloudfront_web_acl_arn
   website_content_path  = "${path.root}/../../../packages/web-app/dist"

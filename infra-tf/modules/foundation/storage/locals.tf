@@ -30,10 +30,10 @@ locals {
   }
 
   # ── AOSS network policy rules ──────────────────────────────────────
-  # Baseline: VPCE-only access to collection + dashboard endpoints.
-  # In `dev`, add a second rule opening the collection to public access
-  # for integration tests run from laptops / CI runners. This exactly
-  # mirrors the CDK envName == "dev" branch in storage-stack.ts.
+  # VPCE-only access to collection + dashboard endpoints on every env,
+  # including dev. Upstream v0.3.8 (storage-stack.ts) dropped the dev-only
+  # AllowFromPublic rule: only the deployment's AOSS interface endpoint may
+  # reach the collection, with no public rule in any environment.
   network_policy_base = [{
     Rules = [
       {
@@ -48,15 +48,5 @@ locals {
     SourceVPCEs = [var.aoss_vpc_endpoint_id]
   }]
 
-  network_policy_dev_public = var.env == "dev" ? [{
-    Rules = [
-      {
-        ResourceType = "collection"
-        Resource     = ["collection/${local.collection_name}"]
-      }
-    ]
-    AllowFromPublic = true
-  }] : []
-
-  network_policy_rules = concat(local.network_policy_base, local.network_policy_dev_public)
+  network_policy_rules = local.network_policy_base
 }

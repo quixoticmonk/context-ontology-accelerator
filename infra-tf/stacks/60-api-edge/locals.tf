@@ -61,6 +61,10 @@ locals {
   # the runtime ARN is always available from SSM by the time we apply.
   serve_runtime_arn = data.aws_ssm_parameter.serve_runtime_arn.value
 
+  # MCP server AgentCore runtime ARN (published by the mcp module). Surfaced in
+  # runtime-config.json so the console's MCP page can show the endpoint (#1166).
+  mcp_runtime_arn = data.aws_ssm_parameter.mcp_runtime_arn.value
+
   # KMS handoff (from foundation stack)
   logs_kms_key_arn = data.aws_ssm_parameter.logs_kms_key_arn.value
 }
@@ -90,6 +94,7 @@ data "aws_ssm_parameter" "ontology_api_fn_arn" { name = "${local.ssm_prefix}/ont
 data "aws_ssm_parameter" "data_layer_api_fn_arn" { name = "${local.ssm_prefix}/data-layer/api-fn-arn" }
 
 data "aws_ssm_parameter" "serve_runtime_arn" { name = "${local.ssm_prefix}/serve/runtime-arn" }
+data "aws_ssm_parameter" "mcp_runtime_arn" { name = "${local.ssm_prefix}/mcp/runtime-arn" }
 
 data "aws_ssm_parameter" "logs_kms_key_arn" { name = "${local.ssm_prefix}/kms/logs-key-arn" }
 

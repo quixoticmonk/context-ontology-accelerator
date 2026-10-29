@@ -24,6 +24,7 @@ locals {
     },
     var.api_endpoint != null ? { apiEndpoint = var.api_endpoint } : {},
     var.serve_runtime_arn != null ? { serveRuntimeArn = var.serve_runtime_arn } : {},
+    var.mcp_runtime_arn != null ? { mcpRuntimeArn = var.mcp_runtime_arn } : {},
   )
 
   # ── CloudFront WebACL ARN resolution ───────────────────────────────

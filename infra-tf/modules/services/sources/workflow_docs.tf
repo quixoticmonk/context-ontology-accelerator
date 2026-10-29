@@ -42,7 +42,6 @@ resource "aws_opensearchserverless_access_policy" "sources_ingestion" {
       ]
       Principal = [
         aws_iam_role.kg_build_task.arn,
-        "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root",
       ]
     }
   ])
