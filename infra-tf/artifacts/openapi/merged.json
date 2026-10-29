@@ -4372,12 +4372,11 @@
           {
             "name": "q",
             "in": "query",
-            "description": "Substring search term matched against entity IRIs and labels.",
+            "description": "Substring search term matched against entity IRIs and labels. An\nempty value or `*` lists the namespace's entities; a value over 4000\ncharacters returns 400.",
             "schema": {
               "type": "string",
               "maxLength": 4000,
-              "minLength": 1,
-              "description": "Substring search term matched against entity IRIs and labels."
+              "description": "Substring search term matched against entity IRIs and labels. An\nempty value or `*` lists the namespace's entities; a value over 4000\ncharacters returns 400."
             },
             "required": true,
             "examples": {
@@ -5954,7 +5953,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Filter by job status.",
+            "description": "Filter by job status. Also accepts `ingested` (the job's proposal\nwas accepted) and `cancelled`, which the service stores but this\nenum does not list. Any other value returns 400 listing the allowed\nvalues.",
             "schema": {
               "$ref": "#/components/schemas/InductionJobStatus"
             },
@@ -6516,12 +6515,12 @@
           {
             "name": "maxResults",
             "in": "query",
-            "description": "Maximum number of metrics to return in one page.",
+            "description": "Maximum number of metrics to return in one page. For compatibility\nwith existing callers that page with larger values, the server\nreduces a value above 200 to 200 rather than rejecting it.",
             "schema": {
               "type": "number",
               "maximum": 200,
               "minimum": 1,
-              "description": "Maximum number of metrics to return in one page."
+              "description": "Maximum number of metrics to return in one page. For compatibility\nwith existing callers that page with larger values, the server\nreduces a value above 200 to 200 rather than rejecting it."
             },
             "examples": {
               "ListMetrics_example1": {
@@ -8969,7 +8968,7 @@
     },
     "/namespaces/{namespaceId}/ontologies/{ontologyId}/download": {
       "get": {
-        "description": "Download an ontology as Turtle.",
+        "description": "Download an ontology as Turtle.\n\nReturns 404 when the ontology does not exist or its graph holds no triples\nand no cached file is available; nothing is written to the artifacts bucket\nin that case.",
         "operationId": "DownloadOntology",
         "parameters": [
           {
@@ -23378,6 +23377,13 @@
             "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,127}$",
             "description": "Metric name: alphanumeric + underscores, 1-128 chars."
           },
+          "label": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display-only label for the metric. Omit (or send null) for no label."
+          },
           "description": {
             "type": "string",
             "maxLength": 10000,
@@ -26420,6 +26426,13 @@
             "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,127}$",
             "description": "Metric name: alphanumeric + underscores, 1-128 chars."
           },
+          "label": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display-only label for the metric. Absent when the metric has none."
+          },
           "description": {
             "type": "string",
             "description": "Human-readable description of what the metric measures."
@@ -27873,7 +27886,7 @@
               "description": "Data source identifier reference."
             },
             "maxItems": 1000,
-            "description": "Data source IDs to induct from."
+            "description": "Data source IDs to induct from. The table-based strategies\n(`table_to_ontology`, `rigor_ontology`) need at least one; an empty\nlist is rejected with a 400. `unstructured_lexical_graph` reads the\nlexical graph instead and accepts an empty list."
           },
           "ontologyUriPrefix": {
             "type": "string",
@@ -28057,6 +28070,13 @@
       "UpdateMetricRequestContent": {
         "type": "object",
         "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display-only label for the metric. This is a full replace: omitting it\n(or sending null) clears an existing label."
+          },
           "description": {
             "type": "string",
             "maxLength": 10000,
@@ -28460,6 +28480,13 @@
             "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,127}$",
             "description": "Metric name: alphanumeric + underscores, 1-128 chars."
           },
+          "label": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^<>\\x00-\\x1F\\x7F]+$",
+            "description": "Display-only label for the metric. Omit (or send null) for no label."
+          },
           "description": {
             "type": "string",
             "maxLength": 10000,
@@ -28797,14 +28824,14 @@
             "items": {
               "$ref": "#/components/schemas/Entity"
             },
-            "description": "Entities traversed or cited for the answer."
+            "description": "Entities traversed or cited for the answer. Bounded to 200 entities per\nresponse; a traversal that reached more is reported through\n`metadata.degradedSources` and the processing trace."
           },
           "relationships": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Relationship"
             },
-            "description": "Relationships traversed or cited for the answer."
+            "description": "Relationships traversed or cited for the answer. Bounded to 500\nrelationships per response; a traversal that reached more is reported\nthrough `metadata.degradedSources` and the processing trace. A relationship\nthe graph carries without a predicate identifier cannot be represented (see\n`predicateUri`) and is reported the same way, so an empty list is never\nambiguous between \"none found\" and \"all discarded\"."
           }
         }
       },
@@ -29011,7 +29038,8 @@
         "type": "object",
         "additionalProperties": {
           "type": "string"
-        }
+        },
+        "description": "String-valued entity properties. `supportingStatements` is reserved for a\nJSON-encoded string array of graph-only evidence. It is bounded to 100\nstatements per entity, 1,000 characters and 2,000 UTF-8 bytes per statement,\nand 4,000 characters and 6,000 UTF-8 bytes across an assembled graph context."
       },
       "QueryMode": {
         "type": "string",
@@ -29064,7 +29092,7 @@
           },
           "includeSupporting": {
             "type": "boolean",
-            "description": "Whether to include supporting content in the response."
+            "description": "Whether to include supporting content in the response. When false,\n`supportingContent` and the `supportingStatements` property of each\n`graphContext` entity are omitted; the entities and relationships are\nstill returned."
           },
           "includeDebugInfo": {
             "type": "boolean",
@@ -29164,6 +29192,10 @@
           "partial": {
             "type": "boolean",
             "description": "Whether the result is partial (incomplete)."
+          },
+          "executionMode": {
+            "type": "string",
+            "description": "The execution mode that produced this result: \"standard\" or\n\"deep-reasoning\". Deep Reasoning is a mode orthogonal to the tier\ncascade, so a client labels an answer by this field rather than\ninferring mode from `tier` (a Deep Reasoning answer resolves at tier 3\nbut is not Standard mode's Tier-3 result). Absent on responses that do\nnot set it."
           }
         },
         "required": [
@@ -29224,7 +29256,7 @@
           },
           "predicateUri": {
             "type": "string",
-            "description": "IRI of the predicate linking source to target."
+            "description": "IRI of the predicate linking source to target. A property-graph edge that\ncarries only a human-readable predicate string is given a stable,\ntenant-scoped synthetic identifier in the `urn:coa:graph-predicate:` scheme,\nderived from that string. Treat such a value as an opaque identity for\ncorrelating edges within one namespace, not as an ontology predicate IRI."
           },
           "targetUri": {
             "type": "string",
