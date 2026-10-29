@@ -117,10 +117,37 @@ downstream — treat them as expected *shape*, not canonical values.
   `git merge-base --is-ancestor "$PREV_TAG" "$UPSTREAM_TAG"` exits 0 and the
   two tags resolve to different commits
 - You MUST record the starting point: `export SYNC_START=$(git rev-parse HEAD)`
-- You MUST confirm the toolchain is present: `git`, `terraform` (matching the
-  version pinned in each stack's `terraform.tf`), Python 3.12 with
-  `pip`/`pytest`, Node 22+, Java 17+ and Gradle (Smithy codegen), and `jq`.
-  If any is missing, STOP and install it — do not skip the steps that need it
+- You MUST confirm the toolchain is present AND meets the version floors the
+  new tag requires: `git`, `terraform` (matching the version pinned in each
+  stack's `terraform.tf`), Python 3.12 with `pip`/`pytest`, Node 22+, Java
+  17-24 (Smithy codegen; `JAVA_HOME` may need setting if the JDK is installed
+  but not on `PATH`, e.g. Homebrew `openjdk@21`), Gradle, Maven, `jq`, `uv`,
+  and `pnpm`. If any is missing, STOP and install it — do not skip the steps
+  that need it.
+- **You MUST diff the toolchain FLOORS between `$BASE` and `$UPSTREAM_TAG`
+  before building anything.** A patch-tagged COA release can raise a required
+  tool version, and the failure surfaces at build time, not in `terraform
+  validate`. On the v0.3.8 sync, `[tool.uv] required-version` jumped to
+  `>=0.13.4` and broke `make build-lambdas` with
+  `Required uv version ... does not match the running version`. Check:
+  ```bash
+  git -P diff "$BASE" "$UPSTREAM_TAG" -- pyproject.toml \
+    | grep -E 'required-version|requires-python'
+  git -P diff "$BASE" "$UPSTREAM_TAG" -- package.json \
+    | grep -E 'packageManager|"node"|"pnpm"'
+  git -P diff "$BASE" "$UPSTREAM_TAG" -- .mise.toml        # tool pins
+  ```
+  Surface every floor bump as a pre-build checklist item and confirm the
+  operator's environment clears it (`uv --version`, `pnpm --version`, ...).
+- **You MUST check for mise shadowing when `.mise.toml` is new or changed.**
+  A synced `.mise.toml` activates mise in the project, and its shims take PATH
+  precedence over the operator's own installs — so the tool the build resolves
+  can differ from what `which <tool>` shows in a plain shell. Verify the
+  RESOLVED binary, not `which`: `mise which uv` (and `pnpm`, `node`, `java`).
+  On v0.3.8 the `uv` that built Lambdas resolved to the one bundled inside
+  mise's Python 3.12 env (0.12.3), shadowing the operator's `.local/bin/uv`
+  (0.13.5) and tripping the new floor. Note that `.mise.toml` pinning `python`
+  implicitly pins that env's bundled `uv`/`pip`, even when it never names `uv`.
 - You MUST create `$SYNC_DIR` if it doesn't exist and confirm it is writable
 - You MUST announce `$PREV_TAG`, `$UPSTREAM_TAG`, and the commit SHA each
   resolves to before starting step 1
@@ -373,6 +400,19 @@ git -P show --stat <commit> -- 'infra/lib/*' 'infra/bin/*'
   module or handler function. It lands after the app-code commit that ships
   that handler — otherwise `terraform apply` creates a Lambda whose handler
   string points at code not yet in the zip
+- **Before writing a port row, you MUST verify the target Terraform provider
+  resource actually exposes the attribute the CDK change sets** — do not assume
+  parity with the CloudFormation/CDK surface. Confirm against the real schema:
+  `terraform -chdir=<stack> init -backend=false` then
+  `terraform providers schema -json | jq '...<resource>.block...'`. If the
+  attribute is absent, the change is NOT mechanically portable: record it as a
+  **provider-gap deferral** (and note the `awscc_*`/CloudFormation-backed
+  resource as the fallback, flagging that switching resource types is a replace
+  on a live resource — a deliberate change, not a sync item). On the v0.3.8
+  sync, upstream's guardrail denied-topic input-only change
+  (`inputEnabled`/`outputEnabled`) was unportable because
+  `hashicorp/aws` `aws_bedrock_guardrail` `topics_config` exposes only
+  `name`/`definition`/`examples`/`type`.
 - An upstream CDK `CustomResource` MUST be mapped to the action-invoke +
   `terraform_data` pattern in Reference R1, never filed as "no TF
   equivalent"
@@ -629,6 +669,18 @@ one):
 **Constraints:**
 - You MUST apply the row for any file listed here instead of the generic
   decision table
+- **When the imported app code bumps a dependency major, you MUST reconcile
+  the downstream `pnpm-workspace.yaml` `overrides`/`catalog` pins against it.**
+  A downstream override pinning an older major than the freshly-imported
+  `package.json` expects will silently force the wrong version into the
+  lockfile and break the imported code at build/runtime — a failure no file
+  diff shows. On the v0.3.8 sync, web-app's `package.json` moved to
+  `react-router-dom ^7.18.4` while the root `pnpm-workspace.yaml` override held
+  `6.30.6`; the override had to be bumped to `7.18.4`. After importing
+  `packages/*/package.json`, diff their dependency majors against the root
+  workspace overrides and bump any that lag. These version-string bumps are a
+  surgical merge on the owned workspace file, NOT a reason to re-import it
+  (NG.1 — the CDK-free member list is downstream-owned).
 - When you discover a new downstream-owned file during step 5, you MUST add
   it to this section in the same sync, with its action
 - You MUST NOT remove an entry without confirming in the commit body that
@@ -658,7 +710,22 @@ done
 
 **Python** — required whenever `packages/*/` or `libs/**` changed. `uv sync`
 fails until `smithy-generated/` exists (it is a workspace member). Either
-run step 4A then `uv sync`, or use an isolated venv:
+run step 4A then `uv sync`, or use an isolated venv.
+
+> **If you use `uv` rather than the ad-hoc venv below, run
+> `uv sync --all-packages`, not plain `uv sync`.** Plain `uv sync` installs
+> only the root project's dependencies, so every package's tests collection-
+> error with `ModuleNotFoundError` on real deps (pydantic, structlog, rdflib,
+> sqlglot, ...) — which looks like a mass code regression but is an incomplete
+> env. Then run per package with the venv's own interpreter
+> (`.venv/bin/python -m pytest`) and an explicit `PYTHONPATH` of every
+> `packages/*/src` + `libs/common/src` + both `smithy-generated/*-python-server`
+> dirs: `uv run` RESETS `PYTHONPATH`, so `PYTHONPATH=... uv run pytest` does not
+> see the workspace sources. On the v0.3.8 sync, `uv sync --all-packages` + the
+> venv-python/PYTHONPATH form turned ~35 "collection errors" per package into a
+> clean ~13,500 passed, 0 failed.
+
+The isolated-venv alternative:
 
 ```bash
 python3 -m venv "$SYNC_DIR/testenv"
@@ -885,6 +952,63 @@ Upstream-Release: <tag>
   and Appendices A/B if module structure or SSM names changed — in a
   follow-up docs commit, never folded into a code chunk
 - You MUST report what was removed
+
+## Post-deploy smoke test (validate the live infrastructure)
+
+Steps 1–9 verify the *code* (fmt, validate, pytest) but prove nothing about a
+*deployed* environment. A sync lands app-code, Lambda, container-image, and
+IAM/policy changes that only an apply exercises, and the same checks are worth
+re-running after every `make up-all`. This test is read-mostly, idempotent, and
+tiered — stop reporting success at the first tier that fails. Package it as a
+`make smoke` target (Makefile over an ad-hoc script, per repo convention) so it
+runs identically after each deploy.
+
+Resolve the deployment's identifiers from Terraform outputs / SSM first
+(`terraform -chdir=infra-tf/stacks/60-api-edge output`): the CloudFront domain,
+the API endpoint, the guardrail id, the AOSS/Neptune endpoints.
+
+**Tier 1 — unauthenticated edge (cheap, no creds beyond read):**
+- `curl -sS -o /dev/null -w '%{http_code}' https://<cloudfront-domain>/` → `200`
+  (the SPA loads).
+- `curl -sS https://<cloudfront-domain>/runtime-config.json | jq .` → valid JSON
+  carrying the expected keys for this release (`region`, `authority`,
+  `clientId`, `apiEndpoint`, and after v0.3.8 `mcpRuntimeArn`). A missing key a
+  sync was supposed to add (e.g. `mcpRuntimeArn`) is a wiring regression.
+- Hit a known API route and assert it is NOT the 501 stub and NOT a 5xx: an
+  unauthenticated call should return `401/403` (authorizer wired), never `501`
+  (unmapped path) or `502/503` (handler broken). Use a real spec path such as
+  `/system-health` or `/namespaces`.
+
+**Tier 2 — control-plane / data-plane state (AWS reads):**
+- Every Fargate service reports `desiredCount == runningCount` and a steady
+  deployment: `aws ecs list-services` per cluster, then `describe-services`
+  (ontology, vkg, mcp, serve, metric). A sync that rebuilt images triggers a
+  rolling deploy — confirm it settled, not stuck in `PRIMARY`+`ACTIVE`.
+- Each expected Lambda exists and its `LastModified` is newer than the apply
+  (`aws lambda get-function`), confirming the new code shipped (compare
+  `CodeSha256` to the zip's hash if in doubt).
+- Guardrail is `READY` (`aws bedrock get-guardrail --guardrail-identifier <id>`),
+  AOSS collection `ACTIVE`, Neptune cluster `available`.
+- Spot-check the cross-stack SSM chain the sync touched (Appendix B): the
+  parameter a changed module publishes exists and a consumer reads the new
+  value (e.g. `/<prefix>/mcp/runtime-arn`).
+
+**Tier 3 — authenticated end-to-end (optional, deepest):**
+- Obtain a `web` Cognito token (`coa-skills/control-plane/scripts/coa_login.py`),
+  then exercise one real control-plane call (e.g. list namespaces) and assert
+  `200` with a well-formed body. This is the only tier that proves the
+  authorizer → handler → datastore path end to end, and the one to run when a
+  sync changed auth, the merged OpenAPI, or a handler's contract.
+
+**Constraints:**
+- The smoke test is READ-MOSTLY — Tier 3 may create a disposable namespace, but
+  it MUST clean up after itself and MUST NOT mutate existing tenant data.
+- A tier that cannot run (no creds, no token) MUST be reported as skipped, never
+  as passed — same rule as step 6.
+- Record the deployed commit SHA and the tier results alongside the step 8
+  report so each deploy has a provenance trail.
+- This test does NOT replace steps 1–6; it is the post-apply complement for an
+  environment you keep re-deploying.
 
 ## Reference
 
@@ -1335,6 +1459,12 @@ Grounded in real parameter names under `${local.ssm_prefix}/...`. Same staleness
 | ReservedRoleNamePrefix precommit check (v0.3.5 row 7) | CDK aspect from v0.3.5 enforces that no COA-internal `iam.CfnRole` falls under `${prefix}-${env}-datasource-access-*`. No Terraform synth-phase equivalent — candidate for a precommit grep on `name = "...-datasource-access-..."` in `aws_iam_role` resources | Repo tooling follow-up | TBD |
 | Databricks managed-connector TF port (v0.3.5) | Upstream deploys `connectors/databricks` via its own CDK app + two deploy scripts (`deploy-serve.sh`, `deploy-managed-databricks-connector.sh`). This downstream removed those scripts (NG.7). A standalone, reusable Terraform module landed at `infra-tf/modules/connectors/databricks/` (supports both `environment` and `coa-managed` modes). It is **not** called by any stack and **not** on any Makefile deploy target — anyone who needs the connector calls the module from their own TF configuration. Related upstream deploy-doc sections (Cross-architecture container builds, Databricks SQL Warehouse connector) remain deferred until a deploy path lands | Connectors TF migration (module landed; deploy path open) | TBD |
 | `llama-index-core` as libs/common dev dep | 7 new upstream v0.3.5 tests in `libs/common/tests/unit/test_embeddings.py` import `llama_index.core.base.embeddings.base` directly, but `llama-index-core` isn't declared as a dep of `libs/common`. Options: add it as a dev dep, wrap imports in `pytest.importorskip`, or accept as env-only (upstream pattern probably has it at workspace level) | Next test cleanup | TBD |
+| Guardrail denied-topic input-only (v0.3.8) | Upstream set `inputEnabled/outputEnabled` on the "reveal system prompt" topic so it only blocks on input. `hashicorp/aws` `aws_bedrock_guardrail` `topics_config` has no input/output-action fields — porting needs an `awscc`/CloudFormation-backed guardrail (a replace on a live resource). | Provider-gap; revisit when aws provider adds the fields or a guardrail migration is scoped | TBD |
+| vkg deploy-time image rollout (v0.3.8) | Upstream added an `AwsCustomResource` that async-invokes the reload Lambda on image change + a digest-compare sweep in the handler. R1 action-pattern port + handler changes deferred; the existing weekly sweep still refreshes images. | 30-services follow-up | TBD |
+| aossName 32-char truncation (v0.3.8) | Upstream hash-truncates AOSS collection/policy names >32 chars. No-op at the `coa-dev` prefix (all names <32); port for prefix-length safety before using a longer prefix. | infra-tf follow-up | TBD |
+| v0.3.8 doc translations | external-docs/content/{metrics,serve,authentication-setup,getting-started,deploying,sources}.md have upstream product-doc additions (metric label, NL→SQL, email-verify, chunk-size, pagination). Kept ours; additive ports deferred to a doc-translation commit. | Docs follow-up | TBD |
+| connectors/ + external-docs/ workspace security pins (v0.3.8) | Upstream added argparse/katex/dompurify/brace-expansion pins to the two sub-workspace `pnpm-workspace.yaml` + lockfiles. Kept ours (sub-workspaces, dev/docs toolchains, not in the deployed system); their lockfiles reverted to HEAD for consistency. | Sub-workspace follow-up | TBD |
+| Unwired preflight check scripts (v0.3.8) | `scripts/check-{aoss-endpoint,vpc-limit,tool-version,teardown-pending}.sh` imported but not called by the downstream TF Makefile (upstream wires them from its CDK preflight, which the downstream replaced). Wire the useful ones (esp. a uv/tool-floor check — see Preconditions) or drop them. | infra-tf Makefile follow-up | TBD |
 
 After every sync, update this tracker: add newly-deferred items, remove items that landed, and update Appendix A/B if module structure or SSM names changed.
 
