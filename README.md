@@ -6,8 +6,8 @@
 > and connectors stay in sync with upstream via periodic release-tag
 > syncs; the upstream `infra/` tree is deliberately absent.
 >
-> **Synced to upstream:** [`v0.3.7`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.7)
-> (commit `5c432ab`, synced 2026-10-23 from
+> **Synced to upstream:** [`v0.3.8`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.8)
+> (commit `bacd1aa`, synced 2026-10-29 from
 > [github.com/aws/context-ontology-accelerator](https://github.com/aws/context-ontology-accelerator)).
 > Sync procedure: [`COA_sync_releases_TF.md`](COA_sync_releases_TF.md).
 > Each sync commit carries an `Upstream-Release:` git trailer so the
