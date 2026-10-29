@@ -75,6 +75,52 @@ make apply
 After the first deploy, `make apply` alone is enough (ECR repos exist,
 image URIs are stable).
 
+## Verify the deployment (`make smoke`)
+
+After any apply, run a read-only health check of the live environment:
+
+```bash
+make smoke            # Tier 1 (edge) + Tier 2 (AWS resource state)
+make smoke AUTH=1     # also Tier 3: authenticated end-to-end via coa_login.py
+```
+
+Nothing is hardcoded. Identifiers are resolved from the deployment's own
+source of truth — SSM (`/<prefix>/web/distribution-domain-name`,
+`/<prefix>/bedrock/guardrail-id`) and the SPA's `runtime-config.json`
+(`apiEndpoint`), falling back to `terraform output`. Region and prefix come
+from `shared.tfvars` and are overridable (`AWS_REGION`, `SCL_PREFIX`,
+`SCL_ENV`, `SCL_CF_DOMAIN`), so the same command verifies any environment.
+It exits non-zero if any non-skipped check fails. Example of a healthy run:
+
+```
+== COA post-deploy smoke test ==
+region=us-east-1  prefix=coa-dev
+
+Tier 1 -- edge (HTTP)
+  PASS  CloudFront root returns 200 (d2lasd06j1pn4h.cloudfront.net)
+  PASS  runtime-config.json present with region/authority/clientId/apiEndpoint
+  PASS  runtime-config.json carries mcpRuntimeArn (v0.3.8 #1166)
+  PASS  API /health returns 200 (mock health probe)
+  PASS  API /namespaces is auth-guarded (401), not stubbed/broken
+
+Tier 2 -- infra state (AWS)
+  PASS  Bedrock guardrail plw033wezjqz is READY
+  PASS  OpenSearch Serverless collection is ACTIVE
+  PASS  Neptune cluster is available
+  PASS  ECS coa-dev-ontology-cluster: all services running==desired
+  PASS  all 38 coa-dev Lambda functions healthy
+
+Tier 3 -- authenticated end-to-end
+  SKIP  end-to-end API call  (run with --auth)
+
+== 10 passed, 0 failed, 1 skipped ==
+Deployment smoke test PASSED.
+```
+
+A tier is reported `SKIP` (never silently passed) when its inputs are absent:
+Tier 2 without AWS credentials, Tier 3 without `--auth`. The script lives at
+`scripts/smoke-test.sh`.
+
 ## Configuration
 
 Copy the example and edit:

@@ -188,7 +188,7 @@ destroy-20-namespace: FORCE
 	@cd stacks/20-namespace && $(TF) destroy $(AUTO_APPROVE) -var-file=$(VAR_FILE)
 
 # ── Layer-wide meta targets ─────────────────────────────────────────
-.PHONY: init-all up-all down-all fmt-all
+.PHONY: init-all up-all down-all fmt-all smoke
 init-all: $(addprefix init-,$(LAYERS)) ## terraform init on every stack
 
 up-all: ## Apply every stack in order; builds Lambda zips before 20-namespace and images after 25-ecr
@@ -206,6 +206,9 @@ up-all: ## Apply every stack in order; builds Lambda zips before 20-namespace an
 	$(MAKE) build-web                # 60-api-edge uploads dist/ to the website bucket
 	$(MAKE) apply-60-api-edge
 	$(MAKE) apply-70-observability
+
+smoke: ## Post-deploy health check of the live environment (read-only; add AUTH=1 for the authenticated end-to-end tier)
+	@bash $(REPO_ROOT)/scripts/smoke-test.sh $(if $(AUTH),--auth,)
 
 down-all: ## Destroy every stack in reverse order (DataZone forbids full destroy — see DEPLOY.md)
 	$(MAKE) destroy-70-observability

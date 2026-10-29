@@ -951,6 +951,9 @@ Upstream-Release: <tag>
 - You MUST update Appendix C (add newly deferred items, remove landed ones)
   and Appendices A/B if module structure or SSM names changed — in a
   follow-up docs commit, never folded into a code chunk
+- You MUST bump the README's **`Synced to upstream:`** line to the new tag,
+  commit SHA, and date — it is a known-owned status line that goes stale every
+  sync (missed on the v0.3.8 sync and fixed after the fact)
 - You MUST report what was removed
 
 ## Post-deploy smoke test (validate the live infrastructure)
@@ -959,9 +962,10 @@ Steps 1–9 verify the *code* (fmt, validate, pytest) but prove nothing about a
 *deployed* environment. A sync lands app-code, Lambda, container-image, and
 IAM/policy changes that only an apply exercises, and the same checks are worth
 re-running after every `make up-all`. This test is read-mostly, idempotent, and
-tiered — stop reporting success at the first tier that fails. Package it as a
-`make smoke` target (Makefile over an ad-hoc script, per repo convention) so it
-runs identically after each deploy.
+tiered — stop reporting success at the first tier that fails. It is implemented
+as `make smoke` (from `infra-tf/`), backed by `scripts/smoke-test.sh` (the
+repo's `check-*.sh` helper convention), so it runs identically after every
+`make up-all`. `make smoke AUTH=1` adds the authenticated Tier 3.
 
 Resolve the deployment's identifiers from Terraform outputs / SSM first
 (`terraform -chdir=infra-tf/stacks/60-api-edge output`): the CloudFront domain,
@@ -1009,6 +1013,20 @@ the API endpoint, the guardrail id, the AOSS/Neptune endpoints.
   report so each deploy has a provenance trail.
 - This test does NOT replace steps 1–6; it is the post-apply complement for an
   environment you keep re-deploying.
+- **Run it after every apply, and treat a non-zero exit as "deploy not
+  verified."** After the operator runs `make up-all` (or a targeted
+  `apply-NN`) for a sync, `make smoke` MUST be run before the deploy is called
+  done. Because the applies and the AWS credentials belong to the operator, the
+  division of labour is:
+  - **Operator** runs `make smoke` (Tier 2 needs their AWS creds; Tier 3,
+    `make smoke AUTH=1`, needs their Cognito login) and reports the result.
+  - **Agent** MAY run Tier 1 itself (edge checks need only network access, or
+    the operator's SSM creds), but when it lacks the operator's credentials it
+    MUST instruct the user to run `make smoke` and paste the summary, rather
+    than claim the deployment is verified. A tier the agent could not run is
+    reported as skipped, never as passed.
+  - Record the `make smoke` summary (passed/failed/skipped + the deployed SHA)
+    in the step 8 report so every deploy carries its own verification evidence.
 
 ## Reference
 
