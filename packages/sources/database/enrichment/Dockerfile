@@ -36,9 +36,14 @@ RUN pip install --no-cache-dir /tmp/server/ && rm -rf /tmp/server/
 # pipdeptree --reverse), pulled in transiently and left behind. `pip uninstall -y` is a
 # no-op exit 0 if it is absent, so this stays safe.
 COPY packages/sources/ /tmp/sources/
+# The trailing python -c strips bundled test suites (dirs named tests/ or test/)
+# from installed packages in the same layer — dead weight at runtime, and the source
+# of scanner-flagged pins like spaCy's black==22.3.0 (CVE-2026-31900, never installed).
+# Only exact tests/ or test/ names, so numpy.testing / sklearn._testing stay intact.
 RUN pip install --no-cache-dir /tmp/sources/ && rm -rf /tmp/sources/ && \
     pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" && \
-    pip uninstall -y msgpack
+    pip uninstall -y msgpack && \
+    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
 
 USER 1000
 ENTRYPOINT ["python", "-m", "coa_sources.database.pipeline.enrichment_handler"]

@@ -35,13 +35,21 @@ COPY packages/context-manager/src/ ./src/
 COPY packages/mcp-server/pyproject.toml /tmp/mcp-server/pyproject.toml
 COPY packages/mcp-server/src/ /tmp/mcp-server/src/
 
+# The trailing python -c strips bundled test suites (dirs named tests/ or test/)
+# from every installed package, in the SAME layer as the install so the files
+# leave the image rather than just being whiteout-hidden in the final rootfs.
+# Test dirs are never imported at runtime; spaCy's spacy/tests/package/requirements.txt
+# also pins black==22.3.0, which scanners report as an installed package
+# (CVE-2026-31900) though black is never installed or imported. Matches only dirs
+# named exactly tests/ or test/, so numpy.testing / sklearn._testing stay intact.
 RUN pip install --no-cache-dir uv && \
     sed -i '/\[tool.uv.sources\]/,$ d' pyproject.toml && \
     sed -i '/\[tool.uv.sources\]/,$ d' /tmp/mcp-server/pyproject.toml && \
     uv pip install --system --python /usr/bin/python3.12 --no-cache . /tmp/mcp-server/ && \
     rm -rf /tmp/mcp-server/ && \
     pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" && \
-    pip uninstall -y msgpack
+    pip uninstall -y msgpack && \
+    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
 
 EXPOSE 8080
 

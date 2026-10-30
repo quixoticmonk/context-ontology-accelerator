@@ -73,8 +73,13 @@ COPY packages/sources/ /tmp/sources/
 # Lambda base already ships setuptools 81.x (past the CVE-2025-47273 fix), msgpack is
 # not installed, and a later-layer setuptools upgrade only adds a lower-layer scanner
 # artifact without improving the deployable image.
+# The trailing python -c strips bundled test suites (dirs named tests/ or test/) from
+# installed packages in the same layer — dead weight at runtime, and the source of
+# scanner-flagged pins like spaCy's black==22.3.0 (CVE-2026-31900, never installed).
+# Only exact tests/ or test/ names, so numpy.testing / sklearn._testing stay intact.
 RUN pip install --no-cache-dir --root-user-action=ignore /tmp/sources/ && rm -rf /tmp/sources/ && \
-    pip install --no-cache-dir --root-user-action=ignore --upgrade pip
+    pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
+    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
 
 # numba's @njit(cache=True) needs a writable cache dir (/tmp is writable on Lambda)
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
