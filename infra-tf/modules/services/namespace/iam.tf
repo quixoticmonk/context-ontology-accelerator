@@ -279,6 +279,21 @@ resource "aws_iam_role_policy_attachment" "smus_exec" {
   policy_arn = aws_iam_policy.smus_exec.arn
 }
 
+# AWS-managed policy for the SMUS domain execution role. The Studio portal
+# calls DataZone AS this role, in a session named after the signed-in user
+# (coa-dev-smus-exec/user-<profile-id>), so it needs the portal's read
+# surface: ListProjects, ListProjectProfiles, SearchGroupProfiles and the
+# rest. The scoped policy above omits those, which made Studio show "You
+# don't have any projects" to members. DataZone still authorizes every call
+# against the user's own memberships and ownership, so this widens what the
+# portal can call, not what any user can reach. The policy is DataZone-centric
+# (plus a few glue/ram/ssm/sts/q/codeconnections actions) and has none of the
+# iam:*/s3:* wildcards of SageMakerStudioAdminIAMPermissiveExecutionPolicy.
+resource "aws_iam_role_policy_attachment" "smus_exec_domain_execution" {
+  role       = aws_iam_role.smus_exec.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/SageMakerStudioDomainExecutionRolePolicy"
+}
+
 # ═════════════════════════════════════════════════════════════════════
 #  2. Shared DataZone project access role
 # ═════════════════════════════════════════════════════════════════════
