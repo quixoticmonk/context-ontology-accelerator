@@ -41,6 +41,10 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
 #  - Ensure spaCy is present (newer unstructured releases no longer pin it as a hard
 #    dependency, so install it explicitly before downloading the model — otherwise
 #    `spacy download` fails with "No module named spacy" under a constrained install)
+#    Install click with it: spaCy's CLI imports click directly (`python -m spacy
+#    download` fails with "No module named 'click'" otherwise) but spaCy never
+#    declares it — it came in through typer, and typer 0.26+ no longer depends on
+#    click.
 #  - Pre-install spaCy model (unstructured loads it at runtime but Lambda fs is read-only)
 #  - Lift filelock past unstructured's `filelock<4` cap to 4.2.1+ (CVE-2026-112940).
 #    Every unstructured release still declares the cap, but its only use is
@@ -58,7 +62,7 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
     -r ${LAMBDA_TASK_ROOT}/requirements.txt && \
     pip uninstall -y opencv-python 2>/dev/null; \
     pip install --no-cache-dir --root-user-action=ignore opencv-python-headless && \
-    pip install --no-cache-dir --root-user-action=ignore spacy==3.8.7 && \
+    pip install --no-cache-dir --root-user-action=ignore spacy==3.8.7 "click>=8.1,<9" && \
     python -m spacy download en_core_web_sm && \
     pip install --no-cache-dir --root-user-action=ignore --no-deps "filelock>=4.2.1,<5" && \
     python -c "import unstructured.nlp.tokenize, filelock; lock = filelock.FileLock('/tmp/filelock-check.lock', timeout=-1); lock.acquire(); assert lock.is_locked; lock.release(); assert not lock.is_locked; print('filelock', filelock.__version__, 'OK')" && \
