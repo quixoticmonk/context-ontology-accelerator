@@ -1,6 +1,10 @@
 .PHONY: setup generate format lint test test-unit test-integ build load-test load-test-slow load-test-teardown deploy-dev deploy-serve deploy-example-connector destroy-dev preflight docs web-dev vkg-dev version version-check
 
-setup: generate
+# smithy-generate.sh needs pnpm, and setup-dev.sh needs the members it generates,
+# so setup first installs the pnpm version .mise.toml pins when pnpm is missing.
+setup:
+	./scripts/install-pnpm.sh
+	./scripts/smithy-generate.sh
 	./scripts/setup-dev.sh
 
 generate:

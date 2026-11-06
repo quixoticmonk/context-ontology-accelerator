@@ -7,20 +7,15 @@ set -eu
 echo "=== SCL Dev Environment Setup ==="
 
 # Check UV
-if ! command -v uv &> /dev/null; then
+if ! command -v uv >/dev/null 2>&1; then
     echo "Installing UV..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
 else
     echo "✓ UV $(uv --version) found"
 fi
 
-# Check pnpm
-if ! command -v pnpm &> /dev/null; then
-    echo "Installing pnpm..."
-    npm install -g pnpm
-else
-    echo "✓ pnpm $(pnpm --version) found"
-fi
+# Check pnpm (installs the version .mise.toml pins when it is missing)
+"$(dirname "$0")/install-pnpm.sh"
 
 # Check Java (17-24; see check-java-version.sh for the upper bound)
 if JAVA_CHECK="$("$(dirname "$0")/check-java-version.sh")"; then
@@ -30,7 +25,7 @@ else
 fi
 
 # Check Gradle
-if command -v gradle &> /dev/null; then
+if command -v gradle >/dev/null 2>&1; then
     echo "✓ Gradle found"
 else
     echo "⚠ Gradle not found — required for Smithy code generation"
@@ -58,12 +53,12 @@ cd "$REPO_ROOT" && pnpm install --frozen-lockfile
 # Install pre-commit hooks
 echo ""
 echo "Installing pre-commit hooks..."
-if git config --get core.hooksPath &> /dev/null; then
+if git config --get core.hooksPath >/dev/null 2>&1; then
     HOOKS_PATH=$(git config --get core.hooksPath)
     echo "⚠ Skipping pre-commit install: core.hooksPath is set to '$HOOKS_PATH' (likely git-defender)."
     echo "  Run 'make lint' manually before committing, or configure pre-commit to run via git-defender."
 else
-    if command -v pre-commit &> /dev/null; then
+    if command -v pre-commit >/dev/null 2>&1; then
         pre-commit install
         echo "✓ Pre-commit hooks installed"
     else
@@ -75,5 +70,5 @@ fi
 
 echo ""
 echo "=== Setup complete! ==="
-echo "Run 'make docker-up' to start local services."
-echo "Run 'make test' to run tests."
+echo "Run 'make test' to run the unit tests."
+echo "To deploy to your AWS account, see external-docs/content/deploying.md."

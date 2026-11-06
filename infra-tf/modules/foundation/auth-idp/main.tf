@@ -202,8 +202,15 @@ resource "aws_cognito_user_pool_client" "mcp" {
 
 # ── Initial admin user ─────────────────────────────────────────────
 # Replaces the CDK custom-resource admin creator with a native user +
-# generated temporary password. Cognito emails the temporary password
-# (no message_action suppression), matching the CDK's EMAIL delivery.
+# generated temporary password. Cognito emails the temporary password to a
+# real initial_admin_email; the default placeholder (nobody@amazon.com) is
+# never sent one (message_action = SUPPRESS), matching the CDK's
+# admin-user-handler (COA v0.3.9). message_action is read only on create
+# (not ForceNew), so an existing admin user is untouched.
+locals {
+  admin_email_is_placeholder = var.initial_admin_email == "nobody@amazon.com"
+}
+
 resource "random_password" "admin_temp" {
   count = local.cognito_enabled ? 1 : 0
 
@@ -236,6 +243,7 @@ resource "aws_cognito_user" "admin" {
   user_pool_id       = aws_cognito_user_pool.this[0].id
   username           = var.initial_admin_email
   temporary_password = random_password.admin_temp[0].result
+  message_action     = local.admin_email_is_placeholder ? "SUPPRESS" : null
 
   attributes = {
     email          = var.initial_admin_email
