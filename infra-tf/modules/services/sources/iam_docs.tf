@@ -237,9 +237,16 @@ data "aws_iam_policy_document" "kg_build_task" {
       "bedrock:ListModelInvocationJobs",
       "bedrock:StopModelInvocationJob",
     ]
+    # CreateModelInvocationJob authorizes against BOTH the model it runs
+    # (foundation-model / inference-profile) AND the model-invocation-job
+    # resource it creates; Get/List/Stop act on the job resource. Omitting
+    # model-invocation-job fails every batch submit with AccessDenied
+    # (COA v0.3.9, sources-stack.ts — paired with the app default
+    # DEFAULT_USE_BATCH_INFERENCE flipping to "true").
     resources = [
       "arn:${data.aws_partition.current.partition}:bedrock:*::foundation-model/*",
       "arn:${data.aws_partition.current.partition}:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+      "arn:${data.aws_partition.current.partition}:bedrock:*:${data.aws_caller_identity.current.account_id}:model-invocation-job/*",
     ]
   }
 
