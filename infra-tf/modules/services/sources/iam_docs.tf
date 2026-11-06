@@ -144,6 +144,13 @@ resource "aws_iam_role_policy_attachment" "kg_build_execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# GuardDuty Fargate agent pull (policy defined in iam_db.tf, shared with the
+# db-enrichment execution role).
+resource "aws_iam_role_policy_attachment" "kg_build_execution_guardduty_agent" {
+  role       = aws_iam_role.kg_build_execution.name
+  policy_arn = aws_iam_policy.ecs_execution_guardduty_agent.arn
+}
+
 resource "aws_iam_role" "kg_build_task" {
   name               = "${var.name_prefix}-sources-doc-kg-build-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json

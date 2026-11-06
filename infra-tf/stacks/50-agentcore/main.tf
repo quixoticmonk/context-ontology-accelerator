@@ -75,7 +75,6 @@ module "mcp" {
   roles_table_arn                   = local.roles_table_arn
   roles_table_name                  = local.roles_table_name
   ssm_prefix                        = local.ssm_prefix
-  userpool_client_id                = local.userpool_client_id
   vpc_cidr                          = local.vpc_cidr
   vpc_id                            = local.vpc_id
 }

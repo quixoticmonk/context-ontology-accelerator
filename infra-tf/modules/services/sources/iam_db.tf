@@ -739,6 +739,35 @@ resource "aws_iam_role_policy_attachment" "db_enrichment_execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Let the Fargate execution roles (db-enrichment here, kg-build in
+# iam_docs.tf) pull GuardDuty Runtime Monitoring's agent sidecar.
+# AmazonECSTaskExecutionRolePolicy has no pull on that repository, so without
+# this the sidecar fails with 403 and the task runs unmonitored. The agent
+# repo's account differs per Region, hence the account wildcard.
+# (COA v0.3.9, infra/lib/utils/guardduty-agent.ts grantGuardDutyAgentPull)
+data "aws_iam_policy_document" "ecs_execution_guardduty_agent" {
+  statement {
+    sid = "GuardDutyAgentPull"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+    ]
+    resources = ["arn:${data.aws_partition.current.partition}:ecr:${var.region}:*:repository/aws-guardduty-agent-fargate"]
+  }
+}
+
+resource "aws_iam_policy" "ecs_execution_guardduty_agent" {
+  name   = "${var.name_prefix}-sources-ecs-execution-guardduty-agent"
+  policy = data.aws_iam_policy_document.ecs_execution_guardduty_agent.json
+  tags   = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "db_enrichment_execution_guardduty_agent" {
+  role       = aws_iam_role.db_enrichment_execution.name
+  policy_arn = aws_iam_policy.ecs_execution_guardduty_agent.arn
+}
+
 resource "aws_iam_role" "db_enrichment_task" {
   name               = "${var.name_prefix}-sources-db-enrichment-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json

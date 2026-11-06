@@ -58,7 +58,7 @@ variable "issuer_url" {
 }
 
 variable "mcp_client_id" {
-  description = "MCP CLI OAuth client ID (from auth-idp). Second entry in the JWT authorizer allowed_audience and injected as JWT_CLIENT_ID (MCP callers authenticate as the CLI client)."
+  description = "MCP CLI OAuth client ID (from auth-idp). The only entry in the JWT authorizer allowed_audience and injected as JWT_CLIENT_ID (MCP callers authenticate as the CLI client)."
   type        = string
 }
 
@@ -109,11 +109,6 @@ variable "roles_table_name" {
 
 variable "ssm_prefix" {
   description = "SSM parameter root (e.g. /coa). Used for SSM parameter writes and to scope the runtime role's ssm:GetParameter grant."
-  type        = string
-}
-
-variable "userpool_client_id" {
-  description = "Web app OAuth client ID (from auth-idp). First entry in the JWT authorizer allowed_audience."
   type        = string
 }
 

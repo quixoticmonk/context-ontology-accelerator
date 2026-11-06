@@ -90,11 +90,15 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 
   # allowed_clients omitted: AgentCore uses AND semantics on allowed_clients,
   # and ID tokens don't carry client_id. Use the aud claim via
-  # allowed_audience (present on both web app and MCP CLI tokens).
+  # allowed_audience instead. Only the MCP client: this must match
+  # JWT_CLIENT_ID (locals.tf), because the server's own JWT check rejects any
+  # other audience — admitting the web client here let initialize succeed and
+  # every tool call fail (COA v0.3.9, mcp-stack.ts). The serve runtime, which
+  # MCP forwards to, still accepts both clients.
   authorizer_configuration {
     custom_jwt_authorizer {
       discovery_url    = "${var.issuer_url}/.well-known/openid-configuration"
-      allowed_audience = [var.userpool_client_id, var.mcp_client_id]
+      allowed_audience = [var.mcp_client_id]
     }
   }
 

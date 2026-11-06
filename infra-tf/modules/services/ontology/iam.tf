@@ -37,6 +37,34 @@ resource "aws_iam_role_policy_attachment" "execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Let the execution role pull GuardDuty Runtime Monitoring's Fargate agent
+# sidecar. AmazonECSTaskExecutionRolePolicy has no pull on that repository, so
+# without this the sidecar fails with 403 and the task runs unmonitored. The
+# agent repo's account differs per Region, hence the account wildcard.
+# (COA v0.3.9, infra/lib/utils/guardduty-agent.ts grantGuardDutyAgentPull)
+data "aws_iam_policy_document" "execution_guardduty_agent" {
+  statement {
+    sid = "GuardDutyAgentPull"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+    ]
+    resources = ["arn:${data.aws_partition.current.partition}:ecr:${var.region}:*:repository/aws-guardduty-agent-fargate"]
+  }
+}
+
+resource "aws_iam_policy" "execution_guardduty_agent" {
+  name   = "${local.task_family}-exec-guardduty-agent-policy"
+  policy = data.aws_iam_policy_document.execution_guardduty_agent.json
+  tags   = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "execution_guardduty_agent" {
+  role       = aws_iam_role.execution.name
+  policy_arn = aws_iam_policy.execution_guardduty_agent.arn
+}
+
 # ════════════════════════════════════════════════════════════════════
 #  2. Task role
 # ════════════════════════════════════════════════════════════════════
