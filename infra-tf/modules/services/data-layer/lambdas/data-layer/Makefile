@@ -36,18 +36,12 @@ SRC_DIRS := \
   $(REPO_ROOT)/packages/data-layer/src \
   $(REPO_ROOT)/libs/common/src
 
-# pip requirements — matches CDK's pipDeps in data-layer-stack.ts.
-# The package's own requirements.txt is empty; these are the transitive
-# deps pulled in by importing coa_common.
-# certifi: runtime boto3 prefers a bundled certifi to the CA bundle
-# botocore ships; 2026.10.19 is the first certifi without the roots behind
-# the compromised emSign intermediates (COA v0.3.7). Each spec is quoted so
-# `>=` is not read as a shell redirect.
-PIP_DEPS := \
-  "pydantic" \
-  "pydantic-settings" \
-  "structlog" \
-  "certifi>=2026.10.19"
+# Hash-pinned lock — matches CDK's requirementsFile in data-layer-stack.ts
+# (COA v0.3.9; replaced the inline pipDeps list). The deps (coa_common's
+# runtime deps + certifi) are listed in packages/data-layer/requirements.txt;
+# edit that, then run scripts/relock-python-requirements.sh. Installed with
+# --require-hashes; --no-config keeps the workspace [tool.uv] floors out.
+REQS := $(REPO_ROOT)/packages/data-layer/requirements.lock.txt
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build
@@ -57,7 +51,7 @@ help: ## Show help
 
 build: $(ZIP) ## Build data-layer.zip
 
-$(ZIP): $(shell find $(SRC_DIRS) -type f 2>/dev/null)
+$(ZIP): $(REQS) $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@echo "==> Building data-layer Lambda zip"
 	@rm -rf $(OUT_DIR)
 	@mkdir -p $(OUT_DIR)
@@ -76,13 +70,13 @@ $(ZIP): $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@# symlink issue (see infra/lib/utils/python-bundling.ts for the full
 	@# rationale). --only-binary :all: forces wheels so nothing tries to
 	@# native-compile against the host toolchain.
-	@echo '==> uv pip install $(PIP_DEPS)'
-	@uv pip install \
+	@echo '==> uv pip install --require-hashes -r $(REQS)'
+	@uv pip install --no-config --require-hashes \
 	  --target $(OUT_DIR) \
 	  --python-platform x86_64-manylinux2014 \
 	  --python-version 3.12 \
 	  --only-binary :all: --no-cache -q \
-	  $(PIP_DEPS)
+	  -r $(REQS)
 	@# Strip .pyc, __pycache__, dist-info metadata; zip is smaller and the
 	@# hash stays stable across rebuilds (pip drops timestamped metadata).
 	@find $(OUT_DIR) -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true

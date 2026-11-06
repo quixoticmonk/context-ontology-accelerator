@@ -51,6 +51,12 @@ locals {
     var.serve_vkg_translation_timeout_s != null ? {
       SERVE_VKG_TRANSLATION_TIMEOUT_S = tostring(var.serve_vkg_translation_timeout_s)
     } : {},
+    # Deployment-wide switch for the recommended Deep Reasoning options a
+    # request leaves unset; "off" puts every option back to off (REST callers
+    # cannot send per-request options). Unset → recommended set (COA v0.3.9).
+    var.serve_deep_reasoning_default_options != null ? {
+      DEEP_REASONING_DEFAULT_OPTIONS = var.serve_deep_reasoning_default_options
+    } : {},
   )
 
   # Environment variables for the AgentCore Runtime container.
@@ -72,7 +78,21 @@ locals {
     DEEP_REASONING_TIME_BUDGET_S       = "110"
     DEEP_REASONING_PER_TOOL_TIMEOUT_S  = "45"
     DEEP_REASONING_SYNTHESIS_RESERVE_S = "25"
-    RESOLVE_TIMEOUT_S                  = "170"
+    # Deep-reasoning stop signals (COA v0.3.9). serve parses all four once at
+    # startup (config.py load_config); a malformed or out-of-range value logs a
+    # warning and falls back to the code default. The defaults match the code
+    # defaults, so a deploy changes nothing until an operator sets them.
+    DEEP_REASONING_SUFFICIENCY_MIN_CONFIDENCE    = tostring(var.deep_reasoning_sufficiency_min_confidence)
+    DEEP_REASONING_PROGRESS_SIMILARITY_THRESHOLD = tostring(var.deep_reasoning_progress_similarity_threshold)
+    DEEP_REASONING_STABILITY_STEPS               = tostring(var.deep_reasoning_stability_steps)
+    DEEP_REASONING_STOP_TELEMETRY                = tostring(var.deep_reasoning_stop_telemetry)
+    # Platform bucket holding UPLOADED documents (<namespaceId>/raw/<uploadId>/...).
+    # Upload sources carry no bucket of their own, so Deep Reasoning's document
+    # reads resolve them here. Derived by name like the sources module's
+    # local.sources_bucket_name (no cross-stack read); S3PrefixedDataBuckets in
+    # iam.tf already grants the read (COA v0.3.9, serve-stack.ts).
+    SOURCES_DATA_BUCKET = "${var.name_prefix}-sources-data-${data.aws_caller_identity.current.account_id}"
+    RESOLVE_TIMEOUT_S   = "170"
     # Tier-1 curated metrics execute synchronously. Keep their SQL budget
     # explicit and operator-configurable instead of inheriting the
     # CompositeQueryExecutor's 10-second method default.

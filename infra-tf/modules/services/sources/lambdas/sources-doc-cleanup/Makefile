@@ -15,7 +15,9 @@ ARTIFACTS := $(REPO_ROOT)/infra-tf/artifacts/lambdas
 SRC_DIRS  := $(REPO_ROOT)/packages/sources/src/coa_sources/documents/deletion $(REPO_ROOT)/libs/common/src
 OUT_DIR   := $(ARTIFACTS)/sources-doc-cleanup
 ZIP       := $(ARTIFACTS)/sources-doc-cleanup.zip
-REQS      := $(REPO_ROOT)/packages/sources/documents/deletion/requirements.txt
+# Hash-pinned lock (COA v0.3.9): installed with --require-hashes;
+# --no-config keeps the workspace [tool.uv] floors out of the install.
+REQS      := $(REPO_ROOT)/packages/sources/documents/deletion/requirements.lock.txt
 
 .PHONY: build clean
 .DEFAULT_GOAL := build
@@ -30,7 +32,7 @@ $(ZIP): $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	  if [ -d "$$d" ]; then cp -a "$$d"/. $(OUT_DIR)/; fi; \
 	done
 	@if [ -f "$(REQS)" ]; then \
-	  uv pip install \
+	  uv pip install --no-config --require-hashes \
 	    --target $(OUT_DIR) \
 	    --python-platform aarch64-manylinux2014 \
 	    --python-version 3.12 \

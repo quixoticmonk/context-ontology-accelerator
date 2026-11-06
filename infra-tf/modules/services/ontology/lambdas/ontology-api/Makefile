@@ -34,18 +34,12 @@ SRC_DIRS := \
   $(REPO_ROOT)/packages/ontology-engine/src \
   $(REPO_ROOT)/libs/common/src
 
-# pip deps — matches CDK bundlePython pipDeps for ApiProxyFn.
-PIP_DEPS := \
-  "cedarpy>=4.8.0" \
-  "pydantic>=2.0" \
-  "pydantic-settings>=2.0" \
-  "structlog>=24.0" \
-  "cryptography>=43.0" \
-  "PyJWT>=2.9.0" \
-  "requests>=2.32.0" \
-  "certifi>=2026.10.19"
-# certifi: first release without the roots behind the compromised emSign
-# intermediates (COA v0.3.7).
+# Hash-pinned lock — matches CDK bundlePython requirementsFile for ApiProxyFn
+# (COA v0.3.9; replaced the inline pipDeps list). The deps are listed in
+# requirements.txt next to it; edit that, then run
+# scripts/relock-python-requirements.sh. Installed with --require-hashes;
+# --no-config keeps the workspace [tool.uv] floors out of the install.
+REQS := $(REPO_ROOT)/packages/ontology-engine/lambda/api-proxy/requirements.lock.txt
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build
@@ -55,7 +49,7 @@ help: ## Show help
 
 build: $(ZIP) ## Build ontology-api.zip
 
-$(ZIP): $(shell find $(SRC_DIRS) -type f 2>/dev/null)
+$(ZIP): $(REQS) $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@echo "==> Building ontology-api Lambda zip"
 	@rm -rf $(OUT_DIR)
 	@mkdir -p $(OUT_DIR)
@@ -72,13 +66,13 @@ $(ZIP): $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@# Install pip deps into the same tree. uv + wheels-only so nothing
 	@# native-compiles against the host toolchain (see the namespace
 	@# module's Makefile for the full rationale).
-	@echo "==> uv pip install (explicit deps)"
-	@uv pip install \
+	@echo "==> uv pip install --require-hashes -r $(REQS)"
+	@uv pip install --no-config --require-hashes \
 	  --target $(OUT_DIR) \
 	  --python-platform x86_64-manylinux2014 \
 	  --python-version 3.12 \
 	  --only-binary :all: --no-cache -q \
-	  $(PIP_DEPS)
+	  -r $(REQS)
 	@# Strip .pyc / __pycache__ so the zip hash stays stable across rebuilds.
 	@find $(OUT_DIR) -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 	@find $(OUT_DIR) -name '*.pyc' -delete 2>/dev/null || true

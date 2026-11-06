@@ -280,3 +280,49 @@ variable "serve_vkg_translation_timeout_s" {
     error_message = "serve_vkg_translation_timeout_s must be between 10 and 600 seconds (matches the runtime clamp)."
   }
 }
+
+variable "serve_deep_reasoning_default_options" {
+  description = "Pin DEEP_REASONING_DEFAULT_OPTIONS. null (default) → env var not emitted, the recommended Deep Reasoning option set applies to options a request leaves unset. \"off\" (or false/0/no) puts every option back to off — the only switch for REST callers, whose Query carries no per-request options."
+  type        = string
+  default     = null
+}
+
+# ── Deep-reasoning stop signals (COA v0.3.9) ─────────────────────────
+# Always emitted with the code defaults, matching upstream serve-stack.ts,
+# so a deploy changes nothing until an operator sets them.
+
+variable "deep_reasoning_sufficiency_min_confidence" {
+  description = "DEEP_REASONING_SUFFICIENCY_MIN_CONFIDENCE (0.0–1.0). A \"sufficient\" verdict ends retrieval only at or above this model confidence. 0 (default) = off: the verdict alone decides."
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.deep_reasoning_sufficiency_min_confidence >= 0 && var.deep_reasoning_sufficiency_min_confidence <= 1
+    error_message = "deep_reasoning_sufficiency_min_confidence must be between 0 and 1."
+  }
+}
+
+variable "deep_reasoning_progress_similarity_threshold" {
+  description = "DEEP_REASONING_PROGRESS_SIMILARITY_THRESHOLD (0.0–1.0). The loop stops once deep_reasoning_stability_steps compared working answers in a row reach this cosine similarity. 0 (default) = off; typical values 0.9–0.97."
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.deep_reasoning_progress_similarity_threshold >= 0 && var.deep_reasoning_progress_similarity_threshold <= 1
+    error_message = "deep_reasoning_progress_similarity_threshold must be between 0 and 1."
+  }
+}
+
+variable "deep_reasoning_stability_steps" {
+  description = "DEEP_REASONING_STABILITY_STEPS (1–20, default 2). Compared working answers in a row that must reach the similarity threshold."
+  type        = number
+  default     = 2
+  validation {
+    condition     = var.deep_reasoning_stability_steps >= 1 && var.deep_reasoning_stability_steps <= 20 && floor(var.deep_reasoning_stability_steps) == var.deep_reasoning_stability_steps
+    error_message = "deep_reasoning_stability_steps must be an integer between 1 and 20."
+  }
+}
+
+variable "deep_reasoning_stop_telemetry" {
+  description = "DEEP_REASONING_STOP_TELEMETRY. true records per-reply stop_signals traces (one extra Bedrock embed call per compared reply) without stopping the loop. Default false."
+  type        = bool
+  default     = false
+}

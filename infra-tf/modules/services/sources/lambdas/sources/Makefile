@@ -28,7 +28,9 @@ SRC_DIRS := \
   $(REPO_ROOT)/libs/common/src \
   $(REPO_ROOT)/smithy-generated/control-plane-python-server
 
-REQS := $(REPO_ROOT)/packages/sources/requirements.txt
+# Hash-pinned lock (COA v0.3.9): installed with --require-hashes;
+# --no-config keeps the workspace [tool.uv] floors out of the install.
+REQS := $(REPO_ROOT)/packages/sources/requirements.lock.txt
 
 .PHONY: build clean
 .DEFAULT_GOAL := build
@@ -45,7 +47,7 @@ $(ZIP): $(REQS) $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	done
 	@if [ -f "$(REQS)" ]; then \
 	  echo "==> uv pip install -r $(REQS)"; \
-	  uv pip install \
+	  uv pip install --no-config --require-hashes \
 	    --target $(OUT_DIR) \
 	    --python-platform aarch64-manylinux2014 \
 	    --python-version 3.12 \

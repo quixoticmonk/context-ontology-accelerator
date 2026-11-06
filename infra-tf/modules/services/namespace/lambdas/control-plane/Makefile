@@ -34,8 +34,13 @@ SRC_DIRS := \
   $(REPO_ROOT)/libs/common/src \
   $(REPO_ROOT)/smithy-generated/control-plane-python-server
 
-# pip requirements — matches CDK's requirementsFile: packages/control-plane/requirements.txt
-REQS := $(REPO_ROOT)/packages/control-plane/requirements.txt
+# Hash-pinned lock — matches CDK's requirementsFile:
+# packages/control-plane/requirements.lock.txt (COA v0.3.9). Installed with
+# --require-hashes so a deploy can only ship the locked files; --no-config
+# keeps the workspace's [tool.uv] constraint floors (>= specs hash mode
+# rejects) out of the install. Edit requirements.txt, then run
+# scripts/relock-python-requirements.sh.
+REQS := $(REPO_ROOT)/packages/control-plane/requirements.lock.txt
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build
@@ -65,8 +70,8 @@ $(ZIP): $(REQS) $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@# rationale). --only-binary :all: forces wheels so nothing tries to
 	@# native-compile against the host toolchain.
 	@if [ -f "$(REQS)" ]; then \
-	  echo "==> uv pip install -r $(REQS)"; \
-	  uv pip install \
+	  echo "==> uv pip install --require-hashes -r $(REQS)"; \
+	  uv pip install --no-config --require-hashes \
 	    --target $(OUT_DIR) \
 	    --python-platform x86_64-manylinux2014 \
 	    --python-version 3.12 \

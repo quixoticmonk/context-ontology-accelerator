@@ -34,8 +34,10 @@ SRC_DIRS := \
   $(REPO_ROOT)/libs/common/src \
   $(REPO_ROOT)/smithy-generated/control-plane-python-server
 
-# pip requirements — matches CDK's requirementsFile: packages/metric-service/requirements.txt
-REQS := $(REPO_ROOT)/packages/metric-service/requirements.txt
+# Hash-pinned lock — matches CDK's requirementsFile:
+# packages/metric-service/requirements.lock.txt (COA v0.3.9). Installed with
+# --require-hashes; --no-config keeps the workspace [tool.uv] floors out.
+REQS := $(REPO_ROOT)/packages/metric-service/requirements.lock.txt
 
 .PHONY: build clean help
 .DEFAULT_GOAL := build
@@ -66,7 +68,7 @@ $(ZIP): $(REQS) $(shell find $(SRC_DIRS) -type f 2>/dev/null)
 	@# native-compile against the host toolchain.
 	@if [ -f "$(REQS)" ]; then \
 	  echo "==> uv pip install -r $(REQS)"; \
-	  uv pip install \
+	  uv pip install --no-config --require-hashes \
 	    --target $(OUT_DIR) \
 	    --python-platform x86_64-manylinux2014 \
 	    --python-version 3.12 \

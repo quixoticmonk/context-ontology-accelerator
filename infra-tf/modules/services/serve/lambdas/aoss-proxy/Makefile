@@ -22,21 +22,12 @@ SRC_DIR   := $(REPO_ROOT)/packages/context-manager/lambda/aoss-search-proxy
 COMMON    := $(REPO_ROOT)/libs/common/src
 OUT_DIR   := $(ARTIFACTS)/aoss-proxy
 ZIP       := $(ARTIFACTS)/aoss-proxy.zip
-REQS      := $(SRC_DIR)/requirements.txt
-
-# Matches CDK serve-stack.ts pipDeps for AossSearchProxyFn (COA v0.3.7).
-# certifi: first release without the roots behind the compromised emSign
-# intermediates. Each spec is quoted so `>=` is not a shell redirect.
-PIP_DEPS := \
-  "opensearch-py" \
-  "requests-aws4auth" \
-  "cedarpy" \
-  "cryptography" \
-  "pydantic-settings" \
-  "PyJWT" \
-  "requests" \
-  "structlog" \
-  "certifi>=2026.10.19"
+# Hash-pinned lock — matches CDK serve-stack.ts requirementsFile for
+# AossSearchProxyFn (COA v0.3.9; replaced the inline pipDeps list). The deps
+# themselves are listed in requirements.txt next to it; edit that, then run
+# scripts/relock-python-requirements.sh. Installed with --require-hashes;
+# --no-config keeps the workspace [tool.uv] floors out of the install.
+REQS      := $(SRC_DIR)/requirements.lock.txt
 
 .PHONY: build clean
 .DEFAULT_GOAL := build
@@ -49,13 +40,12 @@ $(ZIP): $(shell find $(SRC_DIR) $(COMMON) -type f 2>/dev/null)
 	@mkdir -p $(OUT_DIR)
 	@cp -a $(SRC_DIR)/. $(OUT_DIR)/
 	@cp -a $(COMMON)/. $(OUT_DIR)/
-	@uv pip install \
+	@uv pip install --no-config --require-hashes \
 	  --target $(OUT_DIR) \
 	  --python-platform aarch64-manylinux2014 \
 	  --python-version 3.12 \
 	  --only-binary :all: --no-cache -q \
-	  $(if $(wildcard $(REQS)),-r $(REQS)) \
-	  $(PIP_DEPS)
+	  -r $(REQS)
 	@find $(OUT_DIR) -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 	@rm -f $(ZIP)
 	@cd $(OUT_DIR) && find . -exec touch -t 197001010000 {} + && \
