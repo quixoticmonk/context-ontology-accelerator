@@ -103,6 +103,22 @@ To opt into scale-to-zero, set the following in `infra-tf/shared.tfvars`:
 aoss_min_ocu = 0
 ```
 
+`aoss_max_ocu` sets the ceiling the same way. Both are applied by the
+`10-foundation` stack's storage module
+(`infra-tf/modules/foundation/storage/opensearch.tf`); because they live in
+`shared.tfvars`, the value persists across applies until you change it.
+
+The floor and ceiling are set on this deployment's own collection group
+(`<prefix>-<env>-vector-store-group`), so each `resource_prefix` pays its own
+floor; the ceiling is also capped by the account's OpenSearch Serverless
+max-OCU quotas (see [A.3](deploying.md#a3-quotas-to-check-before-deploying)).
+To see the current limits:
+
+```bash
+aws opensearchserverless list-collection-groups --region <region> \
+  --query 'collectionGroupSummaries[].[name,capacityLimits]'
+```
+
 Valid `aoss_min_ocu` values are `0`, `2`, `4`, `8`, `16`, or multiples of 16.
 Leave standby replicas alone — AWS rejects `standbyReplicas: DISABLED` for
 NextGen, which manages replicas internally.
@@ -187,7 +203,10 @@ list (10 layered stacks under `infra-tf/stacks/`), dependency order, and
 per-stack purpose. Cross-stack values flow through SSM Parameter Store under
 `/coa/*`, so stacks can be applied incrementally.
 
-> **Cost warning:** Neptune + OpenSearch Serverless cost ~$930/mo when idle.
+> **Cost warning:** a default deployment costs about **$1,600/month (about
+> $2.20/hour) while idle** (on-demand in us-east-1, October 2026 list prices),
+> about $900/month with `aoss_min_ocu = 0`, plus about $30/month for each
+> namespace you create. Usage, storage and data transfer come on top.
 > Destroy stacks when not actively testing — see
 > [Deploying Context Ontology Accelerator: Tearing Down](deploying.md).
 

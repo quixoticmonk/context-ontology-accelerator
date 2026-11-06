@@ -79,6 +79,7 @@ overrides the default).
 | MariaDB | `MYSQL` | 3306 |
 | Aurora MySQL | `MYSQL` | 3306 |
 | SQL Server | `SQLSERVER` | 1433 |
+| Neptune | `SPARQL` | 8182 |
 
 !!! note "MariaDB and Aurora use an existing engine value"
     COA has no separate `MARIADB` or `AURORA` engine. MariaDB speaks the MySQL
@@ -86,6 +87,11 @@ overrides the default).
     wire-compatible with its underlying engine, so an Aurora PostgreSQL cluster
     is `engine=POSTGRESQL` (5432) and an Aurora MySQL cluster is `engine=MYSQL`
     (3306). Point `host` at the **cluster endpoint** (writer) for Aurora.
+
+!!! note "Neptune (`SPARQL`) is not yet available in the Terraform deployment"
+    The `SPARQL` row applies to `RDF_SPARQL` graph sources. The graph-sources
+    switch is not yet available in the Terraform deployment (`infra-tf/`), so
+    `RDF_SPARQL` sources cannot be registered there yet. See [Sources](sources.md).
 
 ---
 

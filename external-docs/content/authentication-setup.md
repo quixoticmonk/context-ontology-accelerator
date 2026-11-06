@@ -232,16 +232,17 @@ Context Ontology Accelerator uses **ID tokens** for all authentication across ev
 
 | Interface | Token type | Key claims |
 |-----------|-----------|------------|
-| **REST API** (API Gateway) | ID token | `aud`, `email`, `groups` |
+| **REST API** (API Gateway) | ID token from the web app client | `aud`, `email`, `groups` |
 | **Playground** (AgentCore SSE) | ID token | `aud`, `email`, `groups` |
-| **MCP** (AgentCore Runtime) | ID token | `aud`, `email`, `groups` |
+| **MCP** (AgentCore Runtime) | ID token from the MCP/CLI client | `aud`, `email`, `groups` |
 
 The ID token carries the user's identity (`email`), group memberships (`groups` claim), and audience (`aud` = client ID). AgentCore Runtime validates the `aud` claim — which is present on ID tokens from any OIDC-compliant provider. Access tokens are **not used**.
 
 ### Getting a token (dev only)
 
 ```bash
-# ID token (used for all APIs)
+# ID token. <CLIENT_ID> is the web app client for the REST API and the
+# MCP/CLI client for the MCP server (see "Which token to send" in agent-access.md)
 aws cognito-idp initiate-auth --auth-flow USER_PASSWORD_AUTH \
   --client-id <CLIENT_ID> --auth-parameters USERNAME=<email>,PASSWORD=<pass> \
   --region <region> --query "AuthenticationResult.IdToken" --output text

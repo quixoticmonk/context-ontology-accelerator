@@ -19,9 +19,18 @@ end-to-end.
 | Python | 3.12 | Backend services |
 | pnpm | 10+ | TypeScript package management (workspace-aware; npm/yarn will not work) |
 | uv | 0.13.4+ | Python package management (`pyproject.toml` sets `required-version`: older uv embeds roots that trust the compromised emSign intermediates) |
-| Java | 17+ | Smithy code generation |
+| Java | 17–24 (21 recommended) | Smithy code generation, Databricks connector build |
+| Maven | 3.6.3+ (`.mise.toml` pins 3.9.16) | Databricks connector build only (`mvn package` in `connectors/databricks/`, the JAR that `infra-tf/modules/connectors/databricks/` takes as `jar_path`) |
 | Docker | — | Container image builds |
 | jq | — | Deploy helper scripts |
+
+Maven is only needed to build a connector. JDK 25+ is not supported yet: the
+Athena Federation SDK the connector bundles fails on it. Maven runs on
+`JAVA_HOME`, which can differ from the `java` on your `PATH`, and
+`brew install maven` runs it on the newest OpenJDK: check `mvn -v`, and if it
+shows Java 25+, point `JAVA_HOME` at JDK 21. `mise install` provides a supported
+JDK and Maven from `.mise.toml`; if another `mvn` comes first on your `PATH`, run
+the build through mise (`mise exec -- mvn package`).
 
 ## AWS Account Setup
 
@@ -29,18 +38,22 @@ Context Ontology Accelerator deploys into a single AWS account and region. Ensur
 
 ### Service Quotas
 
-Two account service quotas can block a deploy. On a fresh or sandbox
+Four account service quotas can block a deploy. On a fresh or sandbox
 account it is worth confirming them up front:
 
 | Quota | Code | Requirement | If too low |
 |-------|------|-------------|------------|
 | **VPC** (VPCs per Region) | `L-F678F1CE` | Room for one more VPC in the target region (skip when using `vpc_id` to import an existing VPC) | Delete an unused VPC or request an increase — or set `vpc_id` in `shared.tfvars` |
+| **Internet gateways** (per Region) | `L-A4707A72` | Room for one more, for the new VPC's public subnets. Detached gateways count too. Only needed when the deploy creates a VPC | Delete an unused Internet gateway or request an increase |
+| **Elastic IPs** (EC2-VPC Elastic IPs) | `L-0263D0A3` | Room for one more, for the new VPC's NAT gateway. Shared with every other Elastic IP in the region, so it can run out before VPCs do. Only needed when the deploy creates a VPC | Release an unused Elastic IP or request an increase |
 | **Lambda** (Concurrent executions) | `L-B99A9384` | Enough unreserved headroom to reserve the deployment's Lambda concurrency (default 5 × 2 functions = 10) above Lambda's account-wide minimum of 10 | Request an increase, **or** deploy with `lambda_reserved_concurrency = 0` (see [Lambda reserved concurrency](#lambda-reserved-concurrency)) |
 
 Check them with:
 
 ```bash
 aws ec2 describe-vpcs --query 'length(Vpcs)' --output text
+aws ec2 describe-internet-gateways --query 'length(InternetGateways)' --output text
+aws ec2 describe-addresses --query 'length(Addresses)' --output text
 aws lambda get-account-settings \
   --query 'AccountLimit.[ConcurrentExecutions,UnreservedConcurrentExecutions]'
 ```
@@ -236,11 +249,11 @@ These apply **no matter which region you deploy to**:
 ```bash
 git clone <repo-url> && cd ontology-accelerator
 
-# Install pinned tool versions (Python 3.12, Java 17, Node 22, pnpm 10.27.0)
+# Install pinned tool versions (Python 3.12, Java 17, Maven, Node 22, pnpm 10.27.0)
 curl https://mise.run | sh
 mise install
 
-# make setup runs smithy-generate.sh (make generate) + setup-dev.sh
+# make setup installs the pinned pnpm if it is missing, then runs smithy-generate.sh + setup-dev.sh
 # (uv sync --all-packages, pnpm install --frozen-lockfile, pre-commit hooks)
 make setup
 ```
@@ -386,6 +399,16 @@ hosted_zone_id      = "Z0123456789ABCDEFGHIJ"
 
 !!! note "Custom domain certificate regions"
     `ui_certificate_arn` must be an ACM certificate in `us-east-1` (CloudFront requirement) regardless of your deploy region. `api_certificate_arn` must be in the same region you're deploying to (API Gateway requirement). The variables are validated at plan time and Terraform fails with a clear error if either is in the wrong region.
+
+!!! note "VPC CIDR is not a stack-level setting yet"
+    A created VPC uses `10.0.0.0/16`. The network module has a `vpc_cidr`
+    variable (`infra-tf/modules/foundation/network/variables.tf`), but the
+    `infra-tf/stacks/00-network` stack does not pass it through, so there is no
+    `shared.tfvars` entry for it (upstream's CDK deployment exposes it as
+    `vpc_cidr` context). Changing the CIDR of an existing deployment's VPC would
+    **replace the VPC** and everything in it — Neptune, the OpenSearch
+    endpoints, Lambdas and the AgentCore runtime — a full rebuild with data loss,
+    so only ever set a different CIDR on a new deployment.
 
 !!! warning "Multi-region deployments"
     S3 buckets and IAM roles are globally scoped, not region-isolated. Deploying the same `resource_prefix` + `env` to a second region **will collide** with an existing deployment. Use a distinct `resource_prefix` per region (e.g., `coa-w2` for `us-west-2`) — do not rely on region alone to disambiguate.
@@ -614,6 +637,108 @@ timeout severs the socket first). A median translation on a wide namespace
 does not fit over REST at any value and callers should use the streaming
 endpoint there.
 
+#### Deep-reasoning stop signals
+
+Four optional settings let the gather loop stop on two extra signals: how sure
+the model is that it has enough, and whether its working answer has stopped
+changing. All four are off by default, so a deploy that leaves them unset
+behaves as before. [Deep-reasoning stop signals](serve.md#deep-reasoning-stop-signals)
+in the Serve guide describes what each one does to the loop.
+
+| Runtime variable | Serve module variable | Default | Range |
+| --- | --- | --- | --- |
+| `DEEP_REASONING_SUFFICIENCY_MIN_CONFIDENCE` | `deep_reasoning_sufficiency_min_confidence` | `0` (off) | float 0.0–1.0 |
+| `DEEP_REASONING_PROGRESS_SIMILARITY_THRESHOLD` | `deep_reasoning_progress_similarity_threshold` | `0` (off) | float 0.0–1.0 |
+| `DEEP_REASONING_STABILITY_STEPS` | `deep_reasoning_stability_steps` | `2` | int 1–20 |
+| `DEEP_REASONING_STOP_TELEMETRY` | `deep_reasoning_stop_telemetry` | `false` | `true/1/yes/on` or `false/0/no/off` |
+
+- **Minimum confidence.** The loop accepts a "sufficient" verdict only when the
+  model's confidence (0.0–1.0) is at least this value. A missing or malformed
+  confidence counts as below the threshold, so the fail-safe is more retrieval,
+  never an early stop. At `0` the verdict alone decides.
+- **Similarity threshold and stability steps.** When the threshold is above
+  `0`, each working answer is embedded with the request's existing embedding
+  backend and compared by cosine to the previous compared one. The loop stops
+  once `STABILITY_STEPS` compared answers in a row reach the threshold. With
+  `singleCallSteps`, an answer is compared only when the gathered context has
+  grown since the last comparison. Typical thresholds are 0.9–0.97.
+- **Telemetry.** Records a `stop_signals` trace step (and a
+  `deep_reasoning_stop_signals` log line) for each model reply that carries the
+  signals and for the prefetch decision, so you can pick thresholds from real
+  traffic before turning them on. It is also recorded whenever either threshold
+  is above `0`. Telemetry never stops or holds back the loop, but it does
+  embed working answers so it can record their cosine: one extra Bedrock embed
+  call per compared reply, whose time counts against the loop's time budget.
+
+Setting either threshold above `0`, or turning telemetry on, also asks the
+model for a confidence with each reply, which changes the prompt. Compare
+accuracy and latency before and after.
+
+Set them on the `serve` module call in `infra-tf/stacks/50-agentcore/main.tf`
+(the variables are declared in `infra-tf/modules/services/serve/variables.tf`):
+
+```hcl
+module "serve" {
+  # ...
+  deep_reasoning_sufficiency_min_confidence = 0.7  # require >=0.7 before an early stop
+  deep_reasoning_stop_telemetry             = true # record the signals only
+}
+```
+
+These four are read only under their `DEEP_REASONING_*` names; there is no
+`AGENTIC_*` alias for them. Serve reads the values once, when the runtime
+starts. A malformed or out-of-range value logs a warning and falls back to the
+default. Changing a value is an AgentCore runtime update: re-apply
+`50-agentcore`, after which new sessions start with the new values.
+
+#### PII masking in questions
+
+The user-query guardrail (`coa-dev-guardrail`) anonymizes names, email addresses, phone numbers, US Social Security numbers and card numbers on both the question and the answer, so personal data is masked in what the model reads and returns. The retrieval guardrail does not, because named entities are what ingested documents are about.
+
+The trade-off is answer quality: the guardrail cannot tell a person's name from a title, a customer or a product, and in a text-to-SQL question those values are the filter. The NL-to-SQL strategy refuses to run SQL that filters on a masked placeholder (see [Tier 2](serve.md#tier-2--structured-query-nl-to-sql)), so it does not return a confident wrong number for such a question, but the question is not answered from the tables. The VKG (Ontop) strategy and Deep Reasoning do not yet apply this check.
+
+Upstream's CDK deployment has a benchmarking-only switch that makes serve ignore both guardrails (`serve_guardrails_disabled`). The Terraform deployment does not expose it. There is no per-request or per-entity switch.
+
+#### Deep Reasoning default options
+
+A Deep Reasoning request that leaves an option unset gets the recommended value
+(see [Deep Reasoning request options](serve.md#deep-reasoning-request-options)).
+A request on the streaming endpoint can turn any option off itself; a REST
+`Query` carries no per-request options, so for REST callers the deployment
+setting is the only switch. To put every option back to off for the whole
+deployment, set it on the `serve` module call in
+`infra-tf/stacks/50-agentcore/main.tf`:
+
+```hcl
+module "serve" {
+  # ...
+  serve_deep_reasoning_default_options = "off"
+}
+```
+
+The module then sets `DEEP_REASONING_DEFAULT_OPTIONS` on the Serve runtime;
+`off`, `false`, `0` and `no` all switch the defaults off. Left at `null` (the
+default), the variable is not set and the recommended options apply. Changing
+it is a runtime update, not an image rebuild.
+
+#### Graph sources
+
+Graph sources (`RDF_SPARQL`, an Amazon Neptune cluster registered as a source;
+see the [Sources Guide](sources.md)) ship **off by default** upstream, behind a
+CDK deploy switch. **The switch is not yet available in the Terraform
+deployment**: `infra-tf` does not deploy the graph-verify pipeline, the SPARQL
+egress rules or the Neptune read grants for source clusters, so a Terraform
+deployment always behaves as upstream's switch-off deployment:
+
+- The Sources API refuses to register or re-verify a graph source with a 400 that names the switch.
+- An ontology import that binds a class to a graph source (`coa_import:dataSourceName`) is refused with a 422.
+- An R2RML import first reads Neptune to check that no class it maps is bound to a graph source. If that read fails, the import fails (a 502 on a direct upload, a failed job for `ingest-from-s3`; logged as `ontology_backend_lookup_failed`) instead of risking a class with two backends; retry it.
+- The console does not offer graph sources.
+- The REST `/query` API rejects `strategy=nl_to_sparql` with a 400; streaming and MCP requests run the default chain.
+
+The API model always lists the `RDF_SPARQL` sub-type and the `nl_to_sparql`
+strategy. The deployment decides whether it accepts them.
+
 ### Internal Environment Variables
 
 These are wired by the Terraform modules or carry in-code defaults. They are
@@ -629,6 +754,7 @@ the relevant Lambda when tuning a large or pathological source.
 | `REVIEW_QUEUE_URL` | `modules/services/sources/sqs.tf` | SQS review-queue URL the bulk-review worker re-enqueues page continuations to, wiring its own self-continuation. |
 | `DATAZONE_CLEANUP_BUDGET_S` | `sources_handler.py` default | **Upper clamp** (not an absolute deadline) on DataZone asset cleanup during source delete, in seconds (default `240`). The effective deadline is `min(this value, remaining Lambda time − 2s safety margin)`, so it can shorten the window but never extend past the real timeout. On expiry the delete returns partial-completion counts and the namespace-deletion sweep finishes the remainder, instead of the Lambda being killed mid-request. A malformed value falls back to `240`. |
 | `PROBE_TIMEOUT_MS` | `dialects.py` default | Session-level `statement_timeout` (milliseconds, default `30000`) applied on Postgres/Redshift connections before the column-cardinality probe used for enum detection. Bounds the `COUNT(*) / COUNT(DISTINCT …)` probe and the sampling query that follows it, so one wide or high-cardinality column cannot consume the whole 15-minute `sources-db-connector` budget. Must be a positive integer; a malformed or non-positive value logs a warning and falls back to the default rather than removing the bound. Set it **lower** to fail faster on pathological columns, **higher** only if legitimately large tables are being skipped — too high defeats the protection, and a timed-out column is simply treated as "not an enum" (logged as `distinct_probe_timeout`). |
+| `SERVE_TIER1_LOOKUP_TTL_S` | `metric_resolver.py` default | Seconds (default `300`, accepted range 1–3600) a query-serving instance uses a namespace's cached metrics before reading them again, so a created, updated or deleted metric reaches queries within this time of the instance's last read of that namespace. Besides the hourly full refresh, each instance reads a namespace on its own at most once per interval, including after a failed read (so a metric created during a failed read can take up to two intervals to appear); concurrent questions share one read, and a question waits at most 2 seconds for a namespace read. That limit doesn't cover the first full load on a newly started instance, which a question waits for in full. Each namespace read is scoped to that namespace's metric graph. Not set by the serve module; a malformed or out-of-range value logs `tier1_setting_ignored` and falls back to the default. |
 
 **Migration note for `DATAZONE_CLEANUP_BUDGET_S`.** Before the GH-137 fix this
 was an absolute wall-clock deadline that bounded only the delete loop, and its
@@ -1004,6 +1130,83 @@ aws apigateway get-authorizers \
   --rest-api-id $(cd infra-tf/stacks/60-api-edge && terraform output -raw api_id) \
   --region us-east-1
 ```
+
+### A database source's Glue connection keeps the VPC
+
+**Symptom:** `terraform destroy` on `00-network` fails on the connector
+security group (`<prefix>-connector-sg`, `has a dependent object`) and a
+private subnet, and the VPC stays. The ENI left in the VPC looks like an
+orphaned Lambda ENI, but is not: `InterfaceType` `lambda`, an `ela-attach-…`
+attachment owned by `amazon-aws`, and a description of 12 hex characters and
+the database engine, such as `d1c612eeec23-POSTGRESQL`.
+
+**Cause:** every registered database (JDBC) source has a federated Glue
+connection, `<prefix><env>ds_<hash>` (lowercased, dashes dropped), with a Lake
+Formation registration and a federated catalog of the same name. The sources
+service creates them when it scans the source, in the connector security group
+and a private subnet; Terraform has no record of them. Glue refuses to delete a
+connection while its federated catalog exists, dropping the catalog takes Lake
+Formation `DROP` on it (given only to its creator, COA's federation provisioner
+role), and Glue deletes the ENI about 19 minutes after the connection is
+deleted. If the provisioner role (destroyed with `40-sources`) goes first, Glue
+detaches the ENI but leaves it `available`.
+
+**Fix:** before destroying `40-sources`, delete your database sources through
+the API (`DELETE /namespaces/{namespaceId}/sources/{sourceId}`), which drops the
+catalogs with COA's own administrator role; then wait out the ENIs (about 19
+minutes) before destroying `00-network`. After the fact, a Lake Formation data
+lake administrator finishes it per catalog:
+
+```bash
+aws lakeformation grant-permissions --region <REGION> --permissions DROP \
+  --principal DataLakePrincipalIdentifier=<your-principal-arn> \
+  --resource '{"Catalog":{"Id":"<ACCOUNT>:<prefix><env>ds_<hash>"}}'
+aws glue delete-catalog --region <REGION> --catalog-id <prefix><env>ds_<hash>
+aws glue delete-connection --region <REGION> --connection-name <prefix><env>ds_<hash>
+```
+
+To check what holds the group, and delete a Glue ENI only once it is
+`available` (never an attached one):
+
+```bash
+aws ec2 describe-network-interfaces --region <REGION> \
+  --filters "Name=group-id,Values=<connector-security-group-id>" \
+  --query "NetworkInterfaces[].{Id:NetworkInterfaceId,Type:InterfaceType,Status:Status,Description:Description}"
+aws glue get-connections --region <REGION> --query "ConnectionList[?starts_with(Name, '<prefix><env>ds_')].Name"
+```
+
+Prefixes alias once dashes are dropped (`coa`/`dev-1` and `coa`/`dev1` both
+give `coadev1ds_…`), so check a connection's role and security group are this
+deployment's before deleting it.
+
+### GuardDuty Runtime Monitoring endpoint blocks the VPC
+
+**Symptom:** `terraform destroy` on `00-network` fails with
+`The subnet 'subnet-…' has dependencies and cannot be deleted`.
+
+**Cause:** with Runtime Monitoring's automated agent configuration on (for ECS
+Fargate, EC2 or EKS), GuardDuty adds an interface VPC endpoint for
+`com.amazonaws.<region>.guardduty-data` and a security group named
+`GuardDutyManagedSecurityGroup-<vpc-id>` to each VPC that runs a monitored
+workload, both tagged `GuardDutyManaged: true`. COA's ontology service and VKG
+tasks run on Fargate in the VPC. Terraform does not know either resource, and
+GuardDuty deletes them only when Runtime Monitoring itself is disabled ([Using
+Infrastructure as Code with GuardDuty automated security
+agents](https://docs.aws.amazon.com/guardduty/latest/ug/using-iac-with-gdu-automated-agents-runtime-monitoring.html)).
+
+**Fix:** both belong to GuardDuty, which your security team may run, so check
+with them first. Then delete the endpoint, wait until it is gone (about 2
+minutes; EC2 has no waiter for endpoints), delete the security group, and
+re-run the destroy:
+
+```bash
+aws ec2 delete-vpc-endpoints --region <REGION> --vpc-endpoint-ids <vpce-id>
+while aws ec2 describe-vpc-endpoints --region <REGION> --vpc-endpoint-ids <vpce-id> --query 'VpcEndpoints[].State' --output text 2>/dev/null | grep -qv deleted; do sleep 15; done
+aws ec2 delete-security-group --region <REGION> --group-id <sg-id>
+```
+
+With an imported VPC (`vpc_name`), COA does not delete the VPC, so these
+cannot block the teardown.
 
 ### A database source is stuck in `DELETING`
 
