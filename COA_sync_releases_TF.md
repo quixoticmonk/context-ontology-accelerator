@@ -1259,6 +1259,18 @@ It has one — Reference R1. File it as a mapped row, not under "not ported."
 
 **This appendix goes stale every sync — re-verify against source (`wc -l` on modules, `grep` for `module` blocks in each stack) before trusting any number here. Do not summarize secondhand from a prior audit; check the files directly.** Last verified 2026-10-14 against COA v0.3.5 on this downstream (stacks live at `infra-tf/stacks/`, modules at `infra-tf/modules/`; stack numbering 00-network / 10-foundation / 20-namespace / 25-ecr / 30-services / 40-sources / 50-agentcore / 55-data-layer / 60-api-edge / 70-observability).
 
+**Status key** (the Status column of the §A.2 tables):
+
+| Status | Meaning |
+|---|---|
+| ✅ Ported | The construct's behaviour is in Terraform at parity with upstream CDK, with no known gap. |
+| 🔶 Ported | The construct exists in Terraform, with a caveat: a known gap, a value hardcoded that CDK makes configurable, a piece managed outside Terraform, or a consolidated module not checked construct by construct. The Notes column or Appendix C names the caveat. |
+| ❓ Unverified | The mapping or the upstream construct has not been confirmed against source. Do not treat it as ported or missing until checked. |
+| ❌ Not ported | Confirmed to exist upstream and absent from Terraform. Each one needs an Appendix C row. |
+
+Move a row from 🔶 to ✅ only when its caveat is resolved, and say so in the
+sync commit body.
+
 ### A.1 Stack structure
 
 **Last verified: 2026-10-14 against COA v0.3.5 on this downstream.** Re-verify
