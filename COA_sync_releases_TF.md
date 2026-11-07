@@ -1283,7 +1283,7 @@ upstream CDK's own layout (upstream merges network+auth into a single
 | **25-ecr** | ECR repositories for Fargate/Lambda container images | — (inline `aws_ecr_repository` resources) | `/ecr/{repo}/url`, `/ecr/{repo}/arn` × N repos |
 | **30-services** | Metric service, VKG, ontology engine | `metric-service` (1,075L), `vkg` (814L), `ontology` (961L) | service role ARNs; cluster/service names; `/metric/{api,import-worker,import-dlq-recovery}-fn-arn`; `/vkg/cluster-name`; `/ontology-engine/{cluster-name,api-fn-arn}` |
 | **40-sources** | Data connectors (ingestion, enrichment, preprocessing, kg-build), Lake Formation, source-delete worker, glue-event rescan (v0.3.5), Databricks parameter audit (v0.3.5) | `sources` (5,124L, 20 files — single consolidated module, grew from 4,321L in v0.3.4 for the new flows) | `/sources/api-fn-arn`; `/sources/{db-connector,bulk-review-worker,preprocessing,db-scan-trigger,doc-cleanup,doc-trigger,federation-provisioner,delete-worker,glue-event-rescan}-fn-arn`; `/sources/{db-scan,bulk-review,doc-ingestion,source-delete,glue-event}-dlq-arn` |
-| **50-agentcore** | Agent runtime serving, MCP proxy | `serve` (1,164L, 8 files — Fargate + AOSS proxy Lambda), `mcp` (523L, 6 files — Fargate) | `/serve/{aoss-proxy-fn-arn,runtime-arn}`; `/serve/${env}/runtime-role-arn` (env-scoped post-v0.3.5 to avoid cross-env collision); MCP endpoint |
+| **50-agentcore** | Agent runtime serving, MCP proxy | `serve` (1,164L, 8 files — AgentCore runtime + memory + AOSS proxy Lambda), `mcp` (523L, 6 files — AgentCore runtime, MCP protocol) | `/serve/{aoss-proxy-fn-arn,runtime-arn}`; `/serve/${env}/runtime-role-arn` (env-scoped post-v0.3.5 to avoid cross-env collision); MCP endpoint |
 | **55-data-layer** | Data-layer Lambda (invokes agentcore runtime) | `data-layer` (268L, 5 files) | `/data-layer/api-fn-arn` (written by module internals, not stack) |
 | **60-api-edge** | API Gateway routing (merged OpenAPI → `aws_api_gateway_rest_api`), CloudFront + web hosting, 501-stub guard (v0.3.5) | `api` (1,269L, 10 files — grew from 1,182L in v0.3.4 for the stub guard), `web` (942L — CloudFront + S3 + Cognito callback) | `/api/rest-api-id`; `/api/cache-invalidation-dlq-arn`; `/web/website-bucket-name` |
 | **70-observability** | CloudWatch alarms (Lambda, state machines, DLQs, DynamoDB, APIs, ECS) | `observability` (494L, 5 files) | nothing to SSM — terminal stack, alarms + SNS routing |
@@ -1319,7 +1319,7 @@ pattern.
 | **MetricServiceStack** | Metric service Lambda + Fargate | `stacks/30-services/main.tf` → `module.metric_service` | `modules/services/metric-service` (1,075L, 6 files) |
 | **VkgStack** | Versioned knowledge graph Fargate service | `stacks/30-services/main.tf` → `module.vkg` | `modules/services/vkg` (814L, 6 files) |
 | **OntologyStack** | Ontology engine Fargate + Lambda | `stacks/30-services/main.tf` → `module.ontology` | `modules/services/ontology` (961L, 9 files) |
-| **McpProxyStack** | MCP proxy Fargate cluster | Lives under `50-agentcore`, module `mcp` (§A.2.5) | `modules/services/mcp` (523L) |
+| **McpStack** | MCP server AgentCore runtime | Lives under `50-agentcore`, module `mcp` (§A.2.5) | `modules/services/mcp` (523L) |
 | **DataLayerServiceStack** | Data-layer Lambda | Lives in `55-data-layer` to break a circular dependency (data-layer needs agentcore's runtime ARN) | see §A.2.4 |
 
 No `control-plane` or standalone `api` module exists under `30-services`. API routing lives entirely in `60-api-edge` (§A.2.7).
@@ -1348,17 +1348,19 @@ The thinnest stack in the repo — one module, Lambda-only, no API Gateway. Exis
 | **DataLayerServiceStack** | Data layer Lambda | `55-data-layer/main.tf` → `module.data_layer` | `modules/services/data-layer` (235L total, 5 files; 101L in `main.tf` alone) | 🔶 Ported | Reads `serve-runtime-arn` from stack 50 via SSM, wires it as a Lambda invoke permission |
 | **DataStoreStack** (Neptune, DynamoDB) | Graph database + transactional storage | Lives in `00-foundation` (`module.storage`), not here | `modules/foundation/storage` | ✅ Ported | Storage resources are entirely in foundation; nothing data-store-specific lives in stack 55 |
 
-#### A.2.5 Agent Core Stack (`infra/lib/stacks/agent-core/agent-core-stack.ts`)
+#### A.2.5 Agent runtime stacks (`infra/lib/stacks/services/serve-stack.ts`, `mcp-stack.ts`)
 
-No Bedrock agent resource, tool-executor, or federation-provisioner module exists anywhere in this stack. The actual implementation is two Fargate-based modules: `serve` (agent runtime + an AOSS proxy Lambda) and `mcp` (MCP proxy Fargate service). If upstream CDK genuinely has a `BedrockAgentStack`/`ToolExecutorStack`/`FederationProvisionerStack`, those are real gaps — but re-verify their existence in the upstream tree before treating this as ❌ Not Yet Ported; it's equally possible this repo's implementation (Fargate-hosted agent runtime) is an intentional architectural divergence from a Bedrock-native upstream.
+Verified against upstream v0.3.9: the agent side is two CDK stacks, `ServeStack`
+and `McpStack`, each deploying an Amazon Bedrock AgentCore Runtime. Upstream has
+no `BedrockAgentStack`, `ToolExecutorStack` or `FederationProvisionerStack`
+(earlier revisions of this appendix guessed those names). The federation
+provisioner is a Lambda inside `sources-stack.ts`, not a stack of its own.
 
-| CDK Construct (assumed) | Intent | Terraform Mapping | Module | Status | Notes |
+| CDK Construct | Intent | Terraform Mapping | Module | Status | Notes |
 |---|---|---|---|---|---|
-| Agent runtime serving (assumed `BedrockAgentStack` equivalent) | Agent runtime + tool invocation surface | `50-agentcore/main.tf` → `module.serve` | `modules/services/serve` (1,093L, 8 files) | 🔶 Ported | Fargate + AOSS proxy Lambda; reads 33 SSM params; publishes `serve-runtime-arn` |
-| MCP proxy | MCP proxy Fargate service | `50-agentcore/main.tf` → `module.mcp` | `modules/services/mcp` (551L, 6 files) | 🔶 Ported | Fargate cluster/service; publishes MCP endpoint |
-| **BedrockAgentStack** (if distinct from `serve`) | Bedrock agent definition, action groups | ❓ Unverified | — | ❓ Needs upstream re-check | Do not mark ❌ without confirming this construct still exists upstream |
-| **ToolExecutorStack** | Lambda tool executor | ❓ Unverified | — | ❓ Needs upstream re-check | |
-| **FederationProvisionerStack** | Federation provisioner (role sync) | ❓ Unverified — may overlap with `authnz` module (§A.2.1) | — | ❓ Needs upstream re-check | Check `module.authnz` claims_mappings logic before assuming this is missing |
+| `ServeStack` (`serve-stack.ts`) | Context Manager query runtime | `50-agentcore/main.tf` → `module.serve` | `modules/services/serve` (8 files) | 🔶 Ported | `aws_bedrockagentcore_agent_runtime` (VPC mode, custom JWT authorizer) + `aws_bedrockagentcore_memory` + AOSS search proxy Lambda; publishes `/<prefix>/serve/runtime-arn` |
+| `McpStack` (`mcp-stack.ts`) | MCP server runtime (MCP protocol adapter, forwards to serve) | `50-agentcore/main.tf` → `module.mcp` | `modules/services/mcp` (6 files) | 🔶 Ported | `aws_bedrockagentcore_agent_runtime` (`server_protocol = "MCP"`, VPC mode); JWT audience is the MCP client only (v0.3.9); publishes `/<prefix>/mcp/runtime-arn` |
+| `FederationProvisionerFn` (in `sources-stack.ts`) | Glue connection + Athena federated catalog provisioning for JDBC sources | `40-sources/main.tf` → `module.sources` | `modules/services/sources/compute_db.tf` (`aws_lambda_function.federation_provisioner`) | ✅ Ported | Assumes `<prefix>-federated-catalog-role`, registered as a Lake Formation admin by `lakeformation_admin.tf` (see §A.2.3 / Reference R1) |
 
 #### A.2.6 Observability Stack (`infra/lib/stacks/observability/observability-stack.ts`)
 
@@ -1472,7 +1474,6 @@ Grounded in real parameter names under `${local.ssm_prefix}/...`. Same staleness
 | X-Ray sampling rules | Not yet ported; roadmap item for distributed tracing | 70-observability follow-up | TBD |
 | DLQ recovery Lambda coverage gaps | Some DLQs may lack a paired recovery Lambda — confirm which ones during next sync | 70-observability follow-up | TBD |
 | Fargate replica counts hardcoded | 30-services modules (metric-service, vkg, ontology) have hardcoded replica counts for initial smoke test, not yet variable-driven | 30-services follow-up | TBD |
-| Re-verify upstream construct names for §A.2.5 | This doc's CDK-side labels for agentcore (`BedrockAgentStack`, `ToolExecutorStack`, `FederationProvisionerStack`) are unverified guesses — confirm against the real upstream `infra/lib/stacks/agent-core/` tree on next sync | Next COA sync, step 1 | TBD |
 | VPN/connector-specific pieces in 40-sources | Marked optional in current implementation; confirm which are required for prod | 40-sources follow-up | TBD |
 | Cross-stack SSM param naming standardization | Upstream CDK may emit different SSM keys; manual reconciliation per stack | Step 5 hand-merge | TBD |
 | ReservedRoleNamePrefix precommit check (v0.3.5 row 7) | CDK aspect from v0.3.5 enforces that no COA-internal `iam.CfnRole` falls under `${prefix}-${env}-datasource-access-*`. No Terraform synth-phase equivalent — candidate for a precommit grep on `name = "...-datasource-access-..."` in `aws_iam_role` resources | Repo tooling follow-up | TBD |
