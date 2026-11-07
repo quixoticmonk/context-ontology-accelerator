@@ -90,7 +90,8 @@ source of truth — SSM (`/<prefix>/web/distribution-domain-name`,
 (`apiEndpoint`), falling back to `terraform output`. Region and prefix come
 from `shared.tfvars` and are overridable (`AWS_REGION`, `SCL_PREFIX`,
 `SCL_ENV`, `SCL_CF_DOMAIN`), so the same command verifies any environment.
-It exits non-zero if any non-skipped check fails. Example of a healthy run:
+It exits non-zero if any non-skipped check fails. Example of a healthy run
+(last re-verified 2026-11-07 against the v0.3.9 sync, all images at `5c807b3`):
 
 ```
 == COA post-deploy smoke test ==

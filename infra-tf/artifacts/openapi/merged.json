@@ -5457,6 +5457,11 @@
                 "summary": "Induce an ontology from two sales data sources",
                 "description": "",
                 "value": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+              },
+              "StartInduction_example2": {
+                "summary": "Preview the document-to-table bridge on an accepted ontology",
+                "description": "",
+                "value": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
               }
             }
           }
@@ -5539,6 +5544,19 @@
                     ],
                     "groundingMode": "ENHANCED"
                   }
+                },
+                "StartInduction_example2": {
+                  "summary": "Preview the document-to-table bridge on an accepted ontology",
+                  "description": "",
+                  "value": {
+                    "datasourceIds": [],
+                    "ontologyUriPrefix": "https://ontology.example.com/sales#",
+                    "strategy": "bridge_to_tables",
+                    "bridgeOptions": {
+                      "dryRun": true,
+                      "maxTables": 20
+                    }
+                  }
                 }
               }
             }
@@ -5561,6 +5579,11 @@
             "examples": {
               "StartInduction_example1": {
                 "summary": "Induce an ontology from two sales data sources",
+                "description": "",
+                "value": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+              },
+              "StartInduction_example2": {
+                "summary": "Preview the document-to-table bridge on an accepted ontology",
                 "description": "",
                 "value": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
               }
@@ -5594,6 +5617,13 @@
                     "value": {
                       "jobId": "3f8a1c2d-9b4e-4a6f-8c1d-2e5f7a9b0c3d"
                     }
+                  },
+                  "StartInduction_example2": {
+                    "summary": "Preview the document-to-table bridge on an accepted ontology",
+                    "description": "",
+                    "value": {
+                      "jobId": "7c2e4b1a-5d3f-4e8a-9b6c-1a2b3c4d5e6f"
+                    }
                   }
                 }
               }
@@ -5617,6 +5647,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidationErrorResponseContent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError 404 response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Expose-Headers": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundErrorResponseContent"
                 }
               }
             }
@@ -22944,6 +22996,151 @@
           "status"
         ]
       },
+      "BridgeOptions": {
+        "type": "object",
+        "description": "Switches for one document-to-table bridge run. Every member is optional;\nan omitted member takes the default named in its description. An unknown\nmember is rejected. The run makes one LLM call per batch of up to 25\ncolumns of each table that has document evidence, plus grounding and\nembedding calls; `maxTables` caps that one-off cost.",
+        "properties": {
+          "maxTables": {
+            "type": "number",
+            "maximum": 200,
+            "minimum": 1,
+            "description": "Most table classes considered in one run. Default 60."
+          },
+          "concurrency": {
+            "type": "number",
+            "maximum": 16,
+            "minimum": 1,
+            "description": "Tables processed in parallel. Default 6."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Compute and report the plan without creating a proposal. Default false."
+          }
+        }
+      },
+      "BridgeReport": {
+        "type": "object",
+        "description": "Outcome of a document-to-table bridge run, on a completed bridge job.\nName lists are capped; counts are not. Additional diagnostic counters\nmay appear.",
+        "properties": {
+          "ontologyId": {
+            "type": "string",
+            "description": "Ontology the bridge ran on."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Whether this was a dry run (no proposal created)."
+          },
+          "proposalId": {
+            "type": "string",
+            "description": "The pending proposal holding the planned changes (absent on a dry run\nor when nothing would change). Accept it to write them."
+          },
+          "tablesConsidered": {
+            "type": "number",
+            "description": "Table classes considered."
+          },
+          "tablesWithEvidence": {
+            "type": "number",
+            "description": "Tables that had any document evidence and were sent to the LLM."
+          },
+          "tablesWithoutEvidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tables with no document evidence (left unchanged)."
+          },
+          "tableDefinitions": {
+            "type": "number",
+            "description": "Definitions proposed for tables."
+          },
+          "columnDefinitions": {
+            "type": "number",
+            "description": "Definitions proposed for columns."
+          },
+          "replacedBoilerplate": {
+            "type": "number",
+            "description": "Definitions that replaced a placeholder description (the old text is\nkept in the description history)."
+          },
+          "replacedByRule": {
+            "type": "number",
+            "description": "Replacements decided by the word-based placeholder check."
+          },
+          "replacedByModel": {
+            "type": "number",
+            "description": "Replacements decided only by the model judging the existing description\na placeholder: the ones to review before accepting."
+          },
+          "replacedByModelSubjects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tables and columns whose description the model alone judged a\nplaceholder (capped)."
+          },
+          "appendedToExisting": {
+            "type": "number",
+            "description": "Definitions appended after an informative existing description."
+          },
+          "tableLinks": {
+            "type": "number",
+            "description": "`skos:closeMatch` / `skos:relatedMatch` links from tables to document classes."
+          },
+          "columnLinks": {
+            "type": "number",
+            "description": "`skos:closeMatch` / `skos:relatedMatch` links from columns to document classes."
+          },
+          "definedTables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the tables given a definition (capped)."
+          },
+          "definedColumns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the columns given a definition (capped)."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The links proposed, one per entry as \"<table or table.column>\n<closeMatch|relatedMatch> <document class label>\" (capped)."
+          },
+          "llmCalls": {
+            "type": "number",
+            "description": "Definition LLM calls made."
+          },
+          "llmFailures": {
+            "type": "number",
+            "description": "Definition LLM calls that failed after retries."
+          },
+          "firstLlmError": {
+            "type": "string",
+            "description": "First LLM error seen, if any."
+          },
+          "failedTables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tables whose definition calls all failed."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Run notes (missing evidence sources, search failures)."
+          },
+          "elapsedSeconds": {
+            "type": "number",
+            "description": "Wall-clock run time in seconds."
+          }
+        }
+      },
       "BulkDeleteFilter": {
         "type": "object",
         "description": "Filter criteria selecting which metrics a bulk delete should remove.",
@@ -23220,7 +23417,7 @@
       },
       "CreateDatabaseSourceInput": {
         "type": "object",
-        "description": "Database source creation fields.\nExactly one of glueConfiguration, jdbcConfiguration, customConnectorConfiguration\nor databricksSqlWarehouseConfiguration must be provided \u2014 it selects the sub-type.",
+        "description": "Database source creation fields.\nExactly one of glueConfiguration, jdbcConfiguration, customConnectorConfiguration,\ndatabricksSqlWarehouseConfiguration or sparqlConfiguration must be provided \u2014 it\nselects the sub-type.",
         "properties": {
           "name": {
             "type": "string",
@@ -23239,6 +23436,9 @@
           },
           "databricksSqlWarehouseConfiguration": {
             "$ref": "#/components/schemas/DatabricksSqlWarehouseConfiguration"
+          },
+          "sparqlConfiguration": {
+            "$ref": "#/components/schemas/SparqlConfiguration"
           },
           "metadataEnrichmentEnabled": {
             "type": "boolean",
@@ -23689,6 +23889,9 @@
           },
           "databricksSqlWarehouseConfiguration": {
             "$ref": "#/components/schemas/DatabricksSqlWarehouseConfiguration"
+          },
+          "sparqlConfiguration": {
+            "$ref": "#/components/schemas/SparqlConfiguration"
           },
           "metadataEnrichmentEnabled": {
             "type": "boolean",
@@ -24508,6 +24711,16 @@
           },
           "report": {
             "$ref": "#/components/schemas/InductionReport"
+          },
+          "sourceType": {
+            "$ref": "#/components/schemas/InductionSourceType"
+          },
+          "progress": {
+            "type": "string",
+            "description": "Current step of a running bridge job, as short free text\n(e.g. \"writing definitions for 12 tables\")."
+          },
+          "bridgeReport": {
+            "$ref": "#/components/schemas/BridgeReport"
           },
           "error": {
             "type": "string",
@@ -25583,7 +25796,8 @@
           "resolving_iris",
           "applying_rules",
           "entailment",
-          "serializing"
+          "serializing",
+          "running"
         ]
       },
       "InductionJobSummary": {
@@ -25681,7 +25895,8 @@
         "description": "Discriminator distinguishing structured (table-to-ontology) induction runs\nfrom unstructured (knowledge-graph-to-ontology) induction runs. Persisted\nas a top-level attribute on `OntologyProposals` and induction-job items\nso the steward review queue and list endpoints can filter by origin.",
         "enum": [
           "STRUCTURED",
-          "UNSTRUCTURED"
+          "UNSTRUCTURED",
+          "BRIDGE"
         ]
       },
       "InductionStrategy": {
@@ -25690,7 +25905,8 @@
         "enum": [
           "table_to_ontology",
           "rigor_ontology",
-          "unstructured_lexical_graph"
+          "unstructured_lexical_graph",
+          "bridge_to_tables"
         ]
       },
       "InferConstraintsRequestContent": {
@@ -27796,6 +28012,7 @@
           "JDBC_DATABASE",
           "CUSTOM_CONNECTOR",
           "DATABRICKS_SQL_WAREHOUSE",
+          "RDF_SPARQL",
           "S3",
           "LOCAL_UPLOAD"
         ]
@@ -27861,6 +28078,69 @@
           "DOCUMENTS"
         ]
       },
+      "SparqlAuthMode": {
+        "type": "string",
+        "description": "How the SPARQL client authenticates to the endpoint. SIGV4 is the only mode\nany v1 store uses (Neptune: the caller's IAM role is the identity, no\nsecret). Secret- and token-based modes arrive with the first store that\nneeds them.",
+        "enum": [
+          "sigv4"
+        ]
+      },
+      "SparqlConfiguration": {
+        "type": "object",
+        "description": "RDF/SPARQL graph source configuration \u2014 the RDF_SPARQL sub-type. Instance\ndata (A-Box) lives natively as triples in a SPARQL store and is answered at\nserve time by NL\u2192SPARQL executed directly against `dataEndpoint` (no Glue\ncatalog, no VKG/SQL). There is no schema discovery: the ontology (T-Box) is\nimported separately and points its classes at this source by name.\n\nRegistration only verifies the endpoint is reachable (no scan). Persisted as\nthe source `configuration` blob; serve and the verify Lambda both read it.\nCross-field rules enforced server-side: `store = neptune` requires\n`authMode = sigv4` and forbids `credentialSecretArn`.",
+        "properties": {
+          "store": {
+            "$ref": "#/components/schemas/SparqlStore"
+          },
+          "dataEndpoint": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^(https://)?[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$",
+            "description": "SPARQL endpoint for the A-Box (instance data) that serve executes against."
+          },
+          "region": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+            "description": "AWS region for SigV4 signing. Defaults to the deployment region."
+          },
+          "port": {
+            "type": "number",
+            "maximum": 65535,
+            "minimum": 1,
+            "description": "Endpoint port. Defaults to 8182 (Neptune)."
+          },
+          "dataNamedGraph": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 8,
+            "pattern": "^https?://[^\\s<>\"{}|\\\\^`]+$",
+            "description": "Named graph holding the A-Box. When set, generated queries are confined\nto it; when absent, the store's default graph is queried."
+          },
+          "authMode": {
+            "$ref": "#/components/schemas/SparqlAuthMode"
+          },
+          "credentialSecretArn": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 20,
+            "pattern": "^arn:(aws|aws-us-gov):secretsmanager:[a-z0-9-]+:\\d{12}:secret:.+$",
+            "description": "Credential for non-SigV4 auth modes. Rejected for `neptune`."
+          }
+        },
+        "required": [
+          "dataEndpoint"
+        ]
+      },
+      "SparqlStore": {
+        "type": "string",
+        "description": "SPARQL engine behind an RDF_SPARQL source \u2014 a dialect one level below the\nsub-type, the way DatabaseEngine sits below JDBC_DATABASE. It selects the\nserve-time client and the registration-time reachability probe; adding an\nengine adds a member here plus one client and one probe, never a new\nsub-type. Values are lowercase because they are persisted verbatim in the\nsource `configuration` blob.",
+        "enum": [
+          "neptune"
+        ]
+      },
       "SqlDialect": {
         "type": "string",
         "description": "SQL dialect identifier.",
@@ -27886,14 +28166,14 @@
               "description": "Data source identifier reference."
             },
             "maxItems": 1000,
-            "description": "Data source IDs to induct from. The table-based strategies\n(`table_to_ontology`, `rigor_ontology`) need at least one; an empty\nlist is rejected with a 400. `unstructured_lexical_graph` reads the\nlexical graph instead and accepts an empty list."
+            "description": "Data source IDs to induct from. The table-based strategies\n(`table_to_ontology`, `rigor_ontology`) need at least one; an empty\nlist is rejected with a 400. `unstructured_lexical_graph` reads the\nlexical graph instead and accepts an empty list. `bridge_to_tables`\nruns on an accepted ontology and ignores the list; send an empty one."
           },
           "ontologyUriPrefix": {
             "type": "string",
             "maxLength": 2048,
             "minLength": 10,
             "pattern": "^https?://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/(?!\\.\\.?(?:[/#]|$))(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+)*/?#?$",
-            "description": "URI prefix for generated ontology classes and properties."
+            "description": "URI prefix for generated ontology classes and properties. For the\n`bridge_to_tables` strategy, the ID of the accepted ontology to\nbridge (404 if the namespace has no such ontology)."
           },
           "label": {
             "type": "string",
@@ -27915,6 +28195,9 @@
           },
           "strategy": {
             "$ref": "#/components/schemas/InductionStrategy"
+          },
+          "bridgeOptions": {
+            "$ref": "#/components/schemas/BridgeOptions"
           },
           "groundingOntologyIds": {
             "type": "array",
@@ -29213,7 +29496,8 @@
           "nl_to_sql",
           "ontop_first",
           "nl_to_sql_first",
-          "deep-reasoning"
+          "deep-reasoning",
+          "nl_to_sparql"
         ]
       },
       "QueryTranslationErrorResponseContent": {
