@@ -6,8 +6,8 @@
 > and connectors stay in sync with upstream via periodic release-tag
 > syncs; the upstream `infra/` tree is deliberately absent.
 >
-> **Synced to upstream:** [`v0.3.9`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.9)
-> (commit `bc18564`, synced 2026-11-06 from
+> **Synced to upstream:** [`v0.3.10`](https://github.com/aws/context-ontology-accelerator/releases/tag/v0.3.10)
+> (commit `c91e1b0`, synced 2026-11-13 from
 > [github.com/aws/context-ontology-accelerator](https://github.com/aws/context-ontology-accelerator)).
 > Sync procedure: [`COA_sync_releases_TF.md`](COA_sync_releases_TF.md).
 > Each sync commit carries an `Upstream-Release:` git trailer so the
@@ -76,7 +76,7 @@ semantic-context/
 ├── libs/common/         # Shared Python config, logging, exceptions
 ├── libs/ts-shared/      # Shared TypeScript interfaces and constants
 ├── connectors/          # Athena federation connectors: toolkit, reference connector, Databricks
-├── coa-skills/          # Agent skills for driving a deployed COA (control-plane)
+├── coa-ai/skills/       # Agent skills for driving a deployed COA (control-plane)
 ├── scripts/             # CI-agnostic build/test/deploy scripts
 └── external-docs/       # Published documentation (getting-started, deployment guides)
 ```
