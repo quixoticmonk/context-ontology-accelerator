@@ -46,4 +46,9 @@ RUN pip install --no-cache-dir /tmp/sources/ && rm -rf /tmp/sources/ && \
     python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
 
 USER 1000
+
+# Fail the build if the code this image runs imports anything the image cannot (scripts/image_import_check.py).
+# llama_index is optional: coa_common.embeddings imports it lazily, for kg-build and serve only.
+COPY scripts/image_import_check.py /tmp/
+RUN python /tmp/image_import_check.py coa_sources.database.pipeline.enrichment_handler --optional llama_index
 ENTRYPOINT ["python", "-m", "coa_sources.database.pipeline.enrichment_handler"]

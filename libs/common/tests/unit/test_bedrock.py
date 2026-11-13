@@ -26,17 +26,10 @@ pytestmark = pytest.mark.unit
 
 
 class TestDefaultModelIdResolution:
-    """The chat model default is resolved from the environment (#94).
+    """The chat model default is resolved from the environment.
 
-    Table enrichment and constraint inference construct ``BedrockClient``
-    without a ``model_id``, so before this the module constant was the only
-    input and an infrastructure change could not reach those paths — they
-    stayed on a ``us.`` inference profile that a non-US region cannot invoke.
-
-    Tests target ``resolve_chat_model_id`` rather than reloading the module:
-    ``DEFAULT_MODEL_ID`` is read once at import (matching a container's static
-    environment), and reloading swaps the module object out from under the rest
-    of this file's patches.
+    Tests target ``resolve_chat_model_id`` rather than reloading the module,
+    which would swap the module object out from under the rest of this file's patches.
     """
 
     def test_env_var_wins(self, monkeypatch):
@@ -399,14 +392,7 @@ class TestGuardrailIntegration:
     @patch("coa_common.bedrock.logger")
     @patch("coa_common.bedrock.boto3")
     def test_guardrail_intervened_without_block_logs_masking_warning(self, mock_boto3, mock_logger):
-        """A masking (ANONYMIZE) intervention must leave an observable log line.
-
-        Regression for the dead-code bug: the masking warning sat AFTER a
-        ``raise`` inside ``if blocked:``, so it was unreachable AND wrongly nested
-        — an intervention that masked values (but did not block) produced no log
-        at all. The warning now sits in its own ``if intervened:`` branch after
-        the blocked ``raise``, so an unblocked intervention is logged.
-        """
+        """A masking (ANONYMIZE) intervention must leave an observable log line."""
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
 
@@ -468,6 +454,89 @@ class TestGuardrailIntegration:
             c for c in mock_logger.warning.call_args_list if "intervened without blocking" in str(c.args[0])
         ]
         assert masking_logs == [], "a blocked response must not log the masking-intervention warning"
+
+    # A guardrail trace echoes the text each policy matched. These values must stay out of the logs.
+    _MATCHED_VALUES = ("Jane Doe", "123-45-6789", "codename-falcon", "darn")
+
+    def _intervention_trace(self, pii_action: str) -> dict:
+        return {
+            "guardrail": {
+                "outputAssessments": {
+                    "gr-123": [
+                        {
+                            "topicPolicy": {"topics": [{"name": "legal-advice", "type": "DENY", "action": pii_action}]},
+                            "sensitiveInformationPolicy": {
+                                "piiEntities": [{"type": "NAME", "match": "Jane Doe", "action": pii_action}],
+                                "regexes": [
+                                    {
+                                        "name": "ssn",
+                                        "regex": "\\d{3}-\\d{2}-\\d{4}",
+                                        "match": "123-45-6789",
+                                        "action": pii_action,
+                                    }
+                                ],
+                            },
+                            "wordPolicy": {
+                                "customWords": [{"match": "codename-falcon", "action": pii_action}],
+                                "managedWordLists": [{"match": "darn", "type": "PROFANITY", "action": pii_action}],
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+
+    def _logged_text(self, caplog) -> str:
+        return "\n".join(r.getMessage() for r in caplog.records)
+
+    @patch("coa_common.bedrock.boto3")
+    def test_guardrail_block_log_names_policies_but_not_matched_values(self, mock_boto3, caplog):
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "blocked"}]}},
+            "stopReason": "guardrail_intervened",
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "trace": self._intervention_trace("BLOCKED"),
+        }
+
+        client = BedrockClient(region="us-east-1", guardrail_id="gr-123")
+        with caplog.at_level("DEBUG"), pytest.raises(GuardrailBlockedError):
+            client.invoke("sys", "usr")
+
+        logged = self._logged_text(caplog)
+        assert "Guardrail blocked response" in logged
+        for value in self._MATCHED_VALUES:
+            assert value not in logged
+        for action in (
+            "sensitiveInformationPolicy:NAME=BLOCKED",
+            "sensitiveInformationPolicy:ssn=BLOCKED",
+            "wordPolicy:-=BLOCKED",
+            "wordPolicy:PROFANITY=BLOCKED",
+            "topicPolicy:legal-advice=BLOCKED",
+        ):
+            assert action in logged
+
+    @patch("coa_common.bedrock.boto3")
+    def test_guardrail_masking_log_names_policies_but_not_matched_values(self, mock_boto3, caplog):
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": '{"description": "Contact {NAME}"}'}]}},
+            "stopReason": "guardrail_intervened",
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "trace": self._intervention_trace("ANONYMIZED"),
+        }
+
+        client = BedrockClient(region="us-east-1", guardrail_id="gr-123")
+        with caplog.at_level("DEBUG"):
+            client.invoke("sys", "usr")
+
+        logged = self._logged_text(caplog)
+        assert "intervened without blocking" in logged
+        assert "sensitiveInformationPolicy:NAME=ANONYMIZED" in logged
+        for value in self._MATCHED_VALUES:
+            assert value not in logged
 
     @patch("coa_common.bedrock.boto3")
     def test_custom_guardrail_version(self, mock_boto3):
@@ -567,7 +636,7 @@ class TestPromptSegments:
 
 
 class TestGuardrailDecisionMetrics:
-    """#111 AC10/AC11 — Converse guardrail decisions are counted and logged."""
+    """Converse guardrail decisions are counted and logged."""
 
     _ALLOW_RESPONSE = {
         "output": {"message": {"content": [{"text": '{"ok": true}'}]}},

@@ -18,8 +18,19 @@ FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12@sha256:3c249526505
 # including some no published base digest fixes yet. To run the image locally,
 # mount an emulator from the aws-lambda-runtime-interface-emulator releases at
 # that path.
+#
+# The dnf step brings in the system python3.9 (crypto-policies-scripts needs
+# /usr/bin/python3), and with it python3-setuptools 59.6.0, a weak dependency of
+# python3 and python3-pip that nothing requires and the Lambda runtime (python3.12
+# under /var/lang) never imports. It carries CVE-2026-59890, so it is removed in
+# this same layer. python3-setuptools-wheel 59.6.0 stays (python3-libs requires it;
+# it is the wheel ensurepip installs from), so a scanner may still report its
+# /usr/share/python3-wheels/setuptools-59.6.0-py3-none-any.whl. The build fails if the
+# RPM is still installed, or if the removal took poppler-utils or file-libs with it.
 RUN dnf upgrade -y --releasever=latest && \
     dnf install -y --releasever=latest poppler-utils file-libs && \
+    dnf remove -y python3-setuptools && \
+    ! rpm -q python3-setuptools && rpm -q poppler-utils file-libs && \
     dnf clean all && rm -rf /var/cache/dnf && \
     rm -f /usr/local/bin/aws-lambda-rie
 
@@ -30,22 +41,24 @@ RUN pip install --no-cache-dir --root-user-action=ignore /tmp/common/ && rm -rf 
 # CPU-only PyTorch — unstructured[pdf] pulls in torch via unstructured-inference
 # (requires torch>=2.10.0). Without constraints, pip installs the full CUDA
 # variant (~4 GB nvidia-* packages). Pre-install CPU torch, then constrain the
-# requirements install so pip can't upgrade it.
+# requirements install so pip can't upgrade it. torch is also what brings in
+# setuptools (it declares setuptools>=77.0.3), so both installs use the
+# constraints, whose setuptools floor (CVE-2026-59890) applies where it lands.
 COPY packages/sources/documents/preprocessing/constraints.txt /tmp/constraints.txt
 RUN pip install --no-cache-dir --root-user-action=ignore \
-    torch==2.11.0+cpu \
+    -c /tmp/constraints.txt \
+    torch \
     --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining deps (constrained to keep CPU torch), then:
 #  - Swap opencv-python → headless (unstructured pulls in opencv which needs libGL, absent in Lambda)
-#  - Ensure spaCy is present (newer unstructured releases no longer pin it as a hard
-#    dependency, so install it explicitly before downloading the model — otherwise
-#    `spacy download` fails with "No module named spacy" under a constrained install)
-#    Install click with it: spaCy's CLI imports click directly (`python -m spacy
-#    download` fails with "No module named 'click'" otherwise) but spaCy never
-#    declares it — it came in through typer, and typer 0.26+ no longer depends on
-#    click.
-#  - Pre-install spaCy model (unstructured loads it at runtime but Lambda fs is read-only)
+#  - Pin spaCy (unstructured depends on it) and pre-install its model (unstructured
+#    loads it at runtime but Lambda fs is read-only)
+#    Downstream: install click with it. spaCy 3.8.7's CLI imports click directly
+#    (`python -m spacy download` fails with "No module named 'click'" otherwise) but
+#    never declares it; it came in through typer, and typer 0.26+ no longer depends
+#    on click. spaCy 3.8.15+ declares click (explosion/spaCy#13973).
+#  - Only the opencv-python uninstall may fail; any other failure stops the build
 #  - Lift filelock past unstructured's `filelock<4` cap to 4.2.1+ (CVE-2026-112940).
 #    Every unstructured release still declares the cap, but its only use is
 #    `FileLock(path, timeout=-1)` in unstructured/nlp/tokenize.py, an API 4.x keeps;
@@ -55,15 +68,21 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
 #    builds a FileLock with the same arguments unstructured passes (`timeout=-1`)
 #    and acquires/releases it, so a 4.x API change fails the build instead of the
 #    first tokenize call at runtime.
+#  - Delete spaCy's bundled test suite after the model download: its
+#    spacy/tests/package/requirements.txt pins black==22.3.0, which scanners report as an
+#    installed package (CVE-2026-31900, CVE-2026-32274) although black is never installed.
+#    Nothing at runtime imports spacy.tests, and doing it in this layer keeps the file out
+#    of every layer. The delete fails the build if the directory is missing or survives.
 COPY packages/sources/documents/preprocessing/requirements.txt ${LAMBDA_TASK_ROOT}/
 RUN pip install --no-cache-dir --root-user-action=ignore \
     -c /tmp/constraints.txt \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     -r ${LAMBDA_TASK_ROOT}/requirements.txt && \
-    pip uninstall -y opencv-python 2>/dev/null; \
+    { pip uninstall -y opencv-python 2>/dev/null || true; } && \
     pip install --no-cache-dir --root-user-action=ignore opencv-python-headless && \
     pip install --no-cache-dir --root-user-action=ignore spacy==3.8.7 "click>=8.1,<9" && \
     python -m spacy download en_core_web_sm && \
+    python -c "import os, shutil, spacy; d = os.path.join(os.path.dirname(spacy.__file__), 'tests'); shutil.rmtree(d); assert not os.path.exists(d)" && \
     pip install --no-cache-dir --root-user-action=ignore --no-deps "filelock>=4.2.1,<5" && \
     python -c "import unstructured.nlp.tokenize, filelock; lock = filelock.FileLock('/tmp/filelock-check.lock', timeout=-1); lock.acquire(); assert lock.is_locked; lock.release(); assert not lock.is_locked; print('filelock', filelock.__version__, 'OK')" && \
     rm -f /tmp/filelock-check.lock
@@ -73,16 +92,19 @@ COPY smithy-generated/control-plane-python-server/ /tmp/server/
 RUN pip install --no-cache-dir --root-user-action=ignore /tmp/server/ && rm -rf /tmp/server/
 COPY packages/sources/ /tmp/sources/
 # Install the documents package, then upgrade pip to clear its own advisories.
-# Unlike the Debian service images, setuptools/msgpack are NOT bumped here: this
-# Lambda base already ships setuptools 81.x (past the CVE-2025-47273 fix), msgpack is
-# not installed, and a later-layer setuptools upgrade only adds a lower-layer scanner
-# artifact without improving the deployable image.
-# The trailing python -c strips bundled test suites (dirs named tests/ or test/) from
-# installed packages in the same layer — dead weight at runtime, and the source of
-# scanner-flagged pins like spaCy's black==22.3.0 (CVE-2026-31900, never installed).
-# Only exact tests/ or test/ names, so numpy.testing / sklearn._testing stay intact.
+# setuptools >= 83 (the constraints' floor) has no pkg_resources, which setuptools 82
+# removed, so the build then imports the unstructured partitioners the handler loads
+# lazily: a dependency that imports pkg_resources at module level fails the build
+# instead of the first invocation. The later installs here don't use the
+# constraints, so the build also checks the setuptools floor still holds.
+# msgpack is not installed here.
+# Downstream: the trailing python -c strips bundled test suites (dirs named exactly
+# tests/ or test/) from installed packages in the same layer, after the import checks.
+# Dead weight at runtime; numpy.testing / sklearn._testing stay intact.
 RUN pip install --no-cache-dir --root-user-action=ignore /tmp/sources/ && rm -rf /tmp/sources/ && \
     pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
+    python -c "import unstructured.partition.auto, unstructured.partition.pdf, unstructured.partition.docx" && \
+    python -c "import setuptools; assert int(setuptools.__version__.split('.')[0]) >= 83, setuptools.__version__" && \
     python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
 
 # numba's @njit(cache=True) needs a writable cache dir (/tmp is writable on Lambda)
@@ -91,4 +113,9 @@ ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 ENV MPLCONFIGDIR=/tmp/matplotlib FONTCONFIG_PATH=/tmp/fonts
 
 USER 1000
+
+# Fail the build if the code this image runs imports anything the image cannot (scripts/image_import_check.py).
+# llama_index is optional: coa_common.embeddings imports it lazily, for kg-build and serve only.
+COPY scripts/image_import_check.py /tmp/
+RUN python /tmp/image_import_check.py coa_sources.documents.preprocessing.handler --optional llama_index
 CMD ["coa_sources.documents.preprocessing.handler.handler"]
