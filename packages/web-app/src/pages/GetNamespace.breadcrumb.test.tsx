@@ -58,8 +58,12 @@ vi.mock("../api-hooks/use-metrics", () => ({
   }),
 }));
 
+const { apiClient } = vi.hoisted(() => ({
+  apiClient: { get: vi.fn().mockResolvedValue([]) },
+}));
+
 vi.mock("../components/ApiClientProvider", () => ({
-  useApiClient: () => ({ get: vi.fn().mockResolvedValue([]) }),
+  useApiClient: () => apiClient,
 }));
 
 vi.mock("../services/ontology-engine", () => ({

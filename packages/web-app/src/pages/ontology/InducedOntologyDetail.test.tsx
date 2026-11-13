@@ -89,8 +89,12 @@ vi.mock("@components/ontology/PendingReviewBanner", () => ({
   PendingReviewBanner: () => null,
 }));
 
+const { apiClient } = vi.hoisted(() => ({
+  apiClient: { get: vi.fn(), getText: vi.fn() },
+}));
+
 vi.mock("@components/ApiClientProvider", () => ({
-  useApiClient: () => ({ get: vi.fn(), getText: vi.fn() }),
+  useApiClient: () => apiClient,
 }));
 
 function renderAt(search: string) {

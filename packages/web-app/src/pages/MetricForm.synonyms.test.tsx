@@ -35,8 +35,10 @@ vi.mock("../api-hooks/use-list-source-tables", () => ({
   }),
 }));
 
+const { apiClient } = vi.hoisted(() => ({ apiClient: { get: vi.fn() } }));
+
 vi.mock("@components/ApiClientProvider", () => ({
-  useApiClient: () => ({ get: vi.fn() }),
+  useApiClient: () => apiClient,
 }));
 
 vi.mock("../services/ontology-engine", () => ({

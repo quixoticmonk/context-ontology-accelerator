@@ -17,16 +17,18 @@ import {
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockPost = vi.fn();
-const mockGet = vi.fn();
+const { mockPost, mockGet, apiClient } = vi.hoisted(() => {
+  const mockPost = vi.fn();
+  const mockGet = vi.fn();
+  return {
+    mockPost,
+    mockGet,
+    apiClient: { post: mockPost, get: mockGet, put: vi.fn(), del: vi.fn() },
+  };
+});
 
 vi.mock("@components/ApiClientProvider", () => ({
-  useApiClient: () => ({
-    post: mockPost,
-    get: mockGet,
-    put: vi.fn(),
-    del: vi.fn(),
-  }),
+  useApiClient: () => apiClient,
 }));
 
 const NS_ID = "550e8400-e29b-41d4-a716-446655440000";
