@@ -113,7 +113,7 @@ variable "cognito_callback_patch_zip_path" {
 }
 
 variable "cognito_extra_callback_urls" {
-  description = "Additional callback URLs merged onto the Cognito web client alongside the CloudFront `/authenticate/` URL, e.g. `http://localhost:5173/authenticate/` so local `pnpm dev` and `coa-skills/control-plane/scripts/coa_login.py --client web` can sign in. Mirrors the CDK web-stack, which adds that URL on dev only."
+  description = "Additional callback URLs merged onto the Cognito web client alongside the CloudFront `/authenticate/` URL, e.g. `http://localhost:5173/authenticate/` so local `pnpm dev` and `coa-ai/skills/control-plane/scripts/coa_login.py --client web` can sign in. Mirrors the CDK web-stack, which adds that URL on dev only."
   type        = list(string)
   default     = []
 

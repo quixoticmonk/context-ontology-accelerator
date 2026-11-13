@@ -59,7 +59,7 @@
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
 | aoss\_security\_group\_id | Security group attached to the AOSS VPC endpoint (from the network module). Referenced so the storage module orders after network connectivity is in place. | `string` | n/a | yes |
-| aoss\_vpc\_endpoint\_id | AOSS data-plane VPC endpoint ID (from the network module). Referenced by the AOSS network security policy to scope collection + dashboard access to VPC-internal traffic. In `dev` an additional AllowFromPublic rule is added; every other env is VPCE-only. | `string` | n/a | yes |
+| aoss\_vpc\_endpoint\_id | AOSS data-plane VPC endpoint ID (from the network module). Referenced by the AOSS network security policy to scope collection + dashboard access to VPC-internal traffic. VPCE-only on every environment, including dev. | `string` | n/a | yes |
 | env | Deployment environment name. Gates prod retain-vs-destroy behavior on Neptune and S3 buckets. | `string` | n/a | yes |
 | name\_prefix | Physical resource name prefix (<resource\_prefix>-<env>). | `string` | n/a | yes |
 | neptune\_security\_group\_id | Security group attached to the Neptune cluster (from the network module). | `string` | n/a | yes |

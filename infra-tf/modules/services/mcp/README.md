@@ -46,7 +46,7 @@
 | ecr\_repository\_arn | ECR repository ARN for the MCP server image (from stack 25-ecr). Used to scope the runtime role's image-pull grant. | `string` | n/a | yes |
 | ecr\_repository\_url | ECR repository URL for the MCP server image (from stack 25-ecr). | `string` | n/a | yes |
 | issuer\_url | OIDC issuer URL (Cognito or external IdP). The JWT authorizer discovery URL is built as <issuer\_url>/.well-known/openid-configuration; also injected as JWT\_ISSUER\_URL. | `string` | n/a | yes |
-| mcp\_client\_id | MCP CLI OAuth client ID (from auth-idp). Second entry in the JWT authorizer allowed\_audience and injected as JWT\_CLIENT\_ID (MCP callers authenticate as the CLI client). | `string` | n/a | yes |
+| mcp\_client\_id | MCP CLI OAuth client ID (from auth-idp). The only entry in the JWT authorizer allowed\_audience and injected as JWT\_CLIENT\_ID (MCP callers authenticate as the CLI client). | `string` | n/a | yes |
 | metric\_service\_lambda\_arn | Metric Service API Lambda ARN (from the metric\_service module). Granted lambda:InvokeFunction for the discovery tools and injected as METRIC\_SERVICE\_LAMBDA\_ARN. | `string` | n/a | yes |
 | name\_prefix | Physical resource name prefix (<resource\_prefix>-<env>). | `string` | n/a | yes |
 | ontology\_proxy\_lambda\_arn | Ontology Engine API proxy Lambda ARN (from the ontology module). Granted lambda:InvokeFunction for the discovery tools and injected as ONTOLOGY\_PROXY\_LAMBDA\_ARN. | `string` | n/a | yes |
@@ -57,7 +57,6 @@
 | roles\_table\_arn | Roles DDB table ARN (from the authnz module). The runtime role gets read access for the MCP grant resolver. | `string` | n/a | yes |
 | roles\_table\_name | Roles DDB table name (from the authnz module). Injected as ROLES\_TABLE\_NAME. | `string` | n/a | yes |
 | ssm\_prefix | SSM parameter root (e.g. /coa). Used for SSM parameter writes and to scope the runtime role's ssm:GetParameter grant. | `string` | n/a | yes |
-| userpool\_client\_id | Web app OAuth client ID (from auth-idp). First entry in the JWT authorizer allowed\_audience. | `string` | n/a | yes |
 | vpc\_cidr | VPC CIDR block. Scopes the HTTPS egress rule to VPC endpoints (AgentCore). | `string` | n/a | yes |
 | vpc\_id | VPC ID (from the network module) for the AgentCore Runtime security group. | `string` | n/a | yes |
 | agentcore\_az\_names | AgentCore-supported AZ names used to filter private\_subnet\_ids down to subnets AgentCore Runtime can place ENIs in. When null, all private\_subnet\_ids are used unfiltered. | `list(string)` | `null` | no |

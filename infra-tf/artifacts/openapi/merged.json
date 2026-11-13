@@ -29266,6 +29266,65 @@
           "trace"
         ]
       },
+      "LlmModelUsage": {
+        "type": "object",
+        "description": "Provider-reported token totals for one exact model.",
+        "properties": {
+          "modelId": {
+            "type": "string",
+            "description": "Bedrock model or inference-profile id."
+          },
+          "inputTokens": {
+            "type": "number",
+            "description": "Input tokens accumulated across calls to this model."
+          },
+          "outputTokens": {
+            "type": "number",
+            "description": "Output tokens accumulated across calls to this model."
+          },
+          "maxInputTokensPerCall": {
+            "type": "number",
+            "description": "Largest input-token count observed for a single call to this model.\nDownstream pricing uses this to detect unsupported long-context rates."
+          }
+        },
+        "required": [
+          "inputTokens",
+          "maxInputTokensPerCall",
+          "modelId",
+          "outputTokens"
+        ]
+      },
+      "LlmUsageMetrics": {
+        "type": "object",
+        "description": "Provider-reported text-LLM usage incurred while answering one request.\nModel-level totals let downstream observability apply its own versioned\npricing without coupling Serve deployments to AWS rate changes.",
+        "properties": {
+          "inputTokens": {
+            "type": "number",
+            "description": "Input tokens across every accounted text-LLM call."
+          },
+          "outputTokens": {
+            "type": "number",
+            "description": "Output tokens across every accounted text-LLM call."
+          },
+          "perModel": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LlmModelUsage"
+            },
+            "description": "Token totals grouped by the exact model id used for each call."
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "False when any call's usage was unknown or unfinished."
+          }
+        },
+        "required": [
+          "complete",
+          "inputTokens",
+          "outputTokens",
+          "perModel"
+        ]
+      },
       "NamespaceNotFoundErrorResponseContent": {
         "type": "object",
         "description": "Returned with HTTP 404 when the target namespace does not exist or is not\nvisible to the caller.",
@@ -29386,6 +29445,10 @@
             "maximum": 10000,
             "minimum": 1,
             "description": "Maximum number of result rows to return."
+          },
+          "includeLlmUsage": {
+            "type": "boolean",
+            "description": "When true, include `llmUsage` (provider-reported text-LLM tokens,\ngrouped by model for downstream pricing) in\nthe result. Observability only; it never changes how the query runs."
           }
         },
         "required": [
@@ -29479,6 +29542,9 @@
           "executionMode": {
             "type": "string",
             "description": "The execution mode that produced this result: \"standard\" or\n\"deep-reasoning\". Deep Reasoning is a mode orthogonal to the tier\ncascade, so a client labels an answer by this field rather than\ninferring mode from `tier` (a Deep Reasoning answer resolves at tier 3\nbut is not Standard mode's Tier-3 result). Absent on responses that do\nnot set it."
+          },
+          "llmUsage": {
+            "$ref": "#/components/schemas/LlmUsageMetrics"
           }
         },
         "required": [

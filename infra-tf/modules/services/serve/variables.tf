@@ -326,3 +326,30 @@ variable "deep_reasoning_stop_telemetry" {
   type        = bool
   default     = false
 }
+
+# Ontology-lookup fast-fail and Neptune read timeout (COA v0.3.10,
+# serve-stack.ts). serve reads NEPTUNE_TIMEOUT with a bare float() on every
+# Neptune query, so a bad value must fail plan, not the first request. The
+# ontology lookup must time out before the per-tool step does (hardcoded 45 s
+# in locals.tf), or it never degrades to empty. Defaults match the code.
+variable "deep_reasoning_ontology_timeout_s" {
+  description = "DEEP_REASONING_ONTOLOGY_TIMEOUT_S: fast-fail cap (seconds) on one graph-backed ontology lookup in Deep Reasoning. Must be positive and below DEEP_REASONING_PER_TOOL_TIMEOUT_S (45). Default 6."
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = var.deep_reasoning_ontology_timeout_s > 0 && var.deep_reasoning_ontology_timeout_s < 45
+    error_message = "deep_reasoning_ontology_timeout_s must be a positive number of seconds below deep_reasoning_per_tool_timeout_s (45)."
+  }
+}
+
+variable "neptune_timeout_s" {
+  description = "NEPTUNE_TIMEOUT: read timeout (seconds) of serve's Neptune graph client, applied to every query through it. Must be positive. Default 8."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.neptune_timeout_s > 0
+    error_message = "neptune_timeout_s must be a positive number of seconds."
+  }
+}

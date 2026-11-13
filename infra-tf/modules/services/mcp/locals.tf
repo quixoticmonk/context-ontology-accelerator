@@ -41,8 +41,11 @@ locals {
       METRIC_SERVICE_LAMBDA_ARN = var.metric_service_lambda_arn
       ONTOLOGY_PROXY_LAMBDA_ARN = var.ontology_proxy_lambda_arn
       SCL_MCP_MODE              = "true"
-      JWT_ISSUER_URL            = var.issuer_url
-      JWT_CLIENT_ID             = var.mcp_client_id
+      # The default, stated so the config shows it (COA v0.3.10). "false" is a
+      # local-dev switch the server refuses to start with under SCL_MCP_MODE.
+      SCL_AUTH_ENABLED = "true"
+      JWT_ISSUER_URL   = var.issuer_url
+      JWT_CLIENT_ID    = var.mcp_client_id
     },
   )
 

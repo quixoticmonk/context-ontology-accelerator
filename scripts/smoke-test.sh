@@ -164,7 +164,7 @@ if [ "$WITH_AUTH" -ne 1 ]; then
 elif [ -z "$API" ]; then
   skip "end-to-end API call" "no api_endpoint output"
 else
-  TOKEN="$(python3 "$REPO_ROOT/coa-skills/control-plane/scripts/coa_login.py" --client web --token-only 2>/dev/null)"
+  TOKEN="$(python3 "$REPO_ROOT/coa-ai/skills/control-plane/scripts/coa_login.py" token --client web 2>/dev/null)"
   if [ -z "$TOKEN" ]; then
     bad "could not obtain a web token (coa_login.py) — check the login flow"
   else

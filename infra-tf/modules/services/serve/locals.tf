@@ -86,6 +86,10 @@ locals {
     DEEP_REASONING_PROGRESS_SIMILARITY_THRESHOLD = tostring(var.deep_reasoning_progress_similarity_threshold)
     DEEP_REASONING_STABILITY_STEPS               = tostring(var.deep_reasoning_stability_steps)
     DEEP_REASONING_STOP_TELEMETRY                = tostring(var.deep_reasoning_stop_telemetry)
+    # Ontology-lookup fast-fail + Neptune read timeout (COA v0.3.10). Validated
+    # in variables.tf (positive; ontology cap below the 45 s per-tool timeout).
+    DEEP_REASONING_ONTOLOGY_TIMEOUT_S = tostring(var.deep_reasoning_ontology_timeout_s)
+    NEPTUNE_TIMEOUT                   = tostring(var.neptune_timeout_s)
     # Platform bucket holding UPLOADED documents (<namespaceId>/raw/<uploadId>/...).
     # Upload sources carry no bucket of their own, so Deep Reasoning's document
     # reads resolve them here. Derived by name like the sources module's
