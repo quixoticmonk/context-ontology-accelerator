@@ -36,9 +36,6 @@ def _eval(
     return result.allowed
 
 
-# ─── Global Admin ────────────────────────────────────────────────────────────
-
-
 class TestGlobalAdmin:
     """Global Admin has unrestricted access."""
 
@@ -71,9 +68,6 @@ class TestGlobalAdmin:
         )
 
 
-# ─── Global Viewer ───────────────────────────────────────────────────────────
-
-
 class TestGlobalViewer:
     """Global Viewer has read-only access."""
 
@@ -100,9 +94,6 @@ class TestGlobalViewer:
         assert _eval(action, global_roles=["platform-viewer"]) is False
 
 
-# ─── Namespace Owner ─────────────────────────────────────────────────────────
-
-
 class TestNamespaceOwner:
     """Namespace Owner has full access within their namespace."""
 
@@ -127,9 +118,6 @@ class TestNamespaceOwner:
             _eval("manageNamespace", resource_id="99999999-9999-9999-9999-999999999999", resource_roles=self.ROLES)
             is False
         )
-
-
-# ─── Namespace DataSteward ───────────────────────────────────────────────────
 
 
 class TestNamespaceDataSteward:
@@ -192,9 +180,6 @@ class TestNamespaceDataSteward:
         )
 
 
-# ─── Namespace DataAnalyst ───────────────────────────────────────────────────
-
-
 class TestNamespaceDataAnalyst:
     """DataAnalyst can only read/query within their namespace."""
 
@@ -247,9 +232,6 @@ class TestNamespaceDataAnalyst:
         )
 
 
-# ─── No Role (unauthenticated/no permissions) ───────────────────────────────
-
-
 class TestNoRole:
     """User with no roles should be denied everything except list on Namespace."""
 
@@ -276,9 +258,6 @@ class TestNoRole:
         assert _eval("list") is True
 
 
-# ─── Doc Source Namespace Isolation ─────────────────────────────────────────
-
-
 NS_B = "22222222-2222-2222-2222-222222222222"
 
 
@@ -290,44 +269,6 @@ class TestSourceNamespaceIsolation:
     """
 
     ROLES_NS_A = [{"role": "data-steward", "resourceUID": NS_ID}]
-
-    # ── Positive: steward can manage doc sources in their own namespace ──
-
-    def test_steward_can_create_doc_source_in_own_namespace(self):
-        assert (
-            _eval(
-                "manageSource",
-                resource_type="Source",
-                resource_id="ds-1",
-                resource_roles=self.ROLES_NS_A,
-                resource_attrs={"namespace": NS_ID},
-            )
-            is True
-        )
-
-    def test_steward_can_delete_doc_source_in_own_namespace(self):
-        assert (
-            _eval(
-                "manageSource",
-                resource_type="Source",
-                resource_id="ds-2",
-                resource_roles=self.ROLES_NS_A,
-                resource_attrs={"namespace": NS_ID},
-            )
-            is True
-        )
-
-    def test_steward_can_rescan_doc_source_in_own_namespace(self):
-        assert (
-            _eval(
-                "manageSource",
-                resource_type="Source",
-                resource_id="ds-3",
-                resource_roles=self.ROLES_NS_A,
-                resource_attrs={"namespace": NS_ID},
-            )
-            is True
-        )
 
     # ── Negative: steward cannot manage doc sources in a different namespace ──
 
@@ -396,9 +337,6 @@ class TestSourceNamespaceIsolation:
         )
 
 
-# ─── Platform grant authorization ───────────────────────────────────────────
-
-
 class TestPlatformGrantAuthorization:
     """Granting/revoking PLATFORM-scoped roles uses resource_id="*" so that
     only platform-admin (global_admin permits all) may write. Namespace owners
@@ -448,8 +386,6 @@ class TestPlatformGrantRouteMapping:
         assert resource_id == "*"
 
 
-# ─── Non-ACTIVE namespace mutation guard ─────────────────────────────────────
-
 _MUTATING = [
     "manageSource",
     "manageMetric",
@@ -461,7 +397,6 @@ _MUTATING = [
 _READS = ["viewNamespace", "list", "query", "readMetric", "searchDocuments"]
 _NON_ACTIVE_STATUSES = ["ARCHIVED", "DELETING", "DELETE_FAILED"]
 _ARCHIVED = {"namespaceStatus": "ARCHIVED"}
-_DELETING = {"namespaceStatus": "DELETING"}
 _DELETE_FAILED = {"namespaceStatus": "DELETE_FAILED"}
 _ACTIVE = {"namespaceStatus": "ACTIVE"}
 
@@ -531,3 +466,57 @@ class TestArchivedGuardRouteMapping:
         assert action == "setNamespaceStatus"
         assert rtype == "Namespace"
         assert resource_id == NS_ID
+
+
+# The authorizer evaluates viewSource on Source and Metric (source reads, OSI
+# export, import jobs, the canViewSource flag) and viewOntology on Ontology,
+# OntologyProposal and Namespace (/schema). Evaluated against the REAL seed
+# .cedar files.
+
+_SCHEMA_VIEW_CHECKS = [
+    ("viewSource", "Source"),
+    ("viewSource", "Metric"),
+    ("viewOntology", "Ontology"),
+    ("viewOntology", "OntologyProposal"),
+    ("viewOntology", "Namespace"),
+]
+OTHER_NS_ID = "22222222-2222-2222-2222-222222222222"
+
+# (label, global_roles, resource_roles, expected)
+_SCHEMA_VIEW_CALLERS = [
+    ("data-analyst", [], [{"role": "data-analyst", "resourceUID": NS_ID}], False),
+    ("data-steward", [], [{"role": "data-steward", "resourceUID": NS_ID}], True),
+    ("namespace-owner", [], [{"role": "namespace-owner", "resourceUID": NS_ID}], True),
+    ("namespace-maintainer", [], [{"role": "namespace-maintainer", "resourceUID": NS_ID}], True),
+    ("platform-viewer", ["platform-viewer"], [], True),
+    ("platform-admin", ["platform-admin"], [], True),
+    ("steward-other-namespace", [], [{"role": "data-steward", "resourceUID": OTHER_NS_ID}], False),
+    ("no-role", [], [], False),
+]
+
+
+class TestSchemaViewSeedMatrix:
+    @pytest.mark.parametrize(("action", "resource_type"), _SCHEMA_VIEW_CHECKS)
+    @pytest.mark.parametrize(
+        ("label", "global_roles", "resource_roles", "expected"),
+        _SCHEMA_VIEW_CALLERS,
+        ids=[c[0] for c in _SCHEMA_VIEW_CALLERS],
+    )
+    def test_schema_view(self, action, resource_type, label, global_roles, resource_roles, expected):
+        allowed = _eval(
+            action,
+            resource_type=resource_type,
+            resource_id=NS_ID,
+            global_roles=global_roles,
+            resource_roles=resource_roles,
+            resource_attrs={"namespace": NS_ID},
+        )
+        assert allowed is expected, f"{label}: {action} on {resource_type}"
+
+    @pytest.mark.parametrize(("action", "resource_type"), _SCHEMA_VIEW_CHECKS)
+    def test_analyst_still_reads_metrics_where_schema_is_denied(self, action, resource_type):
+        # Positive control: the analyst denial above is specific to the schema
+        # actions, not a broken grant -- the same caller may read metrics.
+        roles = [{"role": "data-analyst", "resourceUID": NS_ID}]
+        assert _eval("readMetric", "Metric", NS_ID, resource_roles=roles, resource_attrs={"namespace": NS_ID})
+        assert not _eval(action, resource_type, NS_ID, resource_roles=roles, resource_attrs={"namespace": NS_ID})

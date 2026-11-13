@@ -3,10 +3,7 @@
 
 """Tests for the MCP server tool handlers and auth/profile helpers.
 
-The 6 tools are thin protocol adapters: authenticate, resolve profile,
-delegate to a backend client, serialize JSON, audit-log. These tests mock
-the backend clients and delegate functions to verify the adapter behavior
-(JSON output, auth branching, error mapping) without any network calls.
+Backend clients and delegates are mocked, so no network calls are made.
 """
 
 from __future__ import annotations
@@ -21,6 +18,10 @@ from coa_mcp.auth.grant_resolver import GrantResolutionError
 from coa_mcp.tools.execution import ContextManagerError
 
 from .conftest import _TEST_AUDIENCE, _TEST_ISSUER, _TEST_KID, _private_key, create_test_token
+
+# Stands in for the policy text ``_evaluate_cedar`` returns on allow. It is not
+# valid Cedar, so every follow-up schema-view evaluation denies (fail closed).
+_NO_POLICY_TEXT = "// stub policy text"
 
 
 class _FakeRequest:
@@ -75,9 +76,6 @@ def _serve_profile(namespace: str = "sales", allowed_metrics: list[str] | None =
     )
 
 
-# ── _extract_bearer_token ─────────────────────────────────────────────
-
-
 @pytest.mark.unit
 class TestExtractBearerToken:
     def test_auth_disabled_returns_empty_string(self, monkeypatch):
@@ -106,9 +104,6 @@ class TestExtractBearerToken:
         monkeypatch.setattr(server.config, "auth_enabled", True)
         with pytest.raises(ValueError, match="no Authorization header"):
             server._extract_bearer_token(_BadCtx())
-
-
-# ── _build_authorizer_context ─────────────────────────────────────────
 
 
 @pytest.mark.unit
@@ -141,9 +136,6 @@ class TestBuildAuthorizerContext:
         assert ctx["groups"] == ""
 
 
-# ── _resolve_caller_and_profile ───────────────────────────────────────
-
-
 @pytest.mark.unit
 class TestResolveCallerAndProfile:
     @pytest.mark.asyncio
@@ -163,6 +155,10 @@ class TestResolveCallerAndProfile:
     @pytest.mark.asyncio
     async def test_auth_enabled_resolves_profile(self, monkeypatch):
         monkeypatch.setattr(server.config, "auth_enabled", True)
+        # A realistic auth-enabled deployment has a roles table; the Cedar gate
+        # then runs and must allow before the profile resolves.
+        monkeypatch.setattr("coa_mcp.auth.grant_resolver._ROLES_TABLE", "test-roles-table")
+        monkeypatch.setattr("coa_mcp.auth.grant_resolver._evaluate_cedar", lambda *a, **k: _NO_POLICY_TEXT)
         monkeypatch.setattr(
             "coa_serve.role_resolver.resolve_profile",
             lambda **kwargs: _serve_profile(),
@@ -194,9 +190,6 @@ class TestResolveCallerAndProfile:
         token = jwt.encode(payload, _private_key, algorithm="RS256", headers={"kid": _TEST_KID})
         _, profile = await server._resolve_caller_and_profile("sales", _FakeCtx(f"Bearer {token}"))
         assert profile["userId"] == "alice@example.com"
-
-
-# ── Lazy client singletons ────────────────────────────────────────────
 
 
 @pytest.mark.unit
@@ -234,9 +227,6 @@ class TestClientSingletons:
         assert len(created) == 1
 
 
-# ── Tool handlers ─────────────────────────────────────────────────────
-
-
 @pytest.fixture
 def _local_dev(monkeypatch):
     """Run tools in local-dev (auth-disabled) mode with a mocked Lambda client."""
@@ -249,8 +239,6 @@ def _local_dev(monkeypatch):
 class TestListMetricsTool:
     @pytest.mark.asyncio
     async def test_returns_serialized_metrics(self, monkeypatch, _local_dev):
-        # Use **kwargs so the fake tolerates the added Smithy-parity kwargs
-        # (next_token, status) without every test being updated in lockstep.
         async def fake_delegate(lc, ns, token, **kwargs):
             return {"metrics": [{"name": "Revenue"}], "namespace": ns}
 
@@ -273,6 +261,44 @@ class TestListMetricsTool:
         assert captured["authorizer_context"] is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("visibility", "expected"),
+        [
+            ({}, ("false", "false")),
+            ({"viewSource": True, "viewOntology": True}, ("true", "true")),
+            ({"viewSource": True, "viewOntology": False}, ("true", "false")),
+        ],
+    )
+    async def test_authenticated_call_forwards_schema_flags(self, monkeypatch, visibility, expected):
+        """The metric service withholds SQL/tables/concepts unless these flags are "true";
+        they come from the decisions resolve_grant cached on the profile (no reload)."""
+        monkeypatch.setattr(server.config, "auth_enabled", True)
+        monkeypatch.setattr(server, "_get_lambda_client", lambda: object())
+        monkeypatch.setattr(server, "_extract_bearer_token", lambda ctx: "tok")
+
+        async def fake_resolve(namespace_id, ctx, cedar_action=None):
+            caller = server.CallerIdentity(
+                user_id="u@example.com", agent_id=None, namespaces=[namespace_id], roles=[], raw_claims={}
+            )
+            return caller, {
+                "userId": "u@example.com",
+                "globalRoles": [],
+                "resourceRoles": [],
+                "schemaVisibility": visibility,
+            }
+
+        captured: dict = {}
+
+        async def fake_delegate(lc, ns, token, **kwargs):
+            captured["ctx"] = kwargs.get("authorizer_context")
+            return {"metrics": []}
+
+        monkeypatch.setattr(server, "_resolve_caller_and_profile", fake_resolve)
+        monkeypatch.setattr(server.discovery, "list_metrics", fake_delegate)
+        await server.list_metrics(None, "sales")
+        assert (captured["ctx"]["canViewSource"], captured["ctx"]["canViewOntology"]) == expected
+
+    @pytest.mark.asyncio
     async def test_auth_error_maps_to_value_error(self, monkeypatch):
         monkeypatch.setattr(server.config, "auth_enabled", True)
         with pytest.raises(ValueError, match="Missing Authorization header"):
@@ -290,6 +316,8 @@ class TestListMetricsTool:
     @pytest.mark.asyncio
     async def test_auth_enabled_builds_authorizer_context(self, monkeypatch):
         monkeypatch.setattr(server.config, "auth_enabled", True)
+        monkeypatch.setattr("coa_mcp.auth.grant_resolver._ROLES_TABLE", "test-roles-table")
+        monkeypatch.setattr("coa_mcp.auth.grant_resolver._evaluate_cedar", lambda *a, **k: _NO_POLICY_TEXT)
         monkeypatch.setattr(server, "_get_lambda_client", lambda: object())
         monkeypatch.setattr(
             "coa_serve.role_resolver.resolve_profile",
@@ -311,16 +339,7 @@ class TestListMetricsTool:
 
     @pytest.mark.asyncio
     async def test_forwards_next_token(self, monkeypatch, _local_dev):
-        """Regression for the pagination gap: nextToken must reach the
-        discovery helper. The MCP tool accepts it in camelCase (matching
-        Smithy) and hands it to the helper as snake_case.
-
-        ``status`` is intentionally not part of the MCP tool signature — the
-        metric-service backend does not filter on it today, so accepting it
-        here would silently return an unfiltered response as if filtered.
-        Pin its absence so a future revert reintroduces the failure here
-        rather than as a silent-wrong-answer bug in production.
-        """
+        """``nextToken`` reaches the helper as ``next_token``; ``status`` is not exposed (backend ignores it)."""
         captured: dict = {}
 
         async def fake_delegate(lc, ns, token, **kwargs):
@@ -334,7 +353,7 @@ class TestListMetricsTool:
 
     @pytest.mark.asyncio
     async def test_metric_label_reaches_the_tool_output(self, monkeypatch, _local_dev):
-        """The display-only ``label`` stays in the output so an agent can show it (#1259)."""
+        """The display-only ``label`` stays in the output so an agent can show it."""
 
         async def fake_delegate(lc, ns, token, **kwargs):
             return {"metrics": [{"name": "revenue_total", "label": "売上合計"}, {"name": "order_count"}]}
@@ -357,8 +376,6 @@ class TestListMetricsTool:
 class TestDescribeSchemaTool:
     @pytest.mark.asyncio
     async def test_returns_serialized_classes(self, monkeypatch, _local_dev):
-        # **kwargs to absorb newly-added class_filter without churn on
-        # unrelated tests.
         async def fake_delegate(lc, ns, token, **kwargs):
             return {"classes": [{"label": "Order"}], "ontologyVersion": "v2"}
 
@@ -369,8 +386,7 @@ class TestDescribeSchemaTool:
 
     @pytest.mark.asyncio
     async def test_forwards_class_filter(self, monkeypatch, _local_dev):
-        """Missing Smithy input the previous tool signature dropped — now
-        reaches the discovery helper."""
+        """``classFilter`` reaches the discovery helper."""
         captured: dict = {}
 
         async def fake_delegate(lc, ns, token, **kwargs):
@@ -418,7 +434,7 @@ class TestQueryTool:
         monkeypatch.setattr(server.execution, "execute_query", fake_delegate)
         out = await server.query(None, "revenue?", "sales")
         parsed = json.loads(out)
-        # Envelope now surfaces top-level, matching data-layer's Query output.
+        # Envelope surfaces top-level, matching data-layer's Query output.
         assert parsed["result"]["tier"] == 2
         assert parsed["result"]["resultRows"] == [{"n": 1}]
         assert parsed["requestId"] == "req-1"
@@ -445,7 +461,7 @@ class TestQueryTool:
     @pytest.mark.asyncio
     async def test_cm_error_preserves_status_code(self, monkeypatch, _local_dev):
         """When CM returns a >=400 the tool must surface the code, not
-        collapse it into a generic Python exception the way ``raise`` used to.
+        collapse it into a generic Python exception.
         Same posture as data-layer's ``_error_response(status_code, message)``."""
 
         async def deny(cm, query_text, ns, profile, token, **kwargs):
@@ -457,10 +473,7 @@ class TestQueryTool:
 
     @pytest.mark.asyncio
     async def test_forwards_new_smithy_inputs(self, monkeypatch, _local_dev):
-        """execute + dimensions + mode — Smithy inputs the previous signature
-        dropped — now reach the helper. ``timeoutMs`` is absent from the
-        captured kwargs when the caller does not pass it (default None).
-        """
+        """execute, dimensions and mode reach the helper; ``timeoutMs`` defaults to None."""
         captured: dict = {}
 
         async def fake_delegate(cm, query_text, ns, profile, token, **kwargs):
@@ -484,9 +497,7 @@ class TestQueryTool:
 
     @pytest.mark.asyncio
     async def test_forwards_timeout_ms(self, monkeypatch, _local_dev):
-        """issue #185: the ``query`` tool now accepts Smithy ``timeoutMs`` and
-        hands it to the helper as ``timeout_ms`` so an MCP caller can lower the
-        deadline — the MCP half the issue said 'declines to forward it'."""
+        """camelCase ``timeoutMs`` reaches the helper as ``timeout_ms``."""
         captured: dict = {}
 
         async def fake_delegate(cm, query_text, ns, profile, token, **kwargs):
@@ -549,7 +560,7 @@ class TestRagRetrievalTool:
 
     @pytest.mark.asyncio
     async def test_forwards_source_and_entity_filters(self, monkeypatch, _local_dev):
-        """Missing Smithy inputs the previous tool signature dropped — now reach the helper."""
+        """``sourceFilter`` and ``entityFilter`` reach the helper."""
         captured: dict = {}
 
         async def fake_delegate(cm, query_text, ns, profile, token, **kwargs):
@@ -600,7 +611,7 @@ class TestGraphTraversalTool:
 
     @pytest.mark.asyncio
     async def test_forwards_relationship_filter(self, monkeypatch, _local_dev):
-        """relationshipFilter — Smithy input the previous tool signature dropped."""
+        """``relationshipFilter`` reaches the helper."""
         captured: dict = {}
 
         async def fake_delegate(cm, start_uri, ns, profile, token, **kwargs):
@@ -619,28 +630,17 @@ class TestGraphTraversalTool:
 
 @pytest.mark.unit
 class TestQueryToolStrategySchema:
-    """``strategy`` must reach the published tool schema as an optional enum.
-
-    The type hint alone is not the contract — FastMCP derives the JSON schema the
-    agent actually sees. If ``strategy`` were typed ``str`` the schema would carry no
-    constraint, and an agent inventing a plausible value would get the cheap fallback
-    chain: serve treats an unrecognised strategy as "no pin" and silently runs
-    DEFAULT_STRATEGY.
-    """
+    """``strategy`` must reach the published tool schema as an optional enum, not a bare ``str``."""
 
     @pytest.mark.asyncio
     async def test_strategy_is_an_optional_enum_in_the_tool_schema(self):
-        from coa_mcp import server as server_mod
-
-        tools = await server_mod.mcp.list_tools()
+        tools = await server.mcp.list_tools()
         query_tool = next(t for t in tools if t.name == "query")
         schema = query_tool.inputSchema
 
-        # Optional: absent from `required`, and defaulted so omitting it is valid.
         assert "strategy" not in schema.get("required", [])
 
         prop = schema["properties"]["strategy"]
-        # Nullable enum shape: anyOf[{enum: [...]}, {type: "null"}].
         enum_values = next(
             (branch["enum"] for branch in prop["anyOf"] if "enum" in branch),
             None,
@@ -654,3 +654,170 @@ class TestQueryToolStrategySchema:
             "nl_to_sql_first",
             "deep-reasoning",
         }
+
+
+@pytest.mark.unit
+class TestWithholdSchemaFieldsHelper:
+    """_withhold_schema_fields — whole-field, shape-preserving withhold."""
+
+    def test_list_field_becomes_empty_list(self):
+        out = server._withhold_schema_fields(
+            {"entities": [{"uri": "x", "label": "Acme"}], "relationships": [{"a": 1}], "trace": ["t"]},
+            server._GRAPH_TRAVERSAL_SCHEMA_KEYS,
+        )
+        assert out["entities"] == []
+        assert out["relationships"] == []
+        # Non-schema field is untouched (shape preserved for the client).
+        assert out["trace"] == ["t"]
+
+    def test_string_field_becomes_empty_string(self):
+        out = server._withhold_schema_fields(
+            {"sparqlQuery": "SELECT ?x WHERE { ?x a :Customer }", "confidence": {"score": 0.9}},
+            server._TRANSLATE_SPARQL_SCHEMA_KEYS,
+        )
+        assert out["sparqlQuery"] == ""
+        assert out["confidence"] == {"score": 0.9}
+
+    def test_absent_key_is_noop(self):
+        out = server._withhold_schema_fields({"confidence": {"score": 0.1}}, server._TRANSLATE_SPARQL_SCHEMA_KEYS)
+        assert out == {"confidence": {"score": 0.1}}
+
+
+@pytest.mark.unit
+class TestCallerCanViewOntologyWiring:
+    """Real profile -> suppression-gate mapping; the tests below stub the gate."""
+
+    @pytest.mark.parametrize(
+        ("visibility", "expected"),
+        [
+            ({"viewSource": True, "viewOntology": True}, True),
+            ({"viewSource": True, "viewOntology": False}, False),
+            ({}, False),
+        ],
+    )
+    def test_reads_view_ontology_from_resolved_profile(self, visibility, expected):
+        from coa_mcp.auth.grant_resolver import ResolvedProfile
+
+        profile = ResolvedProfile(
+            namespace="sales",
+            user_id="owner@example.com",
+            resource_roles=[{"role": "namespace-owner", "resourceUID": "sales"}],
+            schema_visibility=visibility,
+        ).to_profile_dict()
+        assert server._caller_can_view_ontology(profile) is expected
+
+    def test_schema_visibility_is_not_forwarded_to_the_context_manager(self):
+        from coa_mcp.tools.execution import _build_cm_profile
+
+        cm_profile = _build_cm_profile(
+            {"userId": "u", "namespace": "sales", "schemaVisibility": {"viewOntology": True}}
+        )
+        assert "schemaVisibility" not in cm_profile
+
+
+@pytest.mark.unit
+class TestSchemaBlindOutputSuppression:
+    """End-to-end gate: the two working tools RUN for a schema-blind caller but
+    their schema-bearing fields are withheld unless the caller holds viewOntology.
+
+    Drives the real handlers with auth ENABLED, stubbing the auth/profile resolve,
+    token extraction, CM client and backend delegate, and toggling only the
+    viewOntology probe (_caller_can_view_ontology) to prove it is the deciding gate.
+    """
+
+    def _stub_auth(self, monkeypatch, can_view_ontology: bool):
+        monkeypatch.setattr(server.config, "auth_enabled", True)
+
+        async def fake_resolve(namespace_id, ctx, cedar_action=None):
+            return (
+                server.CallerIdentity(
+                    user_id="analyst", agent_id=None, namespaces=[namespace_id], roles=["data-analyst"], raw_claims={}
+                ),
+                {"userId": "analyst", "globalRoles": ["data-analyst"], "resourceRoles": [], "namespace": namespace_id},
+            )
+
+        monkeypatch.setattr(server, "_resolve_caller_and_profile", fake_resolve)
+        monkeypatch.setattr(server, "_extract_bearer_token", lambda ctx: "tok")
+        monkeypatch.setattr(server, "_get_cm_client", lambda: object())
+        monkeypatch.setattr(server, "_caller_can_view_ontology", lambda profile: can_view_ontology)
+
+    @pytest.mark.asyncio
+    async def test_translate_sparql_withheld_without_view_ontology(self, monkeypatch):
+        self._stub_auth(monkeypatch, can_view_ontology=False)
+
+        async def fake_delegate(cm, text, ns, profile, token):
+            return {"sparqlQuery": "SELECT ?x WHERE { ?x a :Customer }", "confidence": {"score": 0.9}}
+
+        monkeypatch.setattr(server.execution, "execute_translate_sparql", fake_delegate)
+        parsed = json.loads(await server.translate_sparql(None, "revenue", "sales"))
+        # Tool ran (confidence present) but the schema-bearing SPARQL is withheld.
+        assert parsed["sparqlQuery"] == ""
+        assert parsed["confidence"] == {"score": 0.9}
+
+    @pytest.mark.asyncio
+    async def test_translate_sparql_returned_with_view_ontology(self, monkeypatch):
+        self._stub_auth(monkeypatch, can_view_ontology=True)
+
+        async def fake_delegate(cm, text, ns, profile, token):
+            return {"sparqlQuery": "SELECT ?x WHERE { ?x a :Customer }", "confidence": {"score": 0.9}}
+
+        monkeypatch.setattr(server.execution, "execute_translate_sparql", fake_delegate)
+        parsed = json.loads(await server.translate_sparql(None, "revenue", "sales"))
+        assert parsed["sparqlQuery"] == "SELECT ?x WHERE { ?x a :Customer }"
+
+    @pytest.mark.asyncio
+    async def test_graph_traversal_withheld_without_view_ontology(self, monkeypatch):
+        self._stub_auth(monkeypatch, can_view_ontology=False)
+
+        async def fake_delegate(cm, start_uri, ns, profile, token, **kwargs):
+            return {
+                "entities": [{"uri": "urn:c:1", "label": "Acme Corp", "type": ":Customer"}],
+                "relationships": [{"sourceUri": "urn:c:1", "targetUri": "urn:o:1", "predicate": ":placedOrder"}],
+                "trace": ["step"],
+            }
+
+        monkeypatch.setattr(server.execution, "execute_graph_traversal", fake_delegate)
+        parsed = json.loads(await server.graph_traversal(None, "urn:c:1", "sales"))
+        # Tool ran (trace present) but entity/relationship schema is withheld.
+        assert parsed["entities"] == []
+        assert parsed["relationships"] == []
+        assert parsed["trace"] == ["step"]
+
+    @pytest.mark.asyncio
+    async def test_graph_traversal_returned_with_view_ontology(self, monkeypatch):
+        self._stub_auth(monkeypatch, can_view_ontology=True)
+
+        async def fake_delegate(cm, start_uri, ns, profile, token, **kwargs):
+            return {
+                "entities": [{"uri": "urn:c:1", "label": "Acme Corp"}],
+                "relationships": [{"sourceUri": "urn:c:1", "targetUri": "urn:o:1"}],
+                "trace": [],
+            }
+
+        monkeypatch.setattr(server.execution, "execute_graph_traversal", fake_delegate)
+        parsed = json.loads(await server.graph_traversal(None, "urn:c:1", "sales"))
+        assert parsed["entities"][0]["label"] == "Acme Corp"
+        assert len(parsed["relationships"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_auth_disabled_keeps_fields_without_view_ontology(self, monkeypatch):
+        # Local dev (auth disabled) is exempt from suppression even when the probe
+        # would deny; the probe must not even be consulted.
+        self._stub_auth(monkeypatch, can_view_ontology=False)
+        monkeypatch.setattr(server.config, "auth_enabled", False)
+        probed: list[dict] = []
+        monkeypatch.setattr(server, "_caller_can_view_ontology", lambda profile: probed.append(profile) or False)
+
+        async def fake_sparql(cm, text, ns, profile, token):
+            return {"sparqlQuery": "SELECT ?x WHERE { ?x a :Customer }", "confidence": {"score": 0.9}}
+
+        async def fake_traverse(cm, start_uri, ns, profile, token, **kwargs):
+            return {"entities": [{"uri": "urn:c:1", "label": "Acme Corp"}], "relationships": [{"p": 1}], "trace": []}
+
+        monkeypatch.setattr(server.execution, "execute_translate_sparql", fake_sparql)
+        monkeypatch.setattr(server.execution, "execute_graph_traversal", fake_traverse)
+        sparql = json.loads(await server.translate_sparql(None, "revenue", "sales"))
+        graph = json.loads(await server.graph_traversal(None, "urn:c:1", "sales"))
+        assert sparql["sparqlQuery"] == "SELECT ?x WHERE { ?x a :Customer }"
+        assert graph["entities"][0]["label"] == "Acme Corp" and graph["relationships"] == [{"p": 1}]
+        assert probed == []

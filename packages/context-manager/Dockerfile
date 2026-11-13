@@ -25,15 +25,22 @@ RUN useradd --no-create-home --shell /bin/false appuser
 
 # Every project dependency install below is constrained to the versions uv.lock pins, which the tests ran on: the query service's SQL and graph parsing depends on those versions, so an untested release inside a pyproject
 # range can change query behavior. The script needs only the standard library.
+#
+# uv is only the build-time installer. Each RUN that uses it installs it first and uninstalls it last, so no
+# layer keeps /usr/local/bin/uv or uvx: their statically linked Rust crates (rustls, rsa, ...) carry open
+# advisories, and nothing at runtime calls uv. Each such RUN ends by failing the build if uv or uvx is still
+# on PATH (`hash -r` first: the shell would otherwise report the path it cached when uv ran).
 COPY uv.lock scripts/uv_lock_constraints.py /tmp/lock/
 RUN python /tmp/lock/uv_lock_constraints.py /tmp/lock/uv.lock > /tmp/constraints.txt && \
-    rm -rf /tmp/lock/ && \
-    pip install --no-cache-dir uv==0.13.4
+    rm -rf /tmp/lock/
 
 # Install shared common library (changes less often -> better layer caching)
 COPY libs/common/ /tmp/common/
-RUN uv pip install --system --python /usr/bin/python3.12 --no-cache --constraint /tmp/constraints.txt /tmp/common/ && \
-    rm -rf /tmp/common/
+RUN pip install --no-cache-dir uv==0.13.4 && \
+    uv pip install --system --python /usr/bin/python3.12 --no-cache --constraint /tmp/constraints.txt /tmp/common/ && \
+    rm -rf /tmp/common/ && \
+    pip uninstall -y uv && \
+    hash -r && ! command -v uv && ! command -v uvx
 
 # Install package with dependencies.
 COPY packages/context-manager/pyproject.toml ./
@@ -45,24 +52,32 @@ COPY packages/mcp-server/src/ /tmp/mcp-server/src/
 
 # pip itself is upgraded to its newest release, not pinned: like the OS packages above, it floats for security
 # fixes, and the service never imports it. setuptools stays at the lock's version through the constraints.
-# The trailing python -c strips bundled test suites (dirs named tests/ or test/)
-# from every installed package, in the SAME layer as the install so the files
-# leave the image rather than just being whiteout-hidden in the final rootfs.
-# Test dirs are never imported at runtime; spaCy's spacy/tests/package/requirements.txt
-# also pins black==22.3.0, which scanners report as an installed package
-# (CVE-2026-31900) though black is never installed or imported. Matches only dirs
-# named exactly tests/ or test/, so numpy.testing / sklearn._testing stay intact.
-RUN sed -i '/\[tool.uv.sources\]/,$ d' pyproject.toml && \
+# spaCy (pulled in by graphrag-lexical-graph) ships a test suite whose spacy/tests/package/requirements.txt pins
+# black==22.3.0, which scanners report as an installed package (CVE-2026-31900, CVE-2026-32274) although black is
+# never installed. Nothing at runtime imports spacy.tests, so it is deleted in this layer, the one that installs spaCy;
+# the delete fails the build if the directory is missing or survives.
+# Downstream: the second python -c then strips every other bundled test suite (dirs named exactly tests/ or test/)
+# from all installed packages in the same layer, so the files leave the image rather than being whiteout-hidden.
+# Test dirs are never imported at runtime; numpy.testing / sklearn._testing stay intact.
+RUN pip install --no-cache-dir uv==0.13.4 && \
+    sed -i '/\[tool.uv.sources\]/,$ d' pyproject.toml && \
     sed -i '/\[tool.uv.sources\]/,$ d' /tmp/mcp-server/pyproject.toml && \
     uv pip install --system --python /usr/bin/python3.12 --no-cache --constraint /tmp/constraints.txt . /tmp/mcp-server/ && \
     rm -rf /tmp/mcp-server/ && \
     pip install --no-cache-dir -c /tmp/constraints.txt --upgrade pip "setuptools>=78.1.1" && \
     pip uninstall -y msgpack && \
-    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
+    python -c "import os, shutil, spacy; d = os.path.join(os.path.dirname(spacy.__file__), 'tests'); shutil.rmtree(d); assert not os.path.exists(d)" && \
+    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]" && \
+    pip uninstall -y uv && \
+    hash -r && ! command -v uv && ! command -v uvx
 
 EXPOSE 8080
 
 USER appuser
+
+# Fail the build if the code this image runs imports anything the image cannot (scripts/image_import_check.py).
+COPY scripts/image_import_check.py /tmp/
+RUN python /tmp/image_import_check.py coa_serve.main coa_mcp.__main__
 
 # Health probe for container orchestrators (ECS, etc.) to detect unresponsive processes.
 # BedrockAgentCoreApp exposes GET /ping per the AgentCore protocol.

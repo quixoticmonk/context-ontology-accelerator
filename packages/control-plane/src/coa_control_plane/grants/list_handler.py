@@ -27,6 +27,7 @@ from coa_common.response import api_response
 
 from .contract import validate_list_query
 from .grant_id import encode_grant_id
+from .schema_visibility import withhold_namespace_grant_overrides
 
 setup_logging(os.environ.get("LOG_LEVEL", "INFO"))
 logger = structlog.get_logger(__name__)
@@ -61,15 +62,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
 
     Reads pagination controls (``maxResults``, ``nextToken``) from the query
     string and queries the resource-role-mappings table accordingly.
-
-    Args:
-        event: API Gateway proxy event with a ``namespaceId`` path parameter
-            and optional query-string filters.
-        context: Lambda context object (unused).
-
-    Returns:
-        An API Gateway proxy response: 200 with the grant page and next token,
-        or a 4xx/5xx error response.
     """
     path_params = event.get("pathParameters") or {}
     namespace_id = path_params.get("namespaceId", "")
@@ -82,7 +74,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
     query_params = event.get("queryStringParameters") or {}
     principal = query_params.get("principal")
 
-    # Pagination parameters
     raw_max = query_params.get("maxResults")
     try:
         max_results = int(raw_max) if raw_max is not None else DEFAULT_PAGE_SIZE
@@ -126,7 +117,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
         mappings_dao = DynamoDBDAO(mappings_table, region=region)
 
         if principal:
-            # Query PrincipalIndex GSI filtered to this namespace
             result = mappings_dao.query(
                 QueryParams(
                     key_condition="principalKey = :pk AND begins_with(resourceRoleKey, :ns)",
@@ -140,7 +130,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
                 )
             )
         else:
-            # Query NamespaceGrantsIndex GSI
             result = mappings_dao.query(
                 QueryParams(
                     key_condition="namespaceKey = :nk",
@@ -152,6 +141,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
             )
 
         grants = [_to_grant_summary(item, namespace_id) for item in result.items]
+        grants = withhold_namespace_grant_overrides(grants, event)
         body: dict[str, Any] = {"grants": grants}
         if result.last_evaluated_key:
             body["nextToken"] = _encode_next_token(result.last_evaluated_key)

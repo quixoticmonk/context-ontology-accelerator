@@ -23,10 +23,7 @@ class TestMCPConfig:
             "SCL_MCP_HOST",
             "SCL_MCP_PORT",
             "SCL_AUTH_ENABLED",
-            "SCL_USE_FUSEKI",
-            # aws_region now falls back to the runtime environment
-            # (resolve_region), so these must be cleared too or the test
-            # inherits the host machine's region.
+            # aws_region falls back to these, so clear them too.
             "AWS_REGION",
             "AWS_DEFAULT_REGION",
         ):
@@ -38,17 +35,14 @@ class TestMCPConfig:
         assert config.mcp_host == "0.0.0.0"
         assert config.mcp_port == 8000
         assert config.auth_enabled is True
-        assert config.use_fuseki is False
 
     def test_aws_region_env_override(self, monkeypatch):
         monkeypatch.setenv("SCL_AWS_REGION", "eu-central-1")
         assert MCPConfig().aws_region == "eu-central-1"
 
     def test_aws_region_follows_runtime_environment(self, monkeypatch):
-        # #92 regression: the MCP stack sets AWS_REGION (not SCL_AWS_REGION),
-        # so the config must resolve the deploy region from the runtime
-        # environment. Before the fix this returned the hardcoded us-east-1
-        # and every MCP tool failed in any other region.
+        # The MCP stack sets AWS_REGION (not SCL_AWS_REGION), so the config
+        # must resolve the deploy region from the runtime environment.
         monkeypatch.delenv("SCL_AWS_REGION", raising=False)
         monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
         monkeypatch.setenv("AWS_REGION", "us-west-2")
@@ -61,13 +55,13 @@ class TestMCPConfig:
         assert MCPConfig().aws_region == "ap-northeast-1"
 
     def test_scl_aws_region_takes_precedence_over_runtime(self, monkeypatch):
-        # The SCL_ prefixed var stays an explicit operator override (the
-        # documented workaround for #92 keeps working after the fix).
+        # The SCL_ prefixed var stays an explicit operator override.
         monkeypatch.setenv("SCL_AWS_REGION", "eu-west-1")
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         assert MCPConfig().aws_region == "eu-west-1"
 
     def test_auth_enabled_env_override(self, monkeypatch):
+        monkeypatch.delenv("SCL_MCP_MODE", raising=False)
         monkeypatch.setenv("SCL_AUTH_ENABLED", "false")
         assert MCPConfig().auth_enabled is False
 
@@ -76,3 +70,29 @@ class TestMCPConfig:
         config = MCPConfig()
         assert config.mcp_port == 9001
         assert isinstance(config.mcp_port, int)
+
+
+@pytest.mark.unit
+class TestAuthDisabledGuard:
+    """SCL_AUTH_ENABLED=false is a local-dev switch: it must never take effect in the container."""
+
+    @pytest.mark.parametrize("disabled", ["false", "0", "off", "FALSE"])
+    def test_auth_disabled_in_mcp_container_refuses_to_start(self, monkeypatch, disabled):
+        monkeypatch.setenv("SCL_MCP_MODE", "true")
+        monkeypatch.setenv("SCL_AUTH_ENABLED", disabled)
+        with pytest.raises(ValueError, match="SCL_AUTH_ENABLED=false"):
+            MCPConfig()
+
+    def test_auth_enabled_in_mcp_container_is_accepted(self, monkeypatch):
+        monkeypatch.setenv("SCL_MCP_MODE", "true")
+        monkeypatch.delenv("SCL_AUTH_ENABLED", raising=False)
+        assert MCPConfig().auth_enabled is True
+
+    @pytest.mark.parametrize("mcp_mode", [None, "false", ""])
+    def test_auth_disabled_outside_container_still_allowed(self, monkeypatch, mcp_mode):
+        if mcp_mode is None:
+            monkeypatch.delenv("SCL_MCP_MODE", raising=False)
+        else:
+            monkeypatch.setenv("SCL_MCP_MODE", mcp_mode)
+        monkeypatch.setenv("SCL_AUTH_ENABLED", "false")
+        assert MCPConfig().auth_enabled is False

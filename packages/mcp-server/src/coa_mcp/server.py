@@ -5,26 +5,22 @@
 
 Exposes 6 MCP tools (2 discovery + 4 execution) via Streamable HTTP
 on AgentCore Runtime (port 8000, --protocol MCP).
-
-Architecture:
-- Discovery tools (list_metrics, describe_schema) invoke backend Lambdas
-  directly via LambdaClient (bypassing API Gateway).
-- Execution tools (query, translate_sparql, rag_retrieval, graph_traversal)
-  delegate to the Context Manager via AgentCore InvokeAgentRuntime.
-- JWT validated by the platform; server extracts claims and forwards token.
-- Authorization against delegating USER (not agent).
-
-The MCP server is a thin protocol adapter. It does NOT run the orchestrator
-in-process. All DB/Bedrock/OpenSearch access is in the backends.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Literal
 
 import structlog
+from coa_authorization.schema_visibility import (
+    VIEW_ONTOLOGY_ACTION,
+    VIEW_SOURCE_ACTION,
+    SchemaVisibility,
+    to_authorizer_flags,
+)
 from mcp.server.fastmcp import Context, FastMCP
 
 from .audit import log_tool_invocation
@@ -38,8 +34,6 @@ from .tools.execution import ContextManagerError
 
 logger = structlog.get_logger(__name__)
 
-# ── Server initialization ─────────────────────────────────────────────
-
 config = MCPConfig()
 
 mcp = FastMCP(
@@ -47,8 +41,6 @@ mcp = FastMCP(
     host=config.mcp_host,
     stateless_http=True,
 )
-
-# ── Lazy-initialized singletons ───────────────────────────────────────
 
 _lambda_client: LambdaClient | None = None
 _cm_client: ContextManagerClient | None = None
@@ -70,8 +62,6 @@ def _get_cm_client() -> ContextManagerClient:
     """
     global _cm_client
     if _cm_client is None:
-        import os
-
         cm_arn = os.environ.get("CM_RUNTIME_ARN", "")
         if not cm_arn:
             raise RuntimeError(
@@ -81,30 +71,15 @@ def _get_cm_client() -> ContextManagerClient:
     return _cm_client
 
 
-# ── Helper: auth + profile resolution ─────────────────────────────────
-
-
 async def _resolve_caller_and_profile(
     namespace_id: str,
     ctx: Any = None,
     *,
     cedar_action: str | None = None,
 ) -> tuple[CallerIdentity, dict]:
-    """Extract caller identity and resolve their data-access profile.
-
-    Args:
-        namespace_id: The namespace being accessed.
-        ctx: The FastMCP Context object. In AgentCore Runtime with Streamable
-            HTTP, the Authorization header is accessible via the underlying
-            Starlette request at ctx.request_context.request.headers.
-        cedar_action: Cedar action to authorize (e.g., "query", "viewNamespace").
-
-    Returns:
-        (caller, profile_dict) tuple, or raises on auth failure.
-    """
+    """Extract caller identity and resolve their data-access profile."""
     auth_header = None
     if ctx is not None:
-        # FastMCP Context -> RequestContext -> Starlette Request (streamable HTTP)
         try:
             request = ctx.request_context.request
             if request is not None and hasattr(request, "headers"):
@@ -113,7 +88,6 @@ async def _resolve_caller_and_profile(
             pass
 
     if not config.auth_enabled:
-        # Local development mode — no auth
         return CallerIdentity(
             user_id="local-dev",
             agent_id=None,
@@ -125,11 +99,64 @@ async def _resolve_caller_and_profile(
     caller = extract_caller_identity(auth_header)
     grant = await resolve_grant(caller, namespace_id, cedar_action=cedar_action)
     profile = grant.to_profile_dict()
-    # Pass original IdP groups + email for the Context Manager's own RRM resolution.
     profile["idpGroups"] = caller.roles
     if caller.raw_claims.get("email"):
         profile["userId"] = caller.raw_claims["email"]
     return caller, profile
+
+
+def _schema_right(profile: dict, action: str) -> bool:
+    """A schema right (``viewSource`` / ``viewOntology``) decided by ``resolve_grant``.
+
+    Read from the decisions cached on the resolved profile, so no policy is
+    reloaded. Absent means withhold (fail closed).
+    """
+    return (profile.get("schemaVisibility") or {}).get(action) is True
+
+
+def _caller_can_view_ontology(profile: dict) -> bool:
+    """Whether the caller may see ontology schema (``viewOntology``).
+
+    Output-suppression gate for ``translate_sparql`` / ``graph_traversal``,
+    which run for a schema-blind ``data-analyst`` (authorized on ``query`` /
+    ``traverseGraph``). Defense in depth: serve already withholds these fields.
+    """
+    return _schema_right(profile, VIEW_ONTOLOGY_ACTION)
+
+
+# Response keys withheld from a caller lacking ``viewOntology``. Each names an
+# all-or-nothing schema-bearing field: the whole field is dropped, with no
+# per-value redaction, so no ontology identifier leaks to a schema-blind caller.
+# ``trace`` is not listed: serve strips its step details upstream. If serve stops
+# doing that, route ``trace`` through ``_withhold_schema_fields`` too.
+_TRANSLATE_SPARQL_SCHEMA_KEYS = ("sparqlQuery",)
+_GRAPH_TRAVERSAL_SCHEMA_KEYS = ("entities", "relationships")
+
+
+def _withhold_schema_fields(result: dict, keys: tuple[str, ...]) -> dict:
+    """Blank the named schema-bearing keys in a tool result, in place.
+
+    Blanks to ``[]`` or ``""`` instead of deleting so the Smithy output shape is kept.
+    """
+    for key in keys:
+        if key in result:
+            result[key] = [] if isinstance(result[key], list) else ""
+    return result
+
+
+def _suppress_schema_unless_viewer(
+    result: dict, profile: dict, namespace_id: str, keys: tuple[str, ...], tool: str
+) -> dict:
+    """Withhold ``keys`` unless the caller holds ``viewOntology``.
+
+    The decision was made with the tool action in ``resolve_grant`` (one policy
+    load per call). Each withhold is logged so an operator can tell "withheld by
+    policy" from "the tool found nothing".
+    """
+    if _caller_can_view_ontology(profile):
+        return result
+    logger.info("schema_fields_withheld", tool=tool, namespace=namespace_id, fields=list(keys))
+    return _withhold_schema_fields(result, keys)
 
 
 def _extract_bearer_token(ctx: Any) -> str:
@@ -154,15 +181,8 @@ def _extract_bearer_token(ctx: Any) -> str:
     raise ValueError("Bearer token extraction failed: no Authorization header found in request")
 
 
-# ── Authorizer context builder ────────────────────────────────────────
-
-
 def _build_authorizer_context(caller: CallerIdentity, profile: dict) -> dict:
-    """Build a synthetic API GW authorizer context matching the real authorizer output.
-
-    This makes direct Lambda invocations indistinguishable from API GW calls.
-    Fields mirror what the control-plane authorization/handler.py produces.
-    """
+    """Build a synthetic API GW authorizer context for direct Lambda invocations."""
     return {
         "principalId": caller.user_id,
         "userId": caller.user_id,
@@ -173,7 +193,20 @@ def _build_authorizer_context(caller: CallerIdentity, profile: dict) -> dict:
     }
 
 
-# ── Discovery Tools ───────────────────────────────────────────────────
+def _metric_schema_flags(profile: dict) -> dict[str, str]:
+    """Schema-visibility flags (``canViewSource`` / ``canViewOntology``) for the metric service.
+
+    The metric service withholds metric SQL, source tables and ontology concepts
+    unless these are ``"true"``. This mirrors what the API Gateway authorizer adds
+    on ``readMetric`` requests; this path invokes the metric Lambda directly, so
+    MCP supplies the same flags, from the decisions cached by ``resolve_grant``.
+    """
+    return to_authorizer_flags(
+        SchemaVisibility(
+            source=_schema_right(profile, VIEW_SOURCE_ACTION),
+            ontology=_schema_right(profile, VIEW_ONTOLOGY_ACTION),
+        )
+    )
 
 
 @mcp.tool()
@@ -195,7 +228,7 @@ async def list_metrics(
     metric-service backend does not yet honour it. Rather than accept ``status``
     here and silently return an unfiltered list (which the caller would read as
     filtered), the parameter is intentionally not exposed until the backend can
-    apply it. Track: MR !939 review comment ``b6dea1de``.
+    apply it.
 
     Args:
         ctx: MCP request context carrying the caller's identity and bearer token.
@@ -218,7 +251,12 @@ async def list_metrics(
         )
         token = _extract_bearer_token(ctx)
         lc = _get_lambda_client()
-        authz_ctx = _build_authorizer_context(caller, profile) if caller.user_id != "local-dev" else None
+        # Local dev: no authorizer context, so metric-service sees neither flag and
+        # returns full definitions (its deliberate missing-flag rule).
+        authz_ctx = None
+        if caller.user_id != "local-dev":
+            authz_ctx = _build_authorizer_context(caller, profile)
+            authz_ctx.update(_metric_schema_flags(profile))
         result = await discovery.list_metrics(
             lc,
             namespaceId,
@@ -308,17 +346,9 @@ async def describe_schema(
         raise
 
 
-# ── Execution Tools ───────────────────────────────────────────────────
-
-
-# Typed as a Literal, not ``str``, so FastMCP publishes the accepted values in the
-# tool's JSON schema and rejects anything else before this handler runs. That matters
-# more here than on the REST edge: MCP callers are LLM agents, which are the callers
-# most likely to invent a plausible-looking value. Serve treats an unrecognised
-# strategy as "no pin" and silently runs DEFAULT_STRATEGY, so an unvalidated typo
-# would return the cheap fallback chain while the agent believed it had selected an
-# engine. Mirrors the Smithy ``QueryStrategy`` enum and ``StrategyOption``; a
-# three-way parity test guards the copies.
+# A Literal (not ``str``) so FastMCP publishes the accepted values in the tool schema.
+# Serve silently falls back to DEFAULT_STRATEGY on an unknown value, so an
+# unvalidated typo would run the wrong engine. Mirrors the Smithy ``QueryStrategy`` enum.
 QueryStrategyLiteral = Literal[
     "best",
     "ontop",
@@ -349,11 +379,6 @@ async def query(
     - Tier 1: Deterministic metric lookup (confidence=1.0, no LLM)
     - Tier 2: Ontology-guided SPARQL→SQL translation
     - Tier 3: Agentic fallback with parallel retrieval and LLM synthesis
-
-    Input keys are one-for-one with the Smithy ``Query`` operation
-    (data-layer's ``POST /namespaces/{namespaceId}/query``) so an SDK
-    generated from the Smithy models can call either surface without
-    a translation layer.
 
     Args:
         ctx: MCP request context carrying the caller's identity and bearer token.
@@ -423,8 +448,6 @@ async def query(
     except ContextManagerError as e:
         if caller:
             log_tool_invocation(caller, "query", namespaceId, success=False, error=str(e))
-        # Preserve CM's status code in the raised message so an MCP client
-        # sees the real cause (403/404/etc.) instead of a generic tool crash.
         raise ValueError(f"CM {e.status_code}: {e.message}") from e
     except Exception as e:
         logger.error("query_failed", namespace=namespaceId, error=str(e))
@@ -445,9 +468,6 @@ async def translate_sparql(
     Useful for debugging, previewing what the system will execute, and
     for agents that want to inspect the query plan before execution.
 
-    Input keys match the Smithy ``TranslateSPARQL`` operation on the data-layer
-    surface (``POST /namespaces/{namespaceId}/translate``).
-
     Args:
         ctx: MCP request context carrying the caller's identity and bearer token.
         query: Natural-language question to translate.
@@ -466,6 +486,10 @@ async def translate_sparql(
         token = _extract_bearer_token(ctx)
         cm = _get_cm_client()
         result = await execution.execute_translate_sparql(cm, query, namespaceId, profile, token)
+        if config.auth_enabled:
+            result = _suppress_schema_unless_viewer(
+                result, profile, namespaceId, _TRANSLATE_SPARQL_SCHEMA_KEYS, "translate_sparql"
+            )
         duration_ms = int((time.perf_counter() - start) * 1000)
         if caller:
             log_tool_invocation(caller, "translate_sparql", namespaceId, duration_ms=duration_ms)
@@ -500,9 +524,6 @@ async def rag_retrieval(
 
     Performs vector similarity search against indexed documents.
     Returns chunks with source attribution and relevance scores.
-
-    Input keys match the Smithy ``KBSearch`` operation on the data-layer
-    surface (``POST /namespaces/{namespaceId}/kb/search``).
 
     Args:
         ctx: MCP request context carrying the caller's identity and bearer token.
@@ -573,9 +594,6 @@ async def graph_traversal(
     Starting from a given entity URI, explores relationships up to the
     specified depth. Returns entities and their relationships.
 
-    Input keys match the Smithy ``GraphTraverse`` operation on the data-layer
-    surface (``POST /namespaces/{namespaceId}/graph/traverse``).
-
     Args:
         ctx: MCP request context carrying the caller's identity and bearer token.
         startUri: IRI of the entity to start traversal from.
@@ -608,6 +626,10 @@ async def graph_traversal(
             max_results=maxResults,
             relationship_filter=relationshipFilter,
         )
+        if config.auth_enabled:
+            result = _suppress_schema_unless_viewer(
+                result, profile, namespaceId, _GRAPH_TRAVERSAL_SCHEMA_KEYS, "graph_traversal"
+            )
         duration_ms = int((time.perf_counter() - start) * 1000)
         if caller:
             log_tool_invocation(caller, "graph_traversal", namespaceId, duration_ms=duration_ms)
@@ -628,8 +650,6 @@ async def graph_traversal(
         raise
 
 
-# ── Entrypoint ────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     from coa_common.logging import setup_logging
 
@@ -641,9 +661,6 @@ if __name__ == "__main__":
         auth_enabled=config.auth_enabled,
         tools=["list_metrics", "describe_schema", "query", "translate_sparql", "rag_retrieval", "graph_traversal"],
     )
-
-    # Add CORS middleware for local demo UI
-    import os
 
     if os.environ.get("SCL_ALLOW_CORS", "false").lower() == "true":
         from .dev_support import add_cors_middleware

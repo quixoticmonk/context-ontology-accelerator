@@ -3,7 +3,7 @@
 
 """Control Plane package."""
 
-__version__ = "0.3.9"
+__version__ = "0.3.10"
 
 from coa_control_plane.metadata_store import (
     AssetResult,
@@ -12,7 +12,6 @@ from coa_control_plane.metadata_store import (
     ProjectResult,
     SMUSClient,
 )
-from coa_control_plane.ssm_config import get_smus_domain_id
 
 __all__ = [
     "AssetResult",
@@ -20,5 +19,4 @@ __all__ = [
     "MetadataStoreError",
     "ProjectResult",
     "SMUSClient",
-    "get_smus_domain_id",
 ]

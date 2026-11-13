@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import functools
+import gc
+import sys
 import time
 
 import pytest
@@ -904,6 +907,48 @@ def _nested_subqueries(depth: int) -> str:
     return _EX + "SELECT ?s WHERE { ?s ex:name ?m FILTER EXISTS " + inner + " }"
 
 
+def _firewall_calls_to_check(depth: int) -> int:
+    """Python calls into firewall.py while checking a query nested ``depth`` deep."""
+    calls = 0
+
+    def count(frame, event, _arg):
+        nonlocal calls
+        if event == "call" and frame.f_code.co_filename == firewall.__file__:
+            calls += 1
+
+    query = _nested_subqueries(depth)
+    previous = sys.getprofile()
+    sys.setprofile(count)
+    try:
+        _check(query, denied_predicates=frozenset({_TITLE}))
+    finally:
+        sys.setprofile(previous)
+    return calls
+
+
+def _python_calls(call) -> int:
+    """Python calls made while running ``call()``, with the garbage collector held off."""
+    calls = 0
+
+    def count(frame, event, _arg):
+        nonlocal calls
+        if event == "call":
+            calls += 1
+
+    previous = sys.getprofile()
+    gc_was_enabled = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    sys.setprofile(count)
+    try:
+        call()
+    finally:
+        sys.setprofile(previous)
+        if gc_was_enabled:
+            gc.enable()
+    return calls
+
+
 def _seconds(call) -> float:
     started = time.perf_counter()
     call()
@@ -916,9 +961,19 @@ class TestDeepNestingStaysLinear:
     _DEPTH = 18
     _BOUND_S = 1.0
 
-    def test_a_deeply_nested_query_is_checked_quickly(self):
-        query = _nested_subqueries(self._DEPTH)
-        assert _seconds(lambda: _check(query, denied_predicates=frozenset({_TITLE}))) < self._BOUND_S
+    def test_a_level_of_nesting_costs_no_more_calls_than_the_one_before(self):
+        """Counted, not timed: a wall-clock bound fails on a loaded machine and misses a quadratic walk."""
+        shallow, middle, deep = (_firewall_calls_to_check(depth) for depth in (2, 4, 6))
+        assert 0 < deep - middle <= middle - shallow
+
+    def test_a_full_check_including_the_parser_grows_linearly(self):
+        """Every Python call counts, rdflib's parser too, so a blowup outside firewall.py fails."""
+        denied = frozenset({_TITLE})
+        checks = [functools.partial(_check, _nested_subqueries(d), denied_predicates=denied) for d in (2, 10, 18)]
+        checks[0]()  # the first check pays rdflib's and pyparsing's lazy set-up
+        shallow, middle, deep = (_python_calls(check) for check in checks)
+        # The parser's step grows slightly with depth; work repeated per level grows it far more.
+        assert 0 < deep - middle <= 1.25 * (middle - shallow)
 
     @pytest.mark.parametrize("view", ["algebra", "parse-tree"])
     def test_every_walk_is_quick_on_both_views(self, view):

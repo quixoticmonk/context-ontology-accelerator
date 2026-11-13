@@ -14,6 +14,16 @@ two independent bounds: the version counter in the CacheInvalidation table
 (bumped by ``stream_handler`` on any grant change, so a revocation takes
 effect within seconds) and a per-entry max age, so staleness stays bounded
 even if the stream or the counter read is broken.
+
+Schema-visibility flags (``canViewSource`` / ``canViewOntology`` /
+``viewSourceNamespaces``, defined in :mod:`coa_authorization.schema_visibility`)
+are added to the context of an allowed ``readMetric`` or grant-listing request.
+Role policies are loaded once per invocation and that one policy text serves the
+main decision and every flag; each flag fails closed. The grant handlers treat a
+missing key as "withhold", so on grant-listing routes the key is always emitted:
+in dev mode without a roles table it carries the withholding value (``"false"``
+/ ``""``), as a Cedar-disabled serve would. Metric reads stay flagless in dev
+mode, where the metric service deliberately keeps full definitions.
 """
 
 from __future__ import annotations
@@ -23,7 +33,17 @@ import time
 from typing import Any
 
 import structlog
-from coa_authorization.policy_evaluator import evaluate
+from coa_authorization.policy_evaluator import evaluate, evaluate_batch
+from coa_authorization.schema_visibility import (
+    CAN_VIEW_ONTOLOGY,
+    CAN_VIEW_SOURCE,
+    VIEW_ONTOLOGY_ACTION,
+    VIEW_SOURCE_ACTION,
+    VIEW_SOURCE_NAMESPACES,
+    SchemaVisibility,
+    to_authorizer_flags,
+    to_namespace_list,
+)
 from coa_common import sanitize_principal_key, sync_boto_config
 from coa_common.auth import (
     TokenAuthorizer,
@@ -39,18 +59,9 @@ logger = structlog.get_logger(__name__)
 
 EXECUTE_API_ACTION = "execute-api:Invoke"
 
-# ---------------------------------------------------------------------------
-# Mutating actions blocked while a namespace is ARCHIVED
-# ---------------------------------------------------------------------------
-# An ARCHIVED namespace is frozen (data retained for audit, no management).
-# These Cedar actions are the mutating operations that must be denied while a
-# namespace is ARCHIVED. The actual deny is enforced by the archived-namespace
-# mutation guard (a ``forbid`` folded into ``default.cedar``, which is always
-# loaded) — this set decides when the authorizer fetches namespace status and
-# populates ``context.namespaceStatus`` so the guard can fire. Reads/queries
-# are intentionally excluded (queries remain allowed on ARCHIVED namespaces),
-# as are the lifecycle actions needed to recover an archived namespace
-# (``setNamespaceStatus``, ``deleteNamespace``).
+# Mutating Cedar actions denied on ARCHIVED namespaces by the ``forbid`` in
+# ``default.cedar``. This set decides when namespace status is fetched for
+# ``context.namespaceStatus``. Reads and the recovery actions are excluded.
 _MUTATING_ACTIONS: frozenset[str] = frozenset(
     {
         "manageSource",
@@ -61,12 +72,6 @@ _MUTATING_ACTIONS: frozenset[str] = frozenset(
         "manageRoles",
     }
 )
-
-_ARCHIVED_STATUS = "ARCHIVED"
-
-# ---------------------------------------------------------------------------
-# Token authorizer singleton (created on first invocation)
-# ---------------------------------------------------------------------------
 
 _token_authorizer: TokenAuthorizer | None = None
 
@@ -85,10 +90,6 @@ def _get_token_authorizer() -> TokenAuthorizer:
     )
     return _token_authorizer
 
-
-# ---------------------------------------------------------------------------
-# Cache invalidation (version-based — clears stale role data)
-# ---------------------------------------------------------------------------
 
 _cache_invalidation_dao: DynamoDBDAO | None = None
 _local_cache_version: int = 0
@@ -136,10 +137,8 @@ def _get_cache_invalidation_dao() -> DynamoDBDAO | None:
     table = os.environ.get("CACHE_INVALIDATION_TABLE_NAME")
     if not table:
         return None
-    # The Lambda authorizer runs on every gated request (result caching is
-    # disabled). Fail fast instead of inheriting the DAO's background
-    # 30-second/three-attempt default (matches the Cedar policy loader's
-    # #1092 fix) — a DynamoDB brownout here must not stall the authorizer.
+    # The authorizer runs on every gated request (result caching is disabled).
+    # Fail fast instead of inheriting the DAO's 30-second/three-attempt default.
     _cache_invalidation_dao = DynamoDBDAO(table, region=os.environ["AWS_REGION"], config=sync_boto_config())
     return _cache_invalidation_dao
 
@@ -160,10 +159,6 @@ def _check_cache_version() -> None:
     except Exception:
         logger.warning("Failed to check cache version, proceeding with stale cache")
 
-
-# ---------------------------------------------------------------------------
-# Namespace status lookup (for the ARCHIVED mutation guard)
-# ---------------------------------------------------------------------------
 
 _namespaces_dao: DynamoDBDAO | None = None
 
@@ -199,24 +194,10 @@ def _get_namespaces_dao() -> DynamoDBDAO:
 
 
 def _get_namespace_status(namespace_id: str) -> str | None:
-    """Return the lifecycle status of an existing namespace.
+    """Return the namespace status, or ``None`` only when the record is absent.
 
-    Contract — the caller relies on this to act correctly:
-
-    * Returns a **status string** when the namespace record exists.
-    * Returns ``None`` *only* when the namespace record is absent — a genuine
-      "not found", which the downstream handler resolves to 404. Mutating a
-      namespace that does not exist has no data to protect, so the guard
-      intentionally lets these through (role policies still apply).
-    * **Raises** on any error condition — missing configuration (see
-      :func:`_get_namespaces_dao`) or a DynamoDB failure (``dao.get`` raises) —
-      so the caller fails closed rather than guessing. This makes "not found"
-      (``None``) cleanly distinguishable from "error" (exception).
-
-    Read fresh on every mutating request (never cached) so that archiving takes
-    effect on the next authorizer cache miss — a stale ``ACTIVE`` would wrongly
-    permit a mutation. Mutations are not the hot path (reads/queries are), so
-    the extra GetItem is acceptable.
+    Raises on missing configuration or a DynamoDB failure so the caller fails
+    closed. Never cached, so archiving takes effect on the next request.
     """
     dao = _get_namespaces_dao()  # raises (fail-closed) if misconfigured
     item = dao.get({"PK": f"NS#{namespace_id}", "SK": "METADATA"})
@@ -229,11 +210,6 @@ def _get_namespace_status(namespace_id: str) -> str | None:
         # visible rather than silent.
         logger.warning("Unrecognized namespace status", namespace_id=namespace_id, status=status)
     return status
-
-
-# ---------------------------------------------------------------------------
-# Policy builder
-# ---------------------------------------------------------------------------
 
 
 def _build_policy(
@@ -258,11 +234,6 @@ def _build_policy(
     }
 
 
-# ---------------------------------------------------------------------------
-# Role resolution from ResourceRoleMappings table
-# ---------------------------------------------------------------------------
-
-
 def _resolve_roles(
     principal_id: str,
     groups: list[str],
@@ -280,17 +251,10 @@ def _resolve_roles(
     cache_key = f"{principal_id}:{','.join(sorted(groups))}"
     cached = _roles_cache.get(cache_key)
     if cached is not None:
-        # Defensive: validate the entry shape before trusting it. Anything else
-        # (e.g. a 2-tuple written by a prior code version) is evicted and
-        # re-queried rather than unpacked blindly.
-        if isinstance(cached, tuple) and len(cached) == 3:
-            expires_at, cached_global, cached_resource = cached
-            if time.monotonic() < expires_at:
-                return cached_global, cached_resource
-            del _roles_cache[cache_key]
-        else:
-            del _roles_cache[cache_key]
-            logger.warning("Evicted corrupt cache entry", cache_key=cache_key)
+        expires_at, cached_global, cached_resource = cached
+        if time.monotonic() < expires_at:
+            return cached_global, cached_resource
+        del _roles_cache[cache_key]
 
     global_roles: list[str] = []
     resource_roles: list[dict[str, str]] = []
@@ -300,24 +264,16 @@ def _resolve_roles(
     principal_keys.extend(f"Group::{sanitize_principal_key(g)}" for g in groups)
 
     for pk in principal_keys:
-        try:
-            # query_all, not query: a single query returns one 1 MB page, so a
-            # principal whose grants span more than that would have the roles on
-            # later pages silently dropped — yielding a 403 on a namespace the
-            # user holds a valid grant for. Page boundaries depend on internal
-            # item ordering, so which roles vanish can change between
-            # invocations, making it look intermittent and unreproducible.
-            items = dao.query_all(
-                QueryParams(
-                    key_condition="#pk = :pk",
-                    expression_values={":pk": pk},
-                    expression_names={"#pk": "principalKey"},
-                    index_name="PrincipalIndex",
-                )
+        # query_all, not query: one query returns a single 1 MB page and would
+        # silently drop roles on later pages.
+        items = dao.query_all(
+            QueryParams(
+                key_condition="#pk = :pk",
+                expression_values={":pk": pk},
+                expression_names={"#pk": "principalKey"},
+                index_name="PrincipalIndex",
             )
-        except Exception:
-            logger.exception("Failed to query roles", principal_key=pk)
-            raise
+        )
         for item in items:
             role = item.get("role", "")
             resource_id = item.get("resourceId", "")
@@ -326,14 +282,8 @@ def _resolve_roles(
             elif resource_id and role:
                 resource_roles.append({"role": role, "resourceUID": resource_id})
 
-    # At the cap, evict the oldest entries (insertion order — dicts preserve it)
-    # rather than clearing the whole cache. A full flush would send the next
-    # burst of authorization requests to the PrincipalIndex GSI all at once
-    # (the API Gateway authorizer result cache is disabled), risking a DynamoDB
-    # throttle spike on the auth hot path. Bounded eviction keeps the
-    # runaway-memory guard without that thundering herd. Not true LRU (no
-    # access-order tracking); upgrade to OrderedDict.move_to_end if hit rate
-    # ever matters.
+    # At the cap, evict the oldest entries rather than flushing everything, so a
+    # burst does not hit the PrincipalIndex GSI all at once. Not true LRU.
     if len(_roles_cache) >= _ROLES_CACHE_MAX_ENTRIES:
         evict_count = max(1, _ROLES_CACHE_MAX_ENTRIES // 10)
         for stale_key in list(_roles_cache)[:evict_count]:
@@ -351,22 +301,24 @@ def _resolve_roles(
     return global_roles, resource_roles
 
 
-# ---------------------------------------------------------------------------
-# Cedar evaluation
-# ---------------------------------------------------------------------------
+# Routes whose downstream handler withholds grant overrides by schema visibility.
+# The same kind of constant for both, so the membership checks read alike.
+_GRANT_LIST_ROUTES: frozenset[tuple[str, str]] = frozenset({("GET", "/namespaces/{namespaceId}/grants")})
+_PRINCIPAL_GRANTS_ROUTES: frozenset[tuple[str, str]] = frozenset({("GET", "/principals/{principalId}/grants")})
 
 
-def _evaluate_cedar(
-    principal_id: str,
-    action: str,
-    resource_type: str,
-    resource_id: str,
+def _load_role_policies(
     global_roles: list[str],
     resource_roles: list[dict[str, str]],
     roles_dao: DynamoDBDAO,
-    context: dict[str, str] | None = None,
-) -> bool:
-    """Load Cedar policies for the principal's roles and evaluate."""
+) -> str:
+    """Load the Cedar policy text for the principal's roles (plus ``default``).
+
+    The policy set depends only on the roles, never on the resource, so one load
+    per authorizer invocation serves the main decision and every schema-visibility
+    check. Returns ``""`` when no policy is found (every evaluation then denies).
+    Raises on a DynamoDB error so the caller fails closed.
+    """
     policy_texts: list[str] = []
 
     # Collect Cedar policies from Roles table for each resolved role + default
@@ -381,10 +333,112 @@ def _evaluate_cedar(
                 policy_texts.append(item["cedarPolicy"])
                 break
 
-    if not policy_texts:
-        return False
+    return "\n".join(policy_texts)
 
-    policies = "\n".join(policy_texts)
+
+def _safe_allowed(
+    policies: str,
+    checks: list[tuple[str, str, str]],
+    *,
+    principal_id: str,
+    global_roles: list[str],
+    resource_roles: list[dict[str, str]],
+) -> list[bool]:
+    """Evaluate schema-visibility ``(action, resource_type, resource_id)`` checks, fail-closed.
+
+    One Cedar batch over the already-loaded policy text, so it is parsed once. Any
+    error withholds every check and is logged, so an outage is not mistaken for a
+    real deny. Same resource convention as :func:`_evaluate_cedar`
+    (``namespace`` = resource id).
+    """
+    if not policies or not checks:
+        return [False] * len(checks)
+    try:
+        results = evaluate_batch(policies, principal_id, checks, global_roles, resource_roles)
+        return [bool(r.allowed) for r in results]
+    except Exception:
+        logger.exception("Schema visibility evaluation failed; withholding", check_count=len(checks))
+        return [False] * len(checks)
+
+
+def _view_source_namespaces(
+    policies: str,
+    principal_id: str,
+    global_roles: list[str],
+    resource_roles: list[dict[str, str]],
+) -> str:
+    """Namespaces where the caller holds ``viewSource``, comma-separated.
+
+    Includes ``*`` for a platform-wide grant. Every check fails closed (omitted).
+    """
+    candidates = sorted({r.get("resourceUID", "") for r in resource_roles if r.get("resourceUID")} | {"*"})
+    decisions = _safe_allowed(
+        policies,
+        [(VIEW_SOURCE_ACTION, "Source", ns) for ns in candidates],
+        principal_id=principal_id,
+        global_roles=global_roles,
+        resource_roles=resource_roles,
+    )
+    return to_namespace_list(ns for ns, ok in zip(candidates, decisions, strict=True) if ok)
+
+
+def _schema_visibility_context(
+    policies: str,
+    principal_id: str,
+    namespace_id: str,
+    global_roles: list[str],
+    resource_roles: list[dict[str, str]],
+    *,
+    include_ontology: bool = True,
+) -> dict[str, str]:
+    """``canViewSource`` (and ``canViewOntology``) for the caller on the namespace, fail-closed.
+
+    Evaluated the same way the control-plane source and ontology reads are
+    (``viewSource`` on ``Source``, ``viewOntology`` on ``Ontology``, resource id =
+    namespace). Any evaluation error yields ``"false"``. Grant listings read only
+    ``canViewSource``, so they pass ``include_ontology=False``.
+    """
+    checks = [(VIEW_SOURCE_ACTION, "Source", namespace_id)]
+    if include_ontology:
+        checks.append((VIEW_ONTOLOGY_ACTION, "Ontology", namespace_id))
+    decisions = _safe_allowed(
+        policies, checks, principal_id=principal_id, global_roles=global_roles, resource_roles=resource_roles
+    )
+    flags = to_authorizer_flags(SchemaVisibility(source=decisions[0], ontology=include_ontology and decisions[-1]))
+    if not include_ontology:
+        del flags[CAN_VIEW_ONTOLOGY]
+    return flags
+
+
+def _withheld_schema_context(route: tuple[str, str]) -> dict[str, str]:
+    """Explicit withholding flags for a request allowed without Cedar (dev mode, no roles table).
+
+    The grant handlers fail closed on a missing key anyway; emitting it keeps the
+    contract explicit and matches a Cedar-disabled serve. Metric reads are left
+    flagless on purpose: the metric service's deliberate missing-flag rule then
+    returns full definitions in dev mode.
+    """
+    if route in _GRANT_LIST_ROUTES:
+        return {CAN_VIEW_SOURCE: "false"}
+    if route in _PRINCIPAL_GRANTS_ROUTES:
+        return {VIEW_SOURCE_NAMESPACES: ""}
+    return {}
+
+
+def _evaluate_cedar(
+    *,
+    policies: str,
+    principal_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    global_roles: list[str],
+    resource_roles: list[dict[str, str]],
+    context: dict[str, str] | None = None,
+) -> bool:
+    """Evaluate one request against already-loaded policy text (see :func:`_load_role_policies`)."""
+    if not policies:
+        return False
     # Namespace-scoped policies (data-steward, data-analyst) match on the
     # resource's ``namespace`` attribute, while owner/maintainer/view policies
     # match on the resource ``id``. For every namespace-scoped route the mapped
@@ -406,10 +460,6 @@ def _evaluate_cedar(
     )
     return result.allowed
 
-
-# ---------------------------------------------------------------------------
-# Request → Cedar action mapping
-# ---------------------------------------------------------------------------
 
 # Maps (API GW resource template, HTTP method) → (Cedar action, Cedar resource type)
 # See docs/authz-access-matrix.md for the full role × action permission matrix.
@@ -474,14 +524,14 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
     # Authorization remains namespace-scoped: the role grant's resourceUID is
     # the namespace, so the evaluated resource id/namespace are the namespaceId.
     "/namespaces/{namespaceId}/sources": {
-        "GET": ("viewNamespace", "Source"),
+        "GET": ("viewSource", "Source"),
         "POST": ("manageSource", "Source"),
     },
     "/namespaces/{namespaceId}/sources/upload-urls": {
         "POST": ("manageSource", "Source"),
     },
     "/namespaces/{namespaceId}/sources/{sourceId}": {
-        "GET": ("viewNamespace", "Source"),
+        "GET": ("viewSource", "Source"),
         "DELETE": ("manageSource", "Source"),
     },
     "/namespaces/{namespaceId}/sources/{sourceId}/rescan": {
@@ -499,21 +549,20 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
         "PUT": ("manageSource", "Source"),
     },
     "/namespaces/{namespaceId}/sources/{sourceId}/tables": {
-        "GET": ("viewNamespace", "Source"),
+        "GET": ("viewSource", "Source"),
     },
     "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}": {
-        "GET": ("viewNamespace", "Source"),
+        "GET": ("viewSource", "Source"),
     },
     # Scan history: list the source's scan + steward-review events, and read one
     # scan job. Both are reads of scan state, so they carry the same authority as
     # the other source reads above.
     "/namespaces/{namespaceId}/sources/{sourceId}/scan": {
-        "GET": ("viewNamespace", "Source"),
+        "GET": ("viewSource", "Source"),
     },
     "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}": {
-        "GET": ("viewNamespace", "Source"),
+        "GET": ("viewSource", "Source"),
     },
-    # Resource-oriented review (replaces the legacy bulk POST /review endpoint)
     "/namespaces/{namespaceId}/sources/{sourceId}/approve": {
         "POST": ("manageSource", "Source"),
     },
@@ -562,11 +611,15 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
     "/namespaces/{namespaceId}/import-osi/upload-url": {
         "POST": ("manageMetric", "Metric"),
     },
+    # OSI export is a full dump of every metric definition (SQL expressions and
+    # source tables), and import-job status reports on authoring that names them,
+    # so both need source-schema visibility, not just readMetric — a schema-blind
+    # data-analyst is denied them.
     "/namespaces/{namespaceId}/import-jobs/{jobId}": {
-        "GET": ("readMetric", "Metric"),
+        "GET": ("viewSource", "Metric"),
     },
     "/namespaces/{namespaceId}/export-osi": {
-        "GET": ("readMetric", "Metric"),
+        "GET": ("viewSource", "Metric"),
     },
     # ── Ontology induction ─────────────────────────────────────────────
     # Induction jobs operate on the namespace's Ontology; review of generated
@@ -576,19 +629,19 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
         "POST": ("manageOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/induce/jobs": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/induce/jobs/{jobId}": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/induce/datasources/induced": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/proposals": {
-        "GET": ("viewNamespace", "OntologyProposal"),
+        "GET": ("viewOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/proposals/{proposalId}": {
-        "GET": ("viewNamespace", "OntologyProposal"),
+        "GET": ("viewOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/proposals/{proposalId}/accept": {
         "POST": ("manageOntology", "OntologyProposal"),
@@ -600,13 +653,13 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
         "POST": ("manageOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/proposals/{proposalId}/validate/jobs/{jobId}": {
-        "GET": ("viewNamespace", "OntologyProposal"),
+        "GET": ("viewOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/proposals/{proposalId}/infer-constraints": {
         "POST": ("manageOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/proposals/{proposalId}/infer-constraints/jobs/{jobId}": {
-        "GET": ("viewNamespace", "OntologyProposal"),
+        "GET": ("viewOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/proposals/{proposalId}/compile-constraints": {
         "POST": ("manageOntology", "OntologyProposal"),
@@ -634,25 +687,26 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
         "POST": ("traverseGraph", "Namespace"),
     },
     # DescribeSchema is a read of the namespace's ontology summary — gated
-    # under the same ``viewNamespace`` action as the other schema/ontology
-    # reads, matching MCP's ``describe_schema`` Cedar action mapping.
+    # under ``viewOntology`` (decomposed from viewNamespace) so a schema-blind
+    # role is denied it, matching MCP's ``describe_schema`` Cedar action mapping.
     "/namespaces/{namespaceId}/schema": {
-        "GET": ("viewNamespace", "Namespace"),
+        "GET": ("viewOntology", "Namespace"),
     },
     # ── Ontology graph + catalog ────────────────────────────────────────
-    # Reads are gated by viewNamespace; deleting an ontology is a write, gated
+    # Reads are gated by viewOntology (decomposed from viewNamespace, so a
+    # schema-blind role is denied them); deleting an ontology is a write, gated
     # by manageOntology (same action as induce/accept). Without the DELETE entry
     # this route falls through to the ``denyAll`` default, which wrongly blocks
     # data-steward (who holds manageOntology, not an unconstrained-action role).
     "/namespaces/{namespaceId}/ontologies": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
         "DELETE": ("manageOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/ontologies/{ontologyId}": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/ontologies/{ontologyId}/download": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     # Minting a presigned PUT is a write: it hands out the ability to place an
     # artifact, so it is gated like the upload itself. Matches the sibling
@@ -676,10 +730,10 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
     # it reports on was a write — same split as
     # ``/proposals/{proposalId}/validate/jobs/{jobId}``.
     "/namespaces/{namespaceId}/ontologies/{ontologyId}/ingest-status/{jobId}": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/ontology/foundational": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/ontology/foundational/{key}/load": {
         "POST": ("manageOntology", "Ontology"),
@@ -688,19 +742,19 @@ _PATH_MAPPING: dict[str, dict[str, tuple[str, str]]] = {
         "POST": ("manageOntology", "OntologyProposal"),
     },
     "/namespaces/{namespaceId}/graph/ontology-overview": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/graph/search": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/graph/class": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/graph/object-property": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     "/namespaces/{namespaceId}/graph/datatype-property": {
-        "GET": ("viewNamespace", "Ontology"),
+        "GET": ("viewOntology", "Ontology"),
     },
     # ── Platform-scoped ─────────────────────────────────────────────────
     # No {namespaceId}, so the resource id resolves to "*" (see
@@ -744,11 +798,6 @@ def _map_request_to_cedar(
     return action, resource_type, resource_id
 
 
-# ---------------------------------------------------------------------------
-# Handler
-# ---------------------------------------------------------------------------
-
-
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG001
     """Lambda handler for API Gateway REQUEST authorizer.
 
@@ -764,10 +813,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
 
     logger.info("Authorizer invoked", method_arn=method_arn, resource=resource_path, method=http_method)
 
-    # 1. Check role cache version (invalidation)
     _check_cache_version()
 
-    # 2. Validate token
     try:
         authorizer = _get_token_authorizer()
         result: TokenValidationResult = authorizer.validate(auth_token)
@@ -786,7 +833,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
         emit_authorizer_error(reason="no_principal")
         return _build_policy("", "Deny", method_arn)
 
-    # 3. Resolve roles from ResourceRoleMappings
     region = os.environ["AWS_REGION"]
     rrm_table = os.environ.get("RESOURCE_ROLE_MAPPINGS_TABLE_NAME")
     roles_table = os.environ.get("ROLES_TABLE_NAME")
@@ -805,7 +851,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
             emit_authorizer_error(reason="role_resolution_error")
             return _build_policy(principal_id, "Deny", method_arn)
 
-    # 4. Cedar policy evaluation
     is_allowed = False
     cedar_action, _cedar_resource_type, _cedar_resource_id = _map_request_to_cedar(
         http_method, resource_path, path_params
@@ -830,30 +875,30 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
                 return _build_policy(principal_id, "Deny", method_arn)
             if namespace_status:
                 cedar_context = {"namespaceStatus": namespace_status}
-            # namespace_status is None only when the namespace record does not
-            # exist (see _get_namespace_status). We intentionally leave the
-            # context unset and let Cedar's role policies evaluate normally —
-            # the downstream handler resolves a missing namespace to 404, and
-            # there is no archived data to protect on a namespace that does not
-            # exist. (Configuration/DynamoDB errors raise above and fail closed.)
 
+    route = (http_method, resource_path)
+    policies = ""
     if roles_table:
         # Cedar evaluation runs on every gated request. Same fail-fast
         # rationale as rrm_dao above.
         roles_dao = DynamoDBDAO(roles_table, region=region, config=sync_boto_config())
 
         try:
+            # One policy load per invocation, reused below for every
+            # schema-visibility check.
+            policies = _load_role_policies(global_roles, resource_roles, roles_dao)
             is_allowed = _evaluate_cedar(
+                policies=policies,
                 principal_id=principal_id,
                 action=cedar_action,
                 resource_type=_cedar_resource_type,
                 resource_id=_cedar_resource_id,
                 global_roles=global_roles,
                 resource_roles=resource_roles,
-                roles_dao=roles_dao,
                 context=cedar_context,
             )
         except Exception:
+            is_allowed = False
             logger.exception("Cedar policy evaluation failed, denying request")
             emit_authorizer_error(reason="cedar_evaluation_error", action=cedar_action)
         else:
@@ -870,11 +915,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
 
     effect = "Allow" if is_allowed else "Deny"
 
-    # API GW caches the authorizer response by JWT for the configured TTL.
-    # The cached IAM policy must cover every method on the stage, otherwise
-    # the first request locks the cache to that specific method ARN and
-    # subsequent methods on the same JWT 403 until TTL expires. Cedar
-    # already enforced the (action, resource) for this request.
+    # Cedar already enforced the (action, resource) for this request, so the
+    # Allow policy covers every method on the stage.
     resource_arn = method_arn
     if effect == "Allow":
         arn_prefix = method_arn.split("/", 1)[0]
@@ -890,6 +932,35 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:  # noqa: ARG
     }
     if result.agent_identity:
         auth_context["agentIdentity"] = result.agent_identity
+    if is_allowed and roles_table and (cedar_action == "readMetric" or route in _GRANT_LIST_ROUTES):
+        # Metric definitions carry SQL and source-table names (viewSource) and
+        # ontology concept IRIs (viewOntology); grant summaries carry table
+        # allowlists and column denylists (viewSource only, so viewOntology is
+        # not evaluated there). The downstream handlers withhold those fields
+        # unless these flags are "true". Safe per request because the
+        # authorizer result cache is off (resultTtlInSeconds: 0 in the Smithy
+        # model).
+        auth_context.update(
+            _schema_visibility_context(
+                policies,
+                principal_id,
+                _cedar_resource_id,
+                global_roles,
+                resource_roles,
+                include_ontology=route not in _GRANT_LIST_ROUTES,
+            )
+        )
+    if is_allowed and roles_table and route in _PRINCIPAL_GRANTS_ROUTES:
+        # The caller's own grant listing spans namespaces, so name the
+        # namespaces where it may see source schema; overrides on grants
+        # elsewhere are withheld by the handler.
+        auth_context[VIEW_SOURCE_NAMESPACES] = _view_source_namespaces(
+            policies, principal_id, global_roles, resource_roles
+        )
+    if is_allowed and not roles_table:
+        # Dev mode: no Cedar, so no schema right can be proven. Grant listings
+        # fail closed on a missing key; emit the withholding values explicitly.
+        auth_context.update(_withheld_schema_context(route))
 
     logger.info(
         "Authorization decision",

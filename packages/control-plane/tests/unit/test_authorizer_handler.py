@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import re
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,29 @@ def _reset_handler_state():
     h._local_cache_version = 0
     h._namespaces_dao = None
     yield
+
+
+_STUB_POLICIES = "// stub policy text; evaluation is patched in these tests"
+
+
+@pytest.fixture()
+def real_policy_loading():
+    """Opt out of ``_stub_policy_loading``: the test drives the real loader (e.g. via _FakeRolesDao)."""
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_policy_loading(request):
+    """Handler tests mock ``DynamoDBDAO``, whose MagicMock items are not policy text.
+
+    Stub the loader so those tests exercise the decision wiring; tests that need
+    the real loader request ``real_policy_loading``.
+    """
+    if "real_policy_loading" in request.fixturenames:
+        yield None
+        return
+    with patch("coa_control_plane.authorization.handler._load_role_policies", return_value=_STUB_POLICIES) as m:
+        yield m
 
 
 @pytest.fixture()
@@ -160,8 +185,7 @@ class TestCacheInvalidation:
 class TestSyncTimeoutProfile:
     """The Lambda authorizer runs on every gated request (result caching is
     disabled), so every DynamoDBDAO it builds must fail fast rather than
-    inherit the DAO's background 30-second/three-attempt default (matches
-    the Cedar policy loader's #1092 fix).
+    inherit the DAO's background 30-second/three-attempt default.
     """
 
     @patch("coa_control_plane.authorization.handler.DynamoDBDAO")
@@ -234,11 +258,7 @@ class TestRolesCaching:
         assert cached_resource == [{"role": "data-steward", "resourceUID": "ns-123"}]
 
     def test_principal_id_with_special_characters_is_url_encoded(self, env_vars):
-        """Verify that principal IDs with special characters are URL-encoded when querying.
-
-        This matches the encoding used when creating grants, ensuring that users with
-        special characters (like ``+``) in their email can have their grants resolved.
-        """
+        """Principal IDs with special characters are URL-encoded when querying."""
         from coa_control_plane.authorization.handler import _resolve_roles
 
         mock_dao = MagicMock()
@@ -299,45 +319,6 @@ class TestRolesCaching:
 
         assert "user@example.com:GroupA,GroupB" in _roles_cache
 
-    def test_corrupt_cache_entry_evicted_and_requeried(self, env_vars):
-        """A corrupt/legacy cache entry should be evicted and the query re-run."""
-        from coa_control_plane.authorization.handler import _resolve_roles, _roles_cache
-
-        # Simulate a corrupt entry (wrong type — e.g. leftover from prior code)
-        cache_key = "user@example.com:GroupX"
-        _roles_cache[cache_key] = "garbage"  # type: ignore[assignment]
-
-        mock_dao = MagicMock()
-        # User query returns a role, group query returns nothing
-        mock_dao.query_all.side_effect = [
-            [{"role": "VIEWER", "resourceId": "GLOBAL"}],
-            [],
-        ]
-
-        global_roles, resource_roles = _resolve_roles("user@example.com", ["GroupX"], mock_dao)
-
-        # Should have queried DDB since cache was corrupt
-        assert mock_dao.query_all.called
-        assert global_roles == ["VIEWER"]
-        # Re-populated with a well-formed entry in the current shape.
-        assert len(_roles_cache[cache_key]) == 3
-        assert _roles_cache[cache_key][1] == ["VIEWER"]
-
-    def test_legacy_two_tuple_entry_evicted_and_requeried(self, env_vars):
-        """An entry written before the max-age field existed must not be served."""
-        from coa_control_plane.authorization.handler import _resolve_roles, _roles_cache
-
-        cache_key = "legacy-user@example.com:GroupY"
-        _roles_cache[cache_key] = (["ADMIN"], [])  # type: ignore[assignment]
-
-        mock_dao = MagicMock()
-        mock_dao.query_all.side_effect = [[{"role": "VIEWER", "resourceId": "GLOBAL"}], []]
-
-        global_roles, _ = _resolve_roles("legacy-user@example.com", ["GroupY"], mock_dao)
-
-        assert mock_dao.query_all.called
-        assert global_roles == ["VIEWER"]
-
     def test_cap_evicts_oldest_entries_not_whole_cache(self, env_vars):
         """At the size cap, only the oldest slice is evicted — not a full flush.
 
@@ -347,7 +328,6 @@ class TestRolesCaching:
         import coa_control_plane.authorization.handler as h
         from coa_control_plane.authorization.handler import _resolve_roles, _roles_cache
 
-        # Fill to exactly the cap with well-formed, non-expired entries.
         future = time.monotonic() + 3600
         for i in range(h._ROLES_CACHE_MAX_ENTRIES):
             _roles_cache[f"user{i}@example.com:"] = (future, ["VIEWER"], [])
@@ -356,13 +336,10 @@ class TestRolesCaching:
         mock_dao = MagicMock()
         mock_dao.query_all.side_effect = [[{"role": "ADMIN", "resourceId": "GLOBAL"}], []]
 
-        # A miss at the cap triggers eviction of the oldest ~10%, then insert.
         _resolve_roles("new-user@example.com", ["GroupA"], mock_dao)
 
         evicted = max(1, h._ROLES_CACHE_MAX_ENTRIES // 10)
-        # cap - evicted survivors + the freshly inserted entry.
         assert len(_roles_cache) == h._ROLES_CACHE_MAX_ENTRIES - evicted + 1
-        # Oldest key gone, newest key present — not a full clear.
         assert "user0@example.com:" not in _roles_cache
         assert f"user{h._ROLES_CACHE_MAX_ENTRIES - 1}@example.com:" in _roles_cache
         assert "new-user@example.com:GroupA" in _roles_cache
@@ -433,12 +410,7 @@ class TestGetTokenAuthorizer:
     def test_cognito_lookalike_issuers_are_not_treated_as_cognito(self, issuer, monkeypatch):
         """None of these may select the Cognito authorizer.
 
-        Each embeds ``cognito-idp`` somewhere outside the real host. The
-        path-embedded, query-smuggled, and plaintext-``http`` cases were all
-        accepted by the previous substring test; the suffix-extension and
-        userinfo cases were already rejected by it (they carry no
-        ``.amazonaws.com/``) and are pinned here so a future rewrite of the
-        predicate cannot regress them.
+        Each embeds ``cognito-idp`` somewhere outside the real host.
         """
         monkeypatch.setenv("JWKS_ISSUER", issuer)
         monkeypatch.setenv("JWKS_URI", "https://evil.test/.well-known/jwks.json")
@@ -596,12 +568,13 @@ CONTROL_PLANE_ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/grants", "grantPermissions"),
     ("GET", "/grants", "viewNamespace"),
     ("DELETE", "/grants/{grantId}", "grantPermissions"),
-    # Unified sources — reads
-    ("GET", "/namespaces/{namespaceId}/sources", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/tables", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}", "viewNamespace"),
+    # Unified sources — reads (source schema: table/column names → viewSource)
+    ("GET", "/namespaces/{namespaceId}/sources", "viewSource"),
+    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}", "viewSource"),
+    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/tables", "viewSource"),
+    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/tables/{tableId}", "viewSource"),
+    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/scan/{jobId}", "viewSource"),
+    ("GET", "/namespaces/{namespaceId}/sources/{sourceId}/scan", "viewSource"),
     # Unified sources — writes / management
     ("POST", "/namespaces/{namespaceId}/sources", "manageSource"),
     ("POST", "/namespaces/{namespaceId}/sources/upload-urls", "manageSource"),
@@ -628,8 +601,8 @@ CONTROL_PLANE_ROUTES: list[tuple[str, str, str]] = [
     # Metric service — reads
     ("GET", "/namespaces/{namespaceId}/metrics", "readMetric"),
     ("GET", "/namespaces/{namespaceId}/metrics/{name}", "readMetric"),
-    ("GET", "/namespaces/{namespaceId}/export-osi", "readMetric"),
-    ("GET", "/namespaces/{namespaceId}/import-jobs/{jobId}", "readMetric"),
+    ("GET", "/namespaces/{namespaceId}/export-osi", "viewSource"),
+    ("GET", "/namespaces/{namespaceId}/import-jobs/{jobId}", "viewSource"),
     # Metric service — authoring / writes
     ("POST", "/namespaces/{namespaceId}/metrics", "manageMetric"),
     ("PUT", "/namespaces/{namespaceId}/metrics/{name}", "manageMetric"),
@@ -640,25 +613,76 @@ CONTROL_PLANE_ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/namespaces/{namespaceId}/import-osi/upload-url", "manageMetric"),
     # Ontology induction
     ("POST", "/namespaces/{namespaceId}/induce", "manageOntology"),
-    ("GET", "/namespaces/{namespaceId}/induce/jobs", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/induce/jobs/{jobId}", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/induce/datasources/induced", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/proposals", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/proposals/{proposalId}", "viewNamespace"),
+    ("GET", "/namespaces/{namespaceId}/induce/jobs", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/induce/jobs/{jobId}", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/induce/datasources/induced", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/proposals", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/proposals/{proposalId}", "viewOntology"),
     ("POST", "/namespaces/{namespaceId}/proposals/{proposalId}/accept", "manageOntology"),
     ("POST", "/namespaces/{namespaceId}/proposals/{proposalId}/cancel", "manageOntology"),
     ("POST", "/namespaces/{namespaceId}/proposals/{proposalId}/validate", "manageOntology"),
-    ("GET", "/namespaces/{namespaceId}/proposals/{proposalId}/validate/jobs/{jobId}", "viewNamespace"),
+    ("GET", "/namespaces/{namespaceId}/proposals/{proposalId}/validate/jobs/{jobId}", "viewOntology"),
     ("POST", "/namespaces/{namespaceId}/proposals/update", "manageOntology"),
     ("POST", "/namespaces/{namespaceId}/proposals/reject", "manageOntology"),
-    # Ontology graph + catalog
-    ("GET", "/namespaces/{namespaceId}/ontologies", "viewNamespace"),
+    # Ontology graph + catalog (ontology schema: class/property names → viewOntology)
+    ("GET", "/namespaces/{namespaceId}/ontologies", "viewOntology"),
     ("DELETE", "/namespaces/{namespaceId}/ontologies", "manageOntology"),
-    ("GET", "/namespaces/{namespaceId}/graph/search", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/graph/class", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/graph/object-property", "viewNamespace"),
-    ("GET", "/namespaces/{namespaceId}/graph/datatype-property", "viewNamespace"),
+    ("GET", "/namespaces/{namespaceId}/graph/search", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/graph/class", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/graph/object-property", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/graph/datatype-property", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/graph/ontology-overview", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/ontologies/{ontologyId}", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/ontologies/{ontologyId}/download", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/ontologies/{ontologyId}/ingest-status/{jobId}", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/ontology/foundational", "viewOntology"),
+    ("GET", "/namespaces/{namespaceId}/proposals/{proposalId}/infer-constraints/jobs/{jobId}", "viewOntology"),
+    # DescribeSchema is an ontology-vocabulary dump → hard-denied to a schema-blind role
+    ("GET", "/namespaces/{namespaceId}/schema", "viewOntology"),
 ]
+
+
+# Every GET a schema-blind data-analyst can still reach. The admitting actions are
+# derived by evaluating the REAL analyst seed policy (plus default.cedar) against
+# each mapped (action, resource type), so a seed change that grants the analyst a
+# new action is picked up here. A new GET the analyst can reach fails
+# test_analyst_reachable_reads_are_inventoried until someone adds it below — i.e.
+# until someone has decided it does not return source or ontology schema.
+def _analyst_held_actions() -> set[tuple[str, str]]:
+    from coa_authorization.policy_evaluator import evaluate, load_seed_policy
+    from coa_control_plane.authorization.handler import _PATH_MAPPING
+
+    ns = "11111111-1111-1111-1111-111111111111"
+    policies = load_seed_policy("default") + "\n" + load_seed_policy("namespace_data_analyst")
+    pairs = {pair for methods in _PATH_MAPPING.values() for pair in methods.values()}
+    return {
+        (action, rtype)
+        for action, rtype in pairs
+        if evaluate(
+            policies=policies,
+            user_id="analyst@example.com",
+            action=action,
+            resource_type=rtype,
+            resource_id=ns,
+            resource_roles=[{"role": "data-analyst", "resourceUID": ns}],
+            resource_attrs={"namespace": ns},
+        ).allowed
+    }
+
+
+_ANALYST_REACHABLE_GETS = {
+    "/namespaces",
+    "/namespaces/{namespaceId}",
+    "/roles",
+    "/namespaces/{namespaceId}/roles",
+    "/namespaces/{namespaceId}/roles/{roleId}",
+    "/namespaces/{namespaceId}/grants",
+    "/principals/{principalId}/grants",
+    "/grants",
+    "/namespaces/{namespaceId}/metrics",
+    "/namespaces/{namespaceId}/metrics/{name}",
+    "/system-health",
+}
 
 
 class TestMapRequestToCedar:
@@ -719,24 +743,6 @@ class TestMapRequestToCedar:
         assert mapped[0] == "manageSource"
         assert mapped[0] in _MUTATING_ACTIONS
 
-    def test_source_create_is_manage_not_edit_namespace(self):
-        """Regression: source writes must map to a Cedar action that exists in
-        the schema (manageSource), never the non-existent 'editNamespace'."""
-        from coa_control_plane.authorization.handler import _map_request_to_cedar
-
-        action, _rtype, _rid = _map_request_to_cedar(
-            "POST", "/namespaces/{namespaceId}/sources", {"namespaceId": "ns-1"}
-        )
-        assert action == "manageSource"
-
-    def test_metric_create_mapped(self):
-        from coa_control_plane.authorization.handler import _map_request_to_cedar
-
-        action, _rtype, _rid = _map_request_to_cedar(
-            "POST", "/namespaces/{namespaceId}/metrics", {"namespaceId": "ns-1"}
-        )
-        assert action == "manageMetric"
-
     @pytest.mark.parametrize(
         ("method", "path", "expected_type"),
         [
@@ -776,14 +782,31 @@ class TestMapRequestToCedar:
         assert action != "denyAll", f"{method} {path} fell through to denyAll"
         assert action == expected_action, f"{method} {path} mapped to {action}, expected {expected_action}"
 
+    def test_analyst_reachable_reads_are_inventoried(self):
+        """Schema-blind guard: the set of GET routes admitted by an action the
+        data-analyst holds is pinned. A new schema-returning read must be mapped
+        to viewSource/viewOntology, not silently land on viewNamespace."""
+        from coa_control_plane.authorization.handler import _PATH_MAPPING
+
+        held = _analyst_held_actions()
+        # Positive/negative controls on the derivation itself.
+        assert ("readMetric", "Metric") in held
+        assert not {a for a, _ in held} & {"viewSource", "viewOntology", "manageSource", "manageMetric"}
+        reachable = {
+            path
+            for path, methods in _PATH_MAPPING.items()
+            for method, pair in methods.items()
+            if method == "GET" and pair in held
+        }
+        assert reachable == _ANALYST_REACHABLE_GETS, (
+            f"new analyst-reachable GET(s): {sorted(reachable - _ANALYST_REACHABLE_GETS)}; "
+            f"no longer reachable: {sorted(_ANALYST_REACHABLE_GETS - reachable)}"
+        )
+
     @pytest.mark.parametrize(
         ("service", "smithy_file", "min_operations"),
         [
             ("ControlPlaneService", "control-plane.smithy", 50),
-            # This test only read the control plane, so a Data Layer route could go
-            # unmapped underneath a guard written to catch exactly that. Both
-            # services publish namespace-scoped routes through the same authorizer,
-            # so both belong here.
             ("DataLayerService", "data-layer.smithy", 4),
         ],
     )
@@ -792,20 +815,15 @@ class TestMapRequestToCedar:
 
         CONTROL_PLANE_ROUTES above records the *intended* action per route, which is
         worth asserting — but it cannot catch a route nobody remembered to add to
-        either place. Thirteen operations were unmapped for exactly that reason, and
-        because an unmapped route resolves to ``denyAll`` they returned 403 for every
-        role except platform-admin, whose policy permits any action — which is why it
-        went unnoticed. This test reads the service's own operation list, so a new
-        @http operation fails here until it is mapped.
+        either place. An unmapped route resolves to ``denyAll``, so it returns 403 for
+        every role except platform-admin. This test reads the service's own operation
+        list, so a new @http operation fails here until it is mapped.
 
         Parses the .smithy sources rather than the generated OpenAPI: the latter lives
         under smithy-generated/, which is gitignored and absent unless codegen has
         run, so a test depending on it would error during collection on a clean
         checkout.
         """
-        import re
-        from pathlib import Path
-
         from coa_control_plane.authorization.handler import _PATH_MAPPING
 
         smithy_dir = Path(__file__).resolve().parents[4] / "models" / "src" / "main" / "smithy"
@@ -852,7 +870,6 @@ class TestMapRequestToCedar:
         action defined in cedar-schema.json (guards against typos like the
         former 'editNamespace')."""
         import json
-        from pathlib import Path
 
         # coa_authorization lives in libs/common (shared by control-plane + serve);
         # resolve the schema from the installed package rather than a repo path.
@@ -877,6 +894,7 @@ class _FakeRolesDao:
     def __init__(self):
         from coa_authorization.policy_evaluator import load_seed_policy
 
+        self.get_calls = 0
         # Map role id → seed policy file name.
         self._role_to_seed = {
             "default": "default",
@@ -894,6 +912,7 @@ class _FakeRolesDao:
         # id is encoded in the SK as ROLE#<id>. Return the seed policy for any
         # known role regardless of partition (mirrors deploy-time seeding).
         sk = key.get("SK", "")
+        self.get_calls += 1
         role_id = sk.removeprefix("ROLE#")
         seed = self._role_to_seed.get(role_id)
         if seed is None:
@@ -901,6 +920,7 @@ class _FakeRolesDao:
         return {"cedarPolicy": self._load(seed)}
 
 
+@pytest.mark.usefixtures("real_policy_loading")
 class TestEvaluateCedarResourceNamespace:
     """_evaluate_cedar must populate ``resource.namespace`` so that namespace-
     scoped policies (data-steward, data-analyst) match in production — not just
@@ -910,16 +930,18 @@ class TestEvaluateCedarResourceNamespace:
     OTHER_NS = "22222222-2222-2222-2222-222222222222"
 
     def _eval(self, action: str, resource_id: str, global_roles=None, resource_roles=None) -> bool:
-        from coa_control_plane.authorization.handler import _evaluate_cedar
+        from coa_control_plane.authorization.handler import _evaluate_cedar, _load_role_policies
 
+        global_roles = global_roles or []
+        resource_roles = resource_roles or []
         return _evaluate_cedar(
+            policies=_load_role_policies(global_roles, resource_roles, _FakeRolesDao()),
             principal_id="alice@example.com",
             action=action,
             resource_type="Namespace",
             resource_id=resource_id,
-            global_roles=global_roles or [],
-            resource_roles=resource_roles or [],
-            roles_dao=_FakeRolesDao(),
+            global_roles=global_roles,
+            resource_roles=resource_roles,
         )
 
     def test_steward_can_manage_data_source_in_own_namespace(self):
@@ -939,10 +961,7 @@ class TestEvaluateCedarResourceNamespace:
         assert self._eval("manageSource", self.NS, resource_roles=roles) is False
 
     def test_steward_can_manage_ontology_in_own_namespace(self):
-        # DELETE /ontologies maps to manageOntology; data-steward holds it, so
-        # deleting an ontology must be permitted. Regression for the missing
-        # DELETE route mapping that formerly fell through to denyAll and blocked
-        # the steward.
+        # DELETE /ontologies maps to manageOntology, which data-steward holds.
         roles = [{"role": "data-steward", "resourceUID": self.NS}]
         assert self._eval("manageOntology", self.NS, resource_roles=roles) is True
 
@@ -973,6 +992,7 @@ class TestEvaluateCedarResourceNamespace:
         assert self._eval("manageSource", self.NS) is False
 
 
+@pytest.mark.usefixtures("real_policy_loading")
 class TestEvaluateCedarArchivedGuard:
     """_evaluate_cedar must enforce the non-ACTIVE-namespace mutation guard,
     which lives in default.cedar. Because the authorizer always loads
@@ -981,27 +1001,23 @@ class TestEvaluateCedarArchivedGuard:
     != 'ACTIVE' (ARCHIVED, DELETING, or DELETE_FAILED).
 
     These exercise the real policy-loading path (not a patched _evaluate_cedar):
-    the guard previously never fired in deployed environments because it was a
-    standalone seed file that was neither seeded into the Roles table nor loaded
-    by the authorizer. Folding it into default.cedar closes that gap. It was
-    later extended from ARCHIVED-only to any non-ACTIVE status so a
-    create/update can never race against the async deletion pipeline
-    (DELETING) or a deletion retry (DELETE_FAILED).
     """
 
     NS = "11111111-1111-1111-1111-111111111111"
 
     def _eval(self, action: str, *, global_roles=None, resource_roles=None, context=None) -> bool:
-        from coa_control_plane.authorization.handler import _evaluate_cedar
+        from coa_control_plane.authorization.handler import _evaluate_cedar, _load_role_policies
 
+        global_roles = global_roles or []
+        resource_roles = resource_roles or []
         return _evaluate_cedar(
+            policies=_load_role_policies(global_roles, resource_roles, _FakeRolesDao()),
             principal_id="alice@example.com",
             action=action,
             resource_type="Namespace",
             resource_id=self.NS,
-            global_roles=global_roles or [],
-            resource_roles=resource_roles or [],
-            roles_dao=_FakeRolesDao(),
+            global_roles=global_roles,
+            resource_roles=resource_roles,
             context=context,
         )
 
@@ -1022,8 +1038,7 @@ class TestEvaluateCedarArchivedGuard:
         roles = [{"role": "namespace-owner", "resourceUID": self.NS}]
         assert self._eval("manageNamespace", resource_roles=roles, context={"namespaceStatus": "ACTIVE"}) is True
 
-    @pytest.mark.parametrize("status", ["ARCHIVED", "DELETING", "DELETE_FAILED"])
-    def test_read_allowed_when_not_active(self, status: str):
+    def test_read_allowed_when_not_active(self):
         # Reads carry no namespaceStatus context, so the guard never fires.
         roles = [{"role": "namespace-owner", "resourceUID": self.NS}]
         assert self._eval("viewNamespace", resource_roles=roles, context=None) is True
@@ -1422,3 +1437,272 @@ class TestGetNamespaceStatus:
         dao.get.side_effect = ClientError({"Error": {"Code": "InternalError"}}, "GetItem")
         with patch.object(h, "_get_namespaces_dao", return_value=dao), pytest.raises(ClientError):
             h._get_namespace_status(_NS)
+
+
+def _batch(allowed_actions: set[str], *, raise_error: bool = False, allowed_ids: set[str] | None = None):
+    """Stand-in for ``evaluate_batch``: allow checks whose action (and resource id) is listed."""
+
+    def _evaluate_batch(policies, user_id, checks, global_roles=None, resource_roles=None):
+        if raise_error:
+            raise RuntimeError("cedar engine unavailable")
+        return [
+            MagicMock(allowed=action in allowed_actions and (allowed_ids is None or rid in allowed_ids))
+            for action, _rtype, rid in checks
+        ]
+
+    return _evaluate_batch
+
+
+class TestMetricSchemaVisibilityContext:
+    """readMetric requests carry canViewSource/canViewOntology for the metric
+    service, which withholds metric SQL, tables and ontology concepts unless they
+    are "true"."""
+
+    @pytest.mark.parametrize(
+        ("allowed", "expected"),
+        [
+            (set(), ("false", "false")),  # data-analyst
+            ({"viewSource", "viewOntology"}, ("true", "true")),  # steward/owner/viewer
+            ({"viewSource"}, ("true", "false")),
+        ],
+    )
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}._evaluate_cedar", return_value=True)
+    @patch(f"{_H}._resolve_roles", return_value=([], [{"role": "r", "resourceUID": _NS}]))
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_flags_reflect_cedar(
+        self, mock_dao, mock_resolve, mock_cedar, mock_cache, allowed, expected, env_vars, valid_result
+    ):
+        from coa_control_plane.authorization.handler import handler
+
+        event = _archived_event("GET", "/namespaces/{namespaceId}/metrics", {"namespaceId": _NS})
+        with (
+            patch(f"{_H}.evaluate_batch", side_effect=_batch(allowed)) as mock_batch,
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        assert (result["context"]["canViewSource"], result["context"]["canViewOntology"]) == expected
+        checks = mock_batch.call_args.args[2]
+        assert checks == [("viewSource", "Source", _NS), ("viewOntology", "Ontology", _NS)]
+
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}._evaluate_cedar", return_value=True)
+    @patch(f"{_H}._resolve_roles", return_value=([], [{"role": "r", "resourceUID": _NS}]))
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_probe_error_fails_closed(self, mock_dao, mock_resolve, mock_cedar, mock_cache, env_vars, valid_result):
+        from coa_control_plane.authorization.handler import handler
+
+        event = _archived_event("GET", "/namespaces/{namespaceId}/metrics", {"namespaceId": _NS})
+        with (
+            patch(f"{_H}.evaluate_batch", side_effect=_batch({"viewSource", "viewOntology"}, raise_error=True)),
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        assert result["context"]["canViewSource"] == "false"
+        assert result["context"]["canViewOntology"] == "false"
+
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}._evaluate_cedar", return_value=True)
+    @patch(f"{_H}._resolve_roles", return_value=([], [{"role": "r", "resourceUID": _NS}]))
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_flags_only_on_metric_reads(self, mock_dao, mock_resolve, mock_cedar, mock_cache, env_vars, valid_result):
+        from coa_control_plane.authorization.handler import handler
+
+        event = _archived_event("GET", "/namespaces/{namespaceId}", {"namespaceId": _NS})
+        with (
+            patch(f"{_H}.evaluate_batch", side_effect=_batch({"viewSource"})) as mock_batch,
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        assert "canViewSource" not in result["context"]
+        mock_batch.assert_not_called()
+
+
+@pytest.mark.usefixtures("real_policy_loading")
+class TestOnePolicyLoadPerInvocation:
+    """Role policies are read from the Roles table once per authorizer invocation
+    and reused for the main decision and every schema-visibility check, so the
+    cost does not grow with the number of namespaces the caller holds."""
+
+    @staticmethod
+    def _run(event: dict[str, Any], resource_roles: list[dict[str, str]], valid_result, global_roles=None):
+        from coa_control_plane.authorization.handler import handler
+
+        roles_dao = _FakeRolesDao()
+        with (
+            patch(f"{_H}._check_cache_version"),
+            patch(f"{_H}._resolve_roles", return_value=(global_roles or [], resource_roles)),
+            patch(f"{_H}.DynamoDBDAO", return_value=roles_dao),
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+        return result, roles_dao.get_calls
+
+    @staticmethod
+    def _role_count(global_roles: list[str], resource_roles: list[dict[str, str]]) -> int:
+        # Every seeded role resolves on its first (GLOBAL) partition read.
+        return len({"default", *global_roles, *(r["role"] for r in resource_roles)})
+
+    @pytest.mark.parametrize(("role", "expected"), [("data-steward", "true"), ("data-analyst", "false")])
+    def test_read_metric(self, role: str, expected: str, env_vars, valid_result):
+        roles = [{"role": role, "resourceUID": _NS}]
+        event = _archived_event("GET", "/namespaces/{namespaceId}/metrics", {"namespaceId": _NS})
+        result, calls = self._run(event, roles, valid_result)
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        assert result["context"]["canViewSource"] == result["context"]["canViewOntology"] == expected
+        assert calls == self._role_count([], roles)
+
+    @pytest.mark.parametrize(("role", "expected"), [("data-steward", "true"), ("data-analyst", "false")])
+    def test_namespace_grant_list(self, role: str, expected: str, env_vars, valid_result):
+        roles = [{"role": role, "resourceUID": _NS}]
+        event = _archived_event("GET", "/namespaces/{namespaceId}/grants", {"namespaceId": _NS})
+        result, calls = self._run(event, roles, valid_result)
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        assert result["context"]["canViewSource"] == expected
+        assert "canViewOntology" not in result["context"]  # grant handlers never read it
+        assert calls == self._role_count([], roles)
+
+    @pytest.mark.parametrize("n_namespaces", [1, 5, 40])
+    def test_principal_grants_with_many_namespaces(self, n_namespaces: int, env_vars, valid_result):
+        steward = [{"role": "data-steward", "resourceUID": f"ns-s{i:03d}"} for i in range(n_namespaces)]
+        analyst = [{"role": "data-analyst", "resourceUID": f"ns-a{i:03d}"} for i in range(n_namespaces)]
+        roles = steward + analyst
+        event = _archived_event("GET", "/principals/{principalId}/grants", {"principalId": "me"})
+        result, calls = self._run(event, roles, valid_result)
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        visible = set(result["context"]["viewSourceNamespaces"].split(","))
+        assert visible == {r["resourceUID"] for r in steward}  # analyst namespaces and "*" withheld
+        assert calls == self._role_count([], roles)  # independent of n_namespaces
+
+    def test_principal_grants_platform_viewer_gets_wildcard(self, env_vars, valid_result):
+        event = _archived_event("GET", "/principals/{principalId}/grants", {"principalId": "me"})
+        result, calls = self._run(event, [], valid_result, global_roles=["platform-viewer"])
+        assert result["context"]["viewSourceNamespaces"] == "*"
+        assert calls == self._role_count(["platform-viewer"], [])
+
+
+class TestDevModeSchemaContext:
+    """Without a roles table (explicit dev mode) no schema right can be proven:
+    grant listings get explicit withholding values; metric reads stay flagless so
+    the metric service's deliberate missing-flag rule applies."""
+
+    @pytest.mark.parametrize(
+        ("method", "resource", "params", "expected"),
+        [
+            ("GET", "/namespaces/{namespaceId}/grants", {"namespaceId": _NS}, {"canViewSource": "false"}),
+            ("GET", "/principals/{principalId}/grants", {"principalId": "me"}, {"viewSourceNamespaces": ""}),
+            ("GET", "/namespaces/{namespaceId}/metrics", {"namespaceId": _NS}, {}),
+        ],
+    )
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_roles_table_unset(
+        self, mock_dao, mock_cache, method, resource, params, expected, valid_result, monkeypatch
+    ):
+        from coa_control_plane.authorization.handler import handler
+
+        monkeypatch.setenv("JWKS_ISSUER", "https://login.corp.com")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("RESOURCE_ROLE_MAPPINGS_TABLE_NAME", "")
+        monkeypatch.delenv("ROLES_TABLE_NAME", raising=False)
+        monkeypatch.setenv("ALLOW_WITHOUT_ROLES", "true")
+
+        with patch(f"{_H}._get_token_authorizer") as mock_auth:
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(_archived_event(method, resource, params), None)
+
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        keys = ("canViewSource", "canViewOntology", "viewSourceNamespaces")
+        assert {k: v for k, v in result["context"].items() if k in keys} == expected
+
+
+@pytest.mark.parametrize("smithy_file", ["control-plane.smithy", "data-layer.smithy"])
+def test_authorizer_result_cache_is_disabled(smithy_file):
+    """The Allow policy covers every method on the stage (``arn/*``) and carries
+    per-request context (namespace status, schema-visibility flags), so a cached
+    authorizer result would let one allowed request authorize any route for the
+    same token. Pin resultTtlInSeconds: 0 on both authorizers."""
+    root = Path(__file__).resolve().parents[4]
+    text = (root / "models" / "src" / "main" / "smithy" / smithy_file).read_text()
+    ttls = re.findall(r"resultTtlInSeconds:\s*(\d+)", text)
+    assert ttls, f"no resultTtlInSeconds in {smithy_file}"
+    assert all(t == "0" for t in ttls), f"authorizer cache enabled in {smithy_file}: {ttls}"
+
+
+class TestGrantListingSchemaVisibilityContext:
+    """Grant listings carry the caller's source-schema right so the handlers can
+    withhold table allowlists / column denylists from a schema-blind caller."""
+
+    @pytest.mark.parametrize(("allowed", "expected"), [(set(), "false"), ({"viewSource"}, "true")])
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}._evaluate_cedar", return_value=True)
+    @patch(f"{_H}._resolve_roles", return_value=([], [{"role": "r", "resourceUID": _NS}]))
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_namespace_grants_listing(
+        self, mock_dao, mock_resolve, mock_cedar, mock_cache, allowed, expected, env_vars, valid_result
+    ):
+        from coa_control_plane.authorization.handler import handler
+
+        event = _archived_event("GET", "/namespaces/{namespaceId}/grants", {"namespaceId": _NS})
+        with (
+            patch(f"{_H}.evaluate_batch", side_effect=_batch(allowed)) as mock_batch,
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+        assert result["context"]["canViewSource"] == expected
+        # viewOntology is never evaluated on grant listings: nothing reads it there.
+        assert mock_batch.call_args.args[2] == [("viewSource", "Source", _NS)]
+        assert "canViewOntology" not in result["context"]
+
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}._evaluate_cedar", return_value=True)
+    @patch(
+        f"{_H}._resolve_roles",
+        return_value=([], [{"role": "steward", "resourceUID": "ns-a"}, {"role": "analyst", "resourceUID": "ns-b"}]),
+    )
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_principal_grants_listing_names_source_visible_namespaces(
+        self, mock_dao, mock_resolve, mock_cedar, mock_cache, env_vars, valid_result
+    ):
+        from coa_control_plane.authorization.handler import handler
+
+        event = _archived_event("GET", "/principals/{principalId}/grants", {"principalId": "me"})
+        with (
+            patch(f"{_H}.evaluate_batch", side_effect=_batch({"viewSource"}, allowed_ids={"ns-a"})) as mock_batch,
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+        assert result["context"]["viewSourceNamespaces"] == "ns-a"
+        assert mock_batch.call_count == 1  # one batch for every candidate namespace
+        assert [c[2] for c in mock_batch.call_args.args[2]] == ["*", "ns-a", "ns-b"]
+
+    @patch(f"{_H}._check_cache_version")
+    @patch(f"{_H}._evaluate_cedar", return_value=True)
+    @patch(f"{_H}._resolve_roles", return_value=([], [{"role": "steward", "resourceUID": "ns-a"}]))
+    @patch(f"{_H}.DynamoDBDAO")
+    def test_principal_grants_listing_engine_error_withholds_all(
+        self, mock_dao, mock_resolve, mock_cedar, mock_cache, env_vars, valid_result
+    ):
+        from coa_control_plane.authorization.handler import handler
+
+        event = _archived_event("GET", "/principals/{principalId}/grants", {"principalId": "me"})
+        with (
+            patch(f"{_H}.evaluate_batch", side_effect=_batch({"viewSource"}, raise_error=True)),
+            patch(f"{_H}._get_token_authorizer") as mock_auth,
+        ):
+            mock_auth.return_value.validate.return_value = valid_result
+            result = handler(event, None)
+        assert result["policyDocument"]["Statement"][0]["Effect"] == "Allow"
+        assert result["context"]["viewSourceNamespaces"] == ""

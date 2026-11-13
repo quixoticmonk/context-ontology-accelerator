@@ -1,8 +1,5 @@
 # MCP Server
 
-- **Owner**: avijitg
-- **LLD**: Serve LLD §3.2.5 (Story 5)
-- **Work Item**: #128 (tool definitions + auth), #129 (AgentCore Runtime deployment)
 - **Status**: In Progress
 
 ## Overview
@@ -50,8 +47,9 @@ Connect your IDE to the deployed MCP server using `mcp-proxy` as a stdio-to-stre
 
 ### Prerequisites
 
-- `uvx` installed (`pip install uv`)
-- AWS credentials with access to SSM + Secrets Manager + Cognito
+- Node.js 18+ (the proxy runs on Node)
+- `uvx` installed (`pip install uv`). The proxy spawns `uvx mcp-proxy` internally
+- AWS credentials for this account on your default profile (any read-only role that can read SSM)
 - Deployed `coa-dev-mcp` stack
 - `jq` installed
 
@@ -61,11 +59,15 @@ Connect your IDE to the deployed MCP server using `mcp-proxy` as a stdio-to-stre
 IDE (stdio) --> wrapper script --> mcp-proxy --> HTTPS (Bearer JWT) --> AgentCore Runtime --> MCP Server
 ```
 
-You need two shell scripts: one to fetch a Cognito token, and one to launch the proxy.
+The `packages/mcp-proxy` bridge handles authentication itself, so there is no token
+script. On first run it opens a browser for a Cognito PKCE login (no password
+stored), caches a refresh token in `~/.scl/tokens.json`, and keeps you signed in
+for 30 days. Each request is authenticated as **your own** Cognito identity, so
+Cedar grants and the audit log reflect you, not a shared account. It
+auto-discovers the runtime ARN, MCP client id, and issuer from SSM under the
+deployment's resource prefix (default `/coa`).
 
-### Step 1: Create `get-token.sh`
-
-This script fetches a Cognito ID token. It accepts credentials via `SCL_USERNAME`/`SCL_PASSWORD`/`SCL_CLIENT_ID` env vars, or falls back to Secrets Manager.
+### Step 1: Build the proxy
 
 ```bash
 #!/usr/bin/env bash
@@ -197,7 +199,22 @@ To find your `SCL_CLIENT_ID`:
 aws ssm get-parameter --name "/coa/userpool-client-id" --region us-east-1 --query 'Parameter.Value' --output text
 ```
 
-### Token expiry
+Do **not** set `AWS_PROFILE` to a profile you don't have: the proxy uses the
+default credential chain, and a bogus profile breaks SSM discovery.
+
+### Step 3: Verify
+
+Reconnect the `coa` server from the IDE's MCP panel (Kiro: Cmd+Shift+P →
+"Reconnect MCP Servers"), or just invoke a tool. The first call opens a browser
+for the Cognito login; after you sign in, `~/.scl/tokens.json` is written and the
+tools become available. Ask the agent to run `list_metrics` for a namespace you
+can access. A working setup returns the governed metrics.
+
+### Token / session lifetime
+
+The PKCE session refreshes silently for 30 days. If it lapses after long
+inactivity, the next call reopens the browser login. To force a fresh login,
+delete `~/.scl/tokens.json`.
 
 Cognito ID tokens last 1 hour. If your session runs longer, reconnect the MCP server from the IDE's MCP panel (Kiro: Cmd+Shift+P, "Reconnect MCP Servers").
 
@@ -233,10 +250,7 @@ the server loads Cedar policies from DynamoDB and evaluates them before tool exe
 | `rag_retrieval` | `searchDocuments` | data-analyst, data-steward, namespace-owner |
 | `graph_traversal` | `viewNamespace` | data-analyst, data-steward, namespace-owner |
 
-### Backward Compatibility
-
-- Cedar evaluation is **optional**. When `ROLES_TABLE_NAME` is empty (local dev, tests without DDB), Cedar evaluation is skipped entirely.
-- The Playground/SSE path (context-manager) does not pass `cedar_action`, so Cedar evaluation does not apply to it.
+The Playground/SSE path (context-manager) does not pass `cedar_action`, so Cedar evaluation does not apply to it. Every MCP tool passes one, and if `ROLES_TABLE_NAME` is unset the call is denied (fail closed).
 
 For Cedar policy syntax and schema, see `libs/common/src/coa_authorization/seed/`.
 
@@ -247,14 +261,14 @@ Integration tests validate the MCP server against a live deployed AgentCore Runt
 ### Prerequisites
 
 - Deployed `coa-dev-mcp` module (Terraform — `infra-tf/modules/services/mcp/`)
-- Valid Cognito user tokens
+- AWS credentials that can reach the integ Cognito user (the suite signs it in automatically)
 - Network access to the AgentCore endpoint
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MCP_RUNTIME_ARN` | Yes | Deployed MCP AgentCore Runtime ARN (from `coa-dev-mcp` stack outputs) |
+| `MCP_RUNTIME_ARN` | No (resolved from SSM when unset) | Deployed MCP AgentCore Runtime ARN (from `coa-dev-mcp` stack outputs) |
 | `INTEG_SECRET_ARN` | No (auto-provisioned when unset) | Secrets Manager secret holding the integ test user's credentials. The suite signs that user in through the MCP/CLI client (`/<prefix>/mcp-client-id`), the only client the MCP runtime accepts, and through the web app client for the rejection test |
 | `MCP_NO_ACCESS_TOKEN` | No | ID token from the MCP/CLI client (`/<prefix>/mcp-client-id`) for a user WITHOUT namespace grants (for authz denial tests; skipped if unset) |
 | `INTEG_NAMESPACE_ID` | No | Namespace to test against; when unset the shared integ namespace is found or created |
