@@ -26,12 +26,14 @@
 | [aws_cloudwatch_metric_alarm.reload_failed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
 | [aws_ecs_cluster.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_cluster) | resource |
 | [aws_ecs_task_definition.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_task_definition) | resource |
+| [aws_iam_policy.execution_guardduty_agent](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_policy.execution_logs](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_policy.reload](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_policy.task](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
 | [aws_iam_role.execution](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role.reload](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
 | [aws_iam_role.task](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |
+| [aws_iam_role_policy_attachment.execution_guardduty_agent](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
 | [aws_iam_role_policy_attachment.execution_logs](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
 | [aws_iam_role_policy_attachment.execution_managed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
 | [aws_iam_role_policy_attachment.reload](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role_policy_attachment) | resource |
@@ -74,7 +76,7 @@
 | image\_tag\_file | Path to the built image tag file (artifacts/images/vkg.tag) containing the full pushed ECR image URI. Null falls back to <ecr\_repo>:latest. | `string` | `null` | no |
 | lambda\_reserved\_concurrency | Reserved concurrency for the reload Lambda; bounds its blast radius since it drives serial ECS updates. 0 omits the reservation so the module deploys on reduced-quota accounts. | `number` | `5` | no |
 | memory\_limit\_mib | Fargate memory in MiB for the VKG task definition. | `number` | `2048` | no |
-| ontop\_java\_args | JVM args for the Ontop launcher, passed via ONTOP\_JAVA\_ARGS (NOT JAVA\_OPTS, which the launcher ignores — #149 cause C). Null derives the value from memory\_limit\_mib (max heap ~75%, initial ~25%) so scaling memory alone scales the heap. Applied to both the CDK-style task-def template here AND to the reload Lambda's per-namespace task defs so the two stay in lockstep. | `string` | `null` | no |
+| ontop\_java\_args | JVM args for the Ontop launcher, passed via ONTOP\_JAVA\_ARGS (NOT JAVA\_OPTS, which the launcher ignores — #149 cause C). Null derives the value from memory\_limit\_mib (max heap ~75%, initial ~25%) so scaling memory alone scales the heap. A blank value counts as unset. The module always appends -Dserver.address=127.0.0.1 (Ontop bound to loopback; only the in-task translate-server calls it). Applied to both the CDK-style task-def template here AND to the reload Lambda's per-namespace task defs so the two stay in lockstep. | `string` | `null` | no |
 
 ## Outputs
 

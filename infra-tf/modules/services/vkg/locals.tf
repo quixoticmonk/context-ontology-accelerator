@@ -41,9 +41,32 @@ locals {
   # derive the heap from memory_limit_mib so bumping memory alone scales
   # the heap in step, leaving headroom for the JVM, H2, and the Python
   # facade. Floors of 512m/256m match the CDK derivation.
-  ontop_java_args = coalesce(
-    var.ontop_java_args,
+  #
+  # Ontop's Spring Boot endpoint is bound to loopback whatever the heap args
+  # (v0.3.10): only translate-server calls it inside the task, so it stays
+  # unreachable from outside even if the port mappings or security group
+  # change. A blank override counts as unset.
+  ontop_base_args = coalesce(
+    trimspace(coalesce(var.ontop_java_args, " ")),
     "-Xmx${max(512, floor(var.memory_limit_mib * 3 / 4))}m -Xms${max(256, floor(var.memory_limit_mib / 4))}m",
+  )
+  ontop_java_args = "${local.ontop_base_args} -Dserver.address=127.0.0.1"
+
+  # ── Per-namespace VKG log groups (/ecs/<prefix>-vkg-<ns>) ──────────
+  vkg_log_group_arns = [
+    "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.name_prefix}-vkg-*",
+    "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.name_prefix}-vkg-*:*",
+  ]
+
+  # ── VKG ECR repository ARN, derived from the repository URL ────────
+  # <registry>.dkr.ecr.<region>.amazonaws.com[.cn]/<repo>
+  ecr_url_host = split("/", var.ecr_repository_url)[0]
+  ecr_repository_arn = format(
+    "arn:%s:ecr:%s:%s:repository/%s",
+    data.aws_partition.current.partition,
+    split(".", local.ecr_url_host)[3],
+    split(".", local.ecr_url_host)[0],
+    trimprefix(var.ecr_repository_url, "${local.ecr_url_host}/"),
   )
 
   # ── Common tags ────────────────────────────────────────────────────

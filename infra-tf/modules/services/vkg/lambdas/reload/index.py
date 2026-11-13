@@ -8,6 +8,9 @@ image (from SSM, written by CDK deploy) before forcing a new deployment. This en
 ontology reloads always pick up the latest VKG image, not a stale one from provision time.
 """
 
+from __future__ import annotations
+
+import contextlib
 import json
 import os
 import re
@@ -15,15 +18,34 @@ import re
 import boto3
 
 ecs = boto3.client("ecs")
+ecr = boto3.client("ecr")
 sd = boto3.client("servicediscovery")
 ssm = boto3.client("ssm")
 autoscaling = boto3.client("application-autoscaling")
 cloudwatch = boto3.client("cloudwatch")
+logs = boto3.client("logs")
 
 _NS_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")
 
+# <registry>.dkr.ecr.<region>.amazonaws.com[.cn]/<repo>[:<tag>][@sha256:<digest>]
+_ECR_IMAGE = re.compile(
+    r"^(?P<registry>\d{12})\.dkr\.ecr\.(?P<region>[a-z0-9-]+)\.amazonaws\.com(?:\.cn)?/"
+    r"(?P<repo>[a-z0-9][a-z0-9._/-]*?)(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
+    r"(?:@(?P<digest>sha256:[0-9a-f]{64}))?$"
+)
+_DIGEST_SUFFIX = re.compile(r"@(?P<digest>sha256:[0-9a-f]{64})$")
+
 # Reload-outcome metrics; the vkg stack alarms on ReloadFailed.
 _METRIC_NAMESPACE = "COA/VKG"
+
+# Binds Ontop's endpoint to loopback; translate-server is its only caller.
+_ONTOP_LOOPBACK_ARG = "-Dserver.address=127.0.0.1"
+
+_LOG_RETENTION_DAYS = 30
+
+# Revision cleanup stops when less than this much invocation time is left, so a
+# backlog of stale revisions can't time the Lambda out; the next reload goes on.
+_CLEANUP_MIN_REMAINING_MS = 10_000
 
 # Circuit breaker + rollback: paired with the container's functional /health
 # probe, a broken reload never goes healthy and rolls back to the last-good task.
@@ -73,17 +95,21 @@ def handler(event, context):
     * **Per-namespace** (EventBridge ``ontology.published``): the event carries
       ``detail.namespace`` / ``detail.version`` and only that namespace's VKG
       service is reconciled.
-    * **Sweep** (scheduled rule with constant input ``{"sweep": true}``): every
-      ``<prefix>-vkg-*`` service in the cluster is reconciled against the latest
-      SSM image. This keeps long-lived namespaces current even when their
-      ontology is never republished — otherwise a base-image digest bump never
-      reaches a running task, which is how stale VKG images accumulate.
+    * **Sweep** (``{"sweep": true}``, sent by the weekly scheduled rule and,
+      asynchronously, by the deploy-time custom resource whenever the VKG image
+      changes): every ``<prefix>-vkg-*`` service in the cluster is reconciled
+      against the latest SSM image. This keeps long-lived namespaces current even
+      when their ontology is never republished — otherwise a base-image digest
+      bump never reaches a running task, which is how stale VKG images
+      accumulate. A service already on the latest image is left alone.
 
     Args:
-        event: EventBridge event. ``{"sweep": true}`` selects sweep mode;
+        event: EventBridge event or direct invoke payload. ``{"sweep": true}``
+            selects sweep mode (an optional ``trigger`` field is logged);
             otherwise ``detail.namespace`` / ``detail.version`` select the
             per-namespace reload.
-        context: Lambda runtime context (unused).
+        context: Lambda runtime context; its remaining time bounds the
+            revision cleanup.
 
     Returns:
         Per-namespace: a status dict (``reload_triggered`` / ``provisioned`` /
@@ -100,7 +126,7 @@ def handler(event, context):
     prefix = os.environ["RESOURCE_PREFIX"]
 
     if event.get("sweep") is True:
-        return _sweep(cluster, prefix)
+        return _sweep(cluster, prefix, str(event.get("trigger") or "schedule"), context)
 
     ns = event.get("detail", {}).get("namespace", "unknown")
     version = event.get("detail", {}).get("version", "unknown")
@@ -109,17 +135,31 @@ def handler(event, context):
         print(json.dumps({"action": "reload_skipped", "reason": "missing or invalid namespace"}))
         return {"status": "skipped", "reason": "missing or invalid namespace"}
 
-    return _reload_one(ns, version, cluster, prefix)
+    # The default event bus is shared by every deployment in the account and Region.
+    # An event emitted from another deployment names that deployment's bucket, so a
+    # namespace this one does not own is skipped instead of getting a service that
+    # no teardown here would ever delete.
+    event_bucket = event.get("detail", {}).get("s3Bucket")
+    own_bucket = os.environ.get("ONTOLOGY_BUCKET", "")
+    if event_bucket and own_bucket and event_bucket != own_bucket:
+        print(json.dumps({"action": "reload_skipped", "reason": "event from another deployment", "namespace": ns}))
+        return {"status": "skipped", "reason": "event from another deployment"}
+
+    return _reload_one(ns, version, cluster, prefix, context=context)
 
 
-def _sweep(cluster, prefix):
+def _sweep(cluster, prefix, trigger="schedule", context=None):
     """Reconcile every per-namespace VKG service in the cluster to the SSM image.
 
-    Resolves the target image once, then reloads each ``<prefix>-vkg-*`` service.
-    A single namespace's failure is recorded and the sweep continues — one broken
-    service must not stop the rest from being patched.
+    Resolves the target image once, then reloads each ``<prefix>-vkg-*`` service
+    that is not already running it. A service is skipped (no restart) only when
+    its running tasks' image digest equals the digest the target image resolves
+    to; a tag can be reused for a new build, so equal image URIs alone do not
+    prove the image is current. A single namespace's failure is recorded and the
+    sweep continues — one broken service must not stop the rest from being
+    patched.
     """
-    print(json.dumps({"action": "sweep_start", "cluster": cluster}))
+    print(json.dumps({"action": "sweep_start", "cluster": cluster, "trigger": trigger}))
     container_image = _resolve_container_image()
     if not container_image:
         print(json.dumps({"action": "sweep_failed", "reason": "cannot resolve container image"}))
@@ -137,17 +177,45 @@ def _sweep(cluster, prefix):
         return {"status": "failed", "reason": f"list services failed: {e}"}
 
     results = []
+    # The target image is the same for every service, so look its digest up once.
+    digest_cache: dict[str, str] = {}
     for ns in namespaces:
         try:
-            outcome = _reload_one(ns, "scheduled-sweep", cluster, prefix, container_image)
+            outcome = _reload_one(
+                ns,
+                f"sweep-{trigger}",
+                cluster,
+                prefix,
+                container_image,
+                restart_if_current=False,
+                digest_cache=digest_cache,
+                context=context,
+            )
             results.append({"namespace": ns, "status": outcome.get("status")})
         except Exception as e:  # one bad namespace must not abort the sweep
             print(json.dumps({"action": "sweep_item_failed", "namespace": ns, "error": str(e)}))
             results.append({"namespace": ns, "status": "failed", "error": str(e)})
 
     triggered = sum(1 for r in results if r["status"] in ("reload_triggered", "provisioned"))
-    print(json.dumps({"action": "sweep_complete", "total": len(results), "triggered": triggered}))
-    return {"status": "sweep_complete", "total": len(results), "triggered": triggered, "results": results}
+    unchanged = sum(1 for r in results if r["status"] == "unchanged")
+    print(
+        json.dumps(
+            {
+                "action": "sweep_complete",
+                "trigger": trigger,
+                "total": len(results),
+                "triggered": triggered,
+                "unchanged": unchanged,
+            }
+        )
+    )
+    return {
+        "status": "sweep_complete",
+        "total": len(results),
+        "triggered": triggered,
+        "unchanged": unchanged,
+        "results": results,
+    }
 
 
 def _list_vkg_namespaces(cluster, prefix):
@@ -163,15 +231,23 @@ def _list_vkg_namespaces(cluster, prefix):
     return namespaces
 
 
-def _reload_one(ns, version, cluster, prefix, container_image=None):
+def _reload_one(
+    ns, version, cluster, prefix, container_image=None, restart_if_current=True, digest_cache=None, context=None
+):
     """Reconcile a single namespace's VKG service to the latest image.
 
     Resolves the target image from SSM when not supplied (the sweep resolves it
-    once and passes it in for every namespace). If the running service already
-    uses that image, forces a new deployment; otherwise registers a fresh
-    task-definition revision first. If the service does not yet exist, provisions
-    it. Reload outcomes are published as ``ReloadTriggered``/``ReloadFailed``
-    CloudWatch metrics.
+    once and passes it in for every namespace). If the service's task definition
+    names a different image, registers a fresh task-definition revision first.
+    If it names the same image URI, forces a new deployment when
+    ``restart_if_current`` is true (an ontology publish must restart the task to
+    load the new mappings). Otherwise (the sweep) it compares image digests: the
+    service is left alone and reported ``unchanged`` only when every running
+    task's digest equals the digest the image URI resolves to now. A reused tag
+    with a new build therefore still rolls out, and when either digest cannot be
+    resolved the service is restarted as before, so a failed lookup never stops
+    a rollout. If the service does not yet exist, provisions it. Reload outcomes
+    are published as ``ReloadTriggered``/``ReloadFailed`` CloudWatch metrics.
 
     Raises:
         Exception: Re-raised after emitting ``ReloadFailed`` when an unexpected
@@ -189,10 +265,51 @@ def _reload_one(ns, version, cluster, prefix, container_image=None):
             _emit_metric("ReloadFailed", ns)
             return {"status": "failed", "reason": "cannot resolve container image"}
 
-        current_image = _get_current_service_image(cluster, service_name)
+        current = _get_current_service(cluster, service_name)
+        if current is None:
+            # No ACTIVE service: provision it, registering its first revision once.
+            raise _ServiceMissing(service_name)
+        current_task_def, current_image, deployed_task_defs = current
 
+        if current_image == container_image and not restart_if_current:
+            if digest_cache is not None and container_image in digest_cache:
+                target_digest = digest_cache[container_image]
+            else:
+                target_digest = _resolve_image_digest(container_image)
+                if digest_cache is not None:
+                    digest_cache[container_image] = target_digest
+            running_digests = _running_image_digests(cluster, service_name)
+            if target_digest and running_digests and running_digests == {target_digest}:
+                print(
+                    json.dumps(
+                        {
+                            "action": "image_current_skipped",
+                            "namespace": ns,
+                            "image": container_image,
+                            "digest": target_digest,
+                        }
+                    )
+                )
+                return {"status": "unchanged", "namespace": ns}
+            # Same URI but a different (or unknown) digest: the tag now points at
+            # another build, or we cannot tell. Restart so ECS resolves the tag
+            # again, exactly as before the skip existed.
+            known = bool(target_digest and running_digests)
+            print(
+                json.dumps(
+                    {
+                        "action": "image_digest_changed" if known else "image_digest_unknown",
+                        "namespace": ns,
+                        "image": container_image,
+                        "target_digest": target_digest or "(unknown)",
+                        "running_digests": sorted(running_digests) or ["(unknown)"],
+                    }
+                )
+            )
+        new_task_def = current_task_def
         if current_image == container_image:
-            print(json.dumps({"action": "image_unchanged", "namespace": ns, "image": container_image}))
+            if restart_if_current:
+                print(json.dumps({"action": "image_unchanged", "namespace": ns, "image": container_image}))
             resp = ecs.update_service(
                 cluster=cluster,
                 service=service_name,
@@ -210,15 +327,14 @@ def _reload_one(ns, version, cluster, prefix, container_image=None):
                     }
                 )
             )
-            task_def_arn = _register_task_definition(ns, prefix, container_image)
+            new_task_def = _register_task_definition(ns, prefix, container_image)
             resp = ecs.update_service(
                 cluster=cluster,
                 service=service_name,
-                taskDefinition=task_def_arn,
+                taskDefinition=new_task_def,
                 forceNewDeployment=True,
                 deploymentConfiguration=_DEPLOY_CONFIG,
             )
-
         deployment_id = resp["service"].get("deployments", [{}])[0].get("id", "unknown")
         print(
             json.dumps(
@@ -234,10 +350,15 @@ def _reload_one(ns, version, cluster, prefix, container_image=None):
             )
         )
         _emit_metric("ReloadTriggered", ns)
+        # Every revision a deployment still uses may be the circuit breaker's rollback
+        # target (the last completed one), so all of them stay ACTIVE.
+        if current_task_def:
+            deployed_task_defs += _deployment_task_defs(resp.get("service") or {})
+            _deregister_older_revisions([new_task_def, current_task_def, *deployed_task_defs], context)
         return {"status": "reload_triggered", "namespace": ns, "deployment_id": deployment_id}
-    except (ecs.exceptions.ServiceNotFoundException, ecs.exceptions.ServiceNotActiveException):
+    except (_ServiceMissing, ecs.exceptions.ServiceNotFoundException, ecs.exceptions.ServiceNotActiveException):
         print(json.dumps({"action": "provision_start", "namespace": ns, "service": service_name}))
-        return _provision_and_deploy(ns, service_name, cluster, prefix, version, container_image)
+        return _provision_and_deploy(ns, service_name, cluster, prefix, version, container_image, context)
     except Exception as e:
         print(
             json.dumps(
@@ -254,21 +375,137 @@ def _reload_one(ns, version, cluster, prefix, container_image=None):
         raise
 
 
-def _get_current_service_image(cluster, service_name):
-    """Get the container image currently used by the service's task definition."""
+class _ServiceMissing(Exception):
+    """The namespace has no ACTIVE VKG service yet."""
+
+
+def _deployment_task_defs(service):
+    """The task definitions of the service's PRIMARY and ACTIVE deployments."""
+    return [
+        d["taskDefinition"]
+        for d in service.get("deployments") or []
+        if d.get("taskDefinition") and d.get("status", "ACTIVE") in ("PRIMARY", "ACTIVE")
+    ]
+
+
+def _get_current_service(cluster, service_name):
+    """Return ``(task_def_arn, image, deployment_task_defs)`` of the ACTIVE service.
+
+    Returns None when there is none. A failed lookup returns empty values, so the
+    caller registers a revision and updates the service without any cleanup.
+    """
     try:
         svc_resp = ecs.describe_services(cluster=cluster, services=[service_name])
         services = svc_resp.get("services", [])
-        if not services:
-            return ""
+        if not services or services[0].get("status", "ACTIVE") != "ACTIVE":
+            return None
         task_def_arn = services[0]["taskDefinition"]
         td_resp = ecs.describe_task_definition(taskDefinition=task_def_arn)
         containers = td_resp["taskDefinition"].get("containerDefinitions", [])
-        return containers[0].get("image", "") if containers else ""
+        return task_def_arn, (containers[0].get("image", "") if containers else ""), _deployment_task_defs(services[0])
     except (ecs.exceptions.ServiceNotFoundException, ecs.exceptions.ServiceNotActiveException):
-        return ""
+        return None
     except Exception as e:
         print(json.dumps({"action": "get_image_failed", "service": service_name, "error_type": type(e).__name__}))
+        return "", "", []
+
+
+def _deregister_older_revisions(keep_arns, context=None):
+    """Deregister the family's ACTIVE revisions that are not in ``keep_arns``. Never raises.
+
+    The family is the one of ``keep_arns[0]``. Revisions newer than every kept
+    one are left alone, so a concurrent reload's fresh revision is never pulled
+    from under it. One failed deregistration doesn't stop the rest. The cleanup
+    stops when ``context`` has less than ``_CLEANUP_MIN_REMAINING_MS`` left; the
+    remaining revisions are logged and left for the next reload.
+    """
+    family, _, _ = keep_arns[0].rpartition("/")[2].rpartition(":")
+    keep = set()
+    for arn in keep_arns:
+        fam, _, rev = arn.rpartition("/")[2].rpartition(":")
+        if fam == family and rev.isdigit():
+            keep.add(int(rev))
+    if not family or not keep:
+        return
+    try:
+        stale = []
+        paginator = ecs.get_paginator("list_task_definitions")
+        # familyPrefix is a prefix match: compare the exact family on each ARN.
+        for page in paginator.paginate(familyPrefix=family, status="ACTIVE"):
+            for arn in page.get("taskDefinitionArns", []):
+                fam, _, rev = arn.rpartition("/")[2].rpartition(":")
+                if fam == family and rev.isdigit() and int(rev) < max(keep) and int(rev) not in keep:
+                    stale.append(arn)
+    except Exception as e:
+        print(json.dumps({"action": "task_defs_list_failed", "family": family, "error": str(e)}))
+        return
+    done = failed = 0
+    for i, arn in enumerate(stale):
+        if context is not None and context.get_remaining_time_in_millis() < _CLEANUP_MIN_REMAINING_MS:
+            print(json.dumps({"action": "task_defs_deregister_deferred", "family": family, "left": len(stale) - i}))
+            break
+        try:
+            ecs.deregister_task_definition(taskDefinition=arn)
+            done += 1
+        except Exception as e:
+            failed += 1
+            print(json.dumps({"action": "task_def_deregister_failed", "task_def_arn": arn, "error": str(e)}))
+    if done or failed:
+        print(json.dumps({"action": "task_defs_deregistered", "family": family, "count": done, "failed": failed}))
+
+
+def _running_image_digests(cluster, service_name):
+    """Return the set of image digests of the service's RUNNING tasks.
+
+    An empty set means "unknown": no running task, a task that has not reported
+    a digest yet, or an API error. The caller then restarts the service rather
+    than skipping it.
+    """
+    try:
+        arns = ecs.list_tasks(cluster=cluster, serviceName=service_name, desiredStatus="RUNNING").get("taskArns", [])
+        if not arns:
+            return set()
+        digests = set()
+        for i in range(0, len(arns), 100):
+            for task in ecs.describe_tasks(cluster=cluster, tasks=arns[i : i + 100]).get("tasks", []):
+                containers = task.get("containers") or []
+                digest = containers[0].get("imageDigest", "") if containers else ""
+                if not digest:
+                    return set()
+                digests.add(digest)
+        return digests
+    except Exception as e:
+        print(json.dumps({"action": "running_digest_failed", "service": service_name, "error_type": type(e).__name__}))
+        return set()
+
+
+def _resolve_image_digest(image):
+    """Return the digest an image URI points at now, or "" when it cannot be resolved.
+
+    A URI pinned with ``@sha256:`` is its own digest. A tagged ECR URI is looked
+    up with ``ecr:DescribeImages``, so a tag that was moved to a new build
+    resolves to the new digest. Anything else (a non-ECR registry, no tag, an
+    API error) is unknown.
+    """
+    pinned = _DIGEST_SUFFIX.search(image or "")
+    if pinned:
+        return pinned.group("digest")
+    match = _ECR_IMAGE.match(image or "")
+    if not match or not match.group("tag"):
+        print(json.dumps({"action": "image_digest_unresolvable", "image": image, "reason": "not a tagged ECR image"}))
+        return ""
+    region = match.group("region")
+    try:
+        client = ecr if region == os.environ.get("AWS_REGION", region) else boto3.client("ecr", region_name=region)
+        resp = client.describe_images(
+            registryId=match.group("registry"),
+            repositoryName=match.group("repo"),
+            imageIds=[{"imageTag": match.group("tag")}],
+        )
+        details = resp.get("imageDetails") or []
+        return details[0].get("imageDigest", "") if details else ""
+    except Exception as e:
+        print(json.dumps({"action": "image_digest_lookup_failed", "image": image, "error_type": type(e).__name__}))
         return ""
 
 
@@ -309,7 +546,7 @@ def _register_task_definition(ns, prefix, container_image):
     # explicitly, derive the heap from task memory (max heap ~= 75% of task
     # memory, initial heap ~= 25%) so bumping VKG_TASK_MEMORY alone scales the
     # heap in step rather than leaving a stale hardcoded -Xmx.
-    ontop_java_args = os.environ.get("VKG_ONTOP_JAVA_ARGS", "")
+    ontop_java_args = os.environ.get("VKG_ONTOP_JAVA_ARGS", "").strip()
     if not ontop_java_args:
         try:
             mem_mib = int(task_memory)
@@ -318,8 +555,30 @@ def _register_task_definition(ns, prefix, container_image):
         xmx = max(512, mem_mib * 3 // 4)
         xms = max(256, mem_mib // 4)
         ontop_java_args = f"-Xmx{xmx}m -Xms{xms}m"
+    # Bind Ontop to loopback whatever the env says (VkgStack already appends it):
+    # only translate-server calls Ontop. Appended last, it supersedes any other
+    # -Dserver.address, since Java keeps the last -D for a property.
+    if ontop_java_args.split()[-1:] != [_ONTOP_LOOPBACK_ARG]:
+        ontop_java_args = f"{ontop_java_args} {_ONTOP_LOOPBACK_ARG}"
 
     family = f"{prefix}-vkg-{ns}" if prefix else f"vkg-{ns}"
+    log_group = f"/ecs/{family}"
+    with contextlib.suppress(logs.exceptions.ResourceAlreadyExistsException):
+        logs.create_log_group(logGroupName=log_group)
+    logs.put_retention_policy(logGroupName=log_group, retentionInDays=_LOG_RETENTION_DAYS)
+    # The unprefixed group of a revision registered before the prefix gets no new
+    # writes once this revision runs; retention lets its history expire. Best-effort.
+    legacy_group = f"/ecs/vkg-{ns}"
+    try:
+        logs.put_retention_policy(logGroupName=legacy_group, retentionInDays=_LOG_RETENTION_DAYS)
+    except logs.exceptions.ResourceNotFoundException:
+        pass
+    except Exception as e:
+        print(
+            json.dumps(
+                {"action": "legacy_log_retention_failed", "namespace": ns, "log_group": legacy_group, "error": str(e)}
+            )
+        )
     td_resp = ecs.register_task_definition(
         family=family,
         taskRoleArn=task_role_arn,
@@ -353,9 +612,11 @@ def _register_task_definition(ns, prefix, container_image):
                 "logConfiguration": {
                     "logDriver": "awslogs",
                     "options": {
-                        "awslogs-group": f"/ecs/vkg-{ns}",
+                        "awslogs-group": log_group,
                         "awslogs-region": region,
                         "awslogs-stream-prefix": "vkg",
+                        # Recreates the group if it was deleted: an unchanged image
+                        # reuses this revision without calling create_log_group.
                         "awslogs-create-group": "true",
                     },
                 },
@@ -367,7 +628,7 @@ def _register_task_definition(ns, prefix, container_image):
     return task_def_arn
 
 
-def _provision_and_deploy(ns, service_name, cluster, prefix, version, container_image=None):
+def _provision_and_deploy(ns, service_name, cluster, prefix, version, container_image=None, context=None):
     """Create Cloud Map entry and launch ECS service for a new namespace."""
     cloud_map_ns_id = os.environ.get("CLOUD_MAP_NAMESPACE_ID", "")
     ontology_bucket = os.environ.get("ONTOLOGY_BUCKET", "")
@@ -429,10 +690,12 @@ def _provision_and_deploy(ns, service_name, cluster, prefix, version, container_
         print(json.dumps({"action": "service_created", "namespace": ns, "service": service_name}))
         _configure_auto_scaling(cluster, service_name)
         _emit_metric("ReloadTriggered", ns)
+        # A revision left by a failed earlier attempt is older, so this removes it too.
+        _deregister_older_revisions([task_def_arn], context)
         return {"status": "provisioned", "namespace": ns, "service": service_name}
     except ecs.exceptions.InvalidParameterException as e:
         if "already exists" in str(e).lower() or "not idempotent" in str(e).lower():
-            ecs.update_service(
+            resp = ecs.update_service(
                 cluster=cluster,
                 service=service_name,
                 taskDefinition=task_def_arn,
@@ -442,6 +705,8 @@ def _provision_and_deploy(ns, service_name, cluster, prefix, version, container_
             _configure_auto_scaling(cluster, service_name)
             print(json.dumps({"action": "reload_triggered", "namespace": ns, "service": service_name}))
             _emit_metric("ReloadTriggered", ns)
+            # The winner's revision stays while its deployment is listed.
+            _deregister_older_revisions([task_def_arn, *_deployment_task_defs(resp.get("service") or {})], context)
             return {"status": "reload_triggered", "namespace": ns}
         raise
 

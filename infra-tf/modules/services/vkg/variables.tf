@@ -69,7 +69,7 @@ variable "name_prefix" {
 }
 
 variable "ontop_java_args" {
-  description = "JVM args for the Ontop launcher, passed via ONTOP_JAVA_ARGS (NOT JAVA_OPTS, which the launcher ignores — #149 cause C). Null derives the value from memory_limit_mib (max heap ~75%, initial ~25%) so scaling memory alone scales the heap. Applied to both the CDK-style task-def template here AND to the reload Lambda's per-namespace task defs so the two stay in lockstep."
+  description = "JVM args for the Ontop launcher, passed via ONTOP_JAVA_ARGS (NOT JAVA_OPTS, which the launcher ignores — #149 cause C). Null derives the value from memory_limit_mib (max heap ~75%, initial ~25%) so scaling memory alone scales the heap. A blank value counts as unset. The module always appends -Dserver.address=127.0.0.1 (Ontop bound to loopback; only the in-task translate-server calls it). Applied to both the CDK-style task-def template here AND to the reload Lambda's per-namespace task defs so the two stay in lockstep."
   type        = string
   default     = null
 }

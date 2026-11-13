@@ -90,11 +90,24 @@ resource "aws_iam_role_policy_attachment" "execution_managed" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Per-namespace VKG services log to /ecs/vkg-* groups the execution role
-# must be able to create on first task launch.
+# Per-namespace VKG services log to /ecs/<prefix>-vkg-<ns> (v0.3.10).
+# CreateLogGroup lets awslogs-create-group recreate a deleted group.
 data "aws_iam_policy_document" "execution_logs" {
   statement {
     sid = "VkgPerNamespaceLogs"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = local.vkg_log_group_arns
+  }
+
+  # Revisions registered before log groups carried the deployment prefix log
+  # to /ecs/vkg-<ns>. Remove once no VKG service runs such a revision (and
+  # with it the DeletePlatform legacy DeleteLogGroup grant).
+  statement {
+    sid = "VkgLegacyPerNamespaceLogs"
     actions = [
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
@@ -204,10 +217,46 @@ data "aws_iam_policy_document" "reload" {
   # Authorization Reference; IAM must be `*`. Blast radius is bounded
   # by the PassVkgRoles statement below — only the vkg-task and
   # vkg-execution roles can be attached to any registered task def.
+  # List/Deregister (v0.3.10) also have no resource type; the handler
+  # deregisters only revisions of a namespace's own family that a newer one
+  # replaced.
   statement {
-    sid       = "EcsTaskDefinition"
-    actions   = ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"]
+    sid = "EcsTaskDefinition"
+    actions = [
+      "ecs:RegisterTaskDefinition",
+      "ecs:DescribeTaskDefinition",
+      "ecs:ListTaskDefinitions",
+      "ecs:DeregisterTaskDefinition",
+    ]
     resources = ["*"]
+  }
+
+  # The image-rollout sweep compares the digest of each service's running
+  # tasks with the digest the image tag points at, so a reused tag still
+  # rolls out. ListTasks has no resource type; scoped by ecs:cluster.
+  statement {
+    sid       = "EcsListTasks"
+    actions   = ["ecs:ListTasks"]
+    resources = ["*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.this.arn]
+    }
+  }
+
+  statement {
+    sid       = "EcsDescribeTasks"
+    actions   = ["ecs:DescribeTasks"]
+    resources = ["arn:${data.aws_partition.current.partition}:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:task/${aws_ecs_cluster.this.name}/*"]
+  }
+
+  # Read the digest the VKG image tag currently points at.
+  statement {
+    sid       = "EcrDescribeVkgImage"
+    actions   = ["ecr:DescribeImages"]
+    resources = [local.ecr_repository_arn]
   }
 
   # PassRole the task + execution roles to ECS only.
@@ -270,18 +319,20 @@ data "aws_iam_policy_document" "reload" {
     }
   }
 
-  # Per-namespace log-group management.
+  # Per-namespace log groups: the handler creates /ecs/<prefix>-vkg-<ns> with
+  # 30-day retention before it registers a revision (v0.3.10).
   statement {
-    sid = "VkgLogs"
-    actions = [
-      "logs:CreateLogGroup",
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-    resources = [
-      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*",
-      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*:*",
-    ]
+    sid       = "VkgLogs"
+    actions   = ["logs:CreateLogGroup", "logs:PutRetentionPolicy"]
+    resources = local.vkg_log_group_arns
+  }
+
+  # Retention on the unprefixed legacy group. Remove with the execution
+  # role's legacy grant.
+  statement {
+    sid       = "VkgLegacyLogRetention"
+    actions   = ["logs:PutRetentionPolicy"]
+    resources = ["arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*"]
   }
 
   # Read the image-URI SSM parameter.
