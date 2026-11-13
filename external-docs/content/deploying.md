@@ -107,7 +107,7 @@ constraints in practice — if either is missing, the region is not usable.
 
 | Service | Used for | Check |
 |---------|----------|-------|
-| **Amazon Bedrock AgentCore Runtime** | Hosts the Serve (query) and MCP server runtimes | [Supported regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-regions.html) — note this page lists availability per AgentCore *feature*; you need **Runtime** |
+| **Amazon Bedrock AgentCore Runtime** | Hosts the Serve (query) and MCP server runtimes | [Supported regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-regions.html) — note this page lists availability per AgentCore *feature*; you need **AgentCore Runtime microVMs**, the default compute type. COA does not use **AgentCore Runtime Instances** (EC2 capacity providers), so a region without Instances is still usable |
 | **Amazon DataZone** / SageMaker Unified Studio | Namespace domain, data-asset catalog | [Endpoints and quotas](https://docs.aws.amazon.com/general/latest/gr/datazone.html) |
 | **Amazon Neptune** | Knowledge-graph store | [Endpoints and quotas](https://docs.aws.amazon.com/general/latest/gr/neptune.html) |
 | **Amazon OpenSearch Serverless** | Vector search for retrieval | [Endpoints and quotas](https://docs.aws.amazon.com/general/latest/gr/opensearch-service.html) — Serverless is available in fewer regions than managed OpenSearch |
@@ -507,7 +507,7 @@ translation pass never finished).
 |--------------------|---------|----------|
 | `cpu` | `1024` (1 vCPU) | Fargate task CPU units. |
 | `memoryLimitMiB` (module var `memory_limit_mib`) | `2048` (2 GB) | Fargate task memory. |
-| `ontop_java_args` | derived from `memory_limit_mib` (see below) | JVM args passed to the Ontop launcher via `ONTOP_JAVA_ARGS`. |
+| `ontop_java_args` | derived from `memory_limit_mib` (see below) | JVM args passed to the Ontop launcher via `ONTOP_JAVA_ARGS`. A blank value counts as unset. The module appends `-Dserver.address=127.0.0.1` after this value, so Ontop listens on loopback only; translate-server, in the same task, is its only caller. |
 
 **When to override the defaults:** raise CPU/memory (and heap in step) when a
 namespace's VKG reports `DEGRADED` health, when large-ontology reformulation
@@ -637,6 +637,33 @@ timeout severs the socket first). A median translation on a wide namespace
 does not fit over REST at any value and callers should use the streaming
 endpoint there.
 
+#### Deep-reasoning ontology-lookup fast-fail
+
+`DEEP_REASONING_ONTOLOGY_TIMEOUT_S` (default **6** s) caps a single
+graph-backed ontology lookup in the Deep Reasoning gather loop, so a slow
+Neptune cannot swallow a large slice of the gather budget. A namespace with
+many published ontologies (tens of ontologies, over a thousand classes) can
+exceed both this cap and the graph client's own read timeout,
+`NEPTUNE_TIMEOUT` (default **8** s). The trace then shows
+`ontology_lookup failed: TimeoutError`, or `RetryError` once only the cap is
+raised. Raise both, keeping the lookup cap below
+`DEEP_REASONING_PER_TOOL_TIMEOUT_S` (45 s). `terraform plan` fails if it
+isn't, or if either value is not a positive number:
+
+```hcl
+module "serve" {
+  # ...
+  deep_reasoning_ontology_timeout_s = 20
+  neptune_timeout_s                 = 25
+}
+```
+
+These are `services/serve` module variables (emitted as
+`DEEP_REASONING_ONTOLOGY_TIMEOUT_S` and `NEPTUNE_TIMEOUT`); surface them
+through stack `50-agentcore` the same way as the stop-signal settings below.
+`NEPTUNE_TIMEOUT` applies to every query through serve's Neptune client, not
+only this lookup.
+
 #### Deep-reasoning stop signals
 
 Four optional settings let the gather loop stop on two extra signals: how sure
@@ -698,6 +725,8 @@ The user-query guardrail (`coa-dev-guardrail`) anonymizes names, email addresses
 The trade-off is answer quality: the guardrail cannot tell a person's name from a title, a customer or a product, and in a text-to-SQL question those values are the filter. The NL-to-SQL strategy refuses to run SQL that filters on a masked placeholder (see [Tier 2](serve.md#tier-2--structured-query-nl-to-sql)), so it does not return a confident wrong number for such a question, but the question is not answered from the tables. The VKG (Ontop) strategy and Deep Reasoning do not yet apply this check.
 
 Upstream's CDK deployment has a benchmarking-only switch that makes serve ignore both guardrails (`serve_guardrails_disabled`). The Terraform deployment does not expose it. There is no per-request or per-entity switch.
+
+A separate, off-by-default lever votes across several SQL candidates: a request with `options.flatSqlVoteK` set to 2–5 (or a Serve runtime with `SERVE_NL2SQL_VOTE_K` set) generates that many statements from the same schema context, runs each distinct one, and returns the result most of them agree on, at up to that many times the model and warehouse cost. It has no Terraform variable; the vote is skipped when the request deadline cannot fit it. See the `SERVE_NL2SQL_VOTE_K` row in `packages/context-manager/README.md`.
 
 #### Deep Reasoning default options
 
@@ -1484,6 +1513,33 @@ namespaces are added — relevant to the Fargate vCPU and ENI quotas in
 [A.3](#a3-quotas-to-check-before-deploying), and the reason those quotas are
 worth checking against your expected namespace count rather than against a
 single-namespace evaluation.
+
+Each of those services also has its own task-definition family,
+`<prefix>-<env>-vkg-<namespaceId>`, registered by the reload Lambda. When it
+starts an update or a provision, the Lambda deregisters the family's older
+revisions, but keeps every revision a PRIMARY or ACTIVE deployment still uses
+(the ECS circuit breaker rolls back to the last completed one) and any newer
+revision a concurrent reload registered. So during a rollout a family can have
+more than one ACTIVE revision. When the invocation runs low on time, the
+Lambda stops the cleanup and leaves the rest for the next reload (log event
+`task_defs_deregister_deferred`). Deleting a namespace deletes its service, its
+revisions and its log groups. If the service delete fails, the revisions and log
+groups are kept: the namespace delete ends in `DELETE_FAILED` and deletes them
+when you retry it. `make down-all` does not deregister them: delete every namespace
+first (the deletion pipeline cleans up each one), or deregister the
+`<prefix>-<env>-vkg-*` families by hand after the destroy.
+
+**VKG log groups.** Each service logs to `/ecs/<prefix>-<env>-vkg-<namespaceId>`.
+The reload Lambda creates the group with 30-day retention before it registers a
+revision, and ECS recreates it if it is missing when a task starts. A recreated
+group has no retention until the next revision is registered. A service still on a
+revision registered before log groups carried the deployment prefix logs to
+`/ecs/vkg-<namespaceId>`, with no retention, until a reload with a new VKG image
+registers a new revision. That reload also sets 30-day retention on the old
+group, so its history, including logs older than 30 days, then expires.
+Deleting a namespace deletes both groups, and their logs
+are gone for good. `make down-all` deletes neither: the prefixed groups expire,
+and you delete legacy groups that never got retention by hand.
 
 **Runtime-only services expand the IAM and regional surface.** The services in
 [A.2](#a2-services-called-at-runtime-but-not-provisioned) — Athena, Glue, Lake
