@@ -302,6 +302,39 @@ data "aws_iam_policy_document" "del_platform_policy" {
     }
   }
 
+  # VKG task-definition cleanup (v0.3.10). No resource type or cluster key
+  # exists for these actions; the handler deregisters only the namespace's own
+  # `<prefix>-vkg-<ns>` family.
+  dynamic "statement" {
+    for_each = var.vkg_cluster_arn != null ? [1] : []
+    content {
+      actions   = ["ecs:ListTaskDefinitions", "ecs:DeregisterTaskDefinition"]
+      resources = ["*"]
+    }
+  }
+
+  # VKG log-group cleanup (v0.3.10). `/ecs/vkg-*` is the unprefixed legacy
+  # name and matches every such group in the account; the handler deletes only
+  # `/ecs/vkg-<id>` of a namespace in DELETING state. Remove it together with
+  # the VKG execution role's legacy grant.
+  dynamic "statement" {
+    for_each = var.vkg_cluster_arn != null ? [1] : []
+    content {
+      actions = ["logs:DeleteLogGroup"]
+      resources = [
+        "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${var.name_prefix}-vkg-*",
+        "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/vkg-*",
+      ]
+    }
+  }
+
+  # DeletePlatform acts only on a namespace whose record says DELETING, and
+  # takes the workgroup and DataZone project ids from that record (v0.3.10).
+  statement {
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.namespaces.arn]
+  }
+
   # Cloud Map service discovery cleanup
   dynamic "statement" {
     for_each = var.cloud_map_namespace_id != null ? [1] : []
@@ -351,6 +384,7 @@ resource "aws_lambda_function" "del_platform" {
         ROLES_TABLE                  = var.roles_table_name
         DATAZONE_DOMAIN_ID           = aws_datazone_domain.this.id
         PROJECT_ACCESS_ROLE_ARN      = aws_iam_role.namespace_api.arn
+        NAMESPACES_TABLE             = aws_dynamodb_table.namespaces.name
       },
       var.vkg_cluster_arn != null ? { VKG_CLUSTER_ARN = var.vkg_cluster_arn } : {},
       var.cloud_map_namespace_id != null ? { CLOUD_MAP_NAMESPACE_ID = var.cloud_map_namespace_id } : {},
