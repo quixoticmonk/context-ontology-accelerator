@@ -39,6 +39,7 @@ RUN pip install --no-cache-dir /tmp/control-plane-server/ && rm -rf /tmp/control
 # as HIGH, in the SAME final layer (a separate RUN would leave the old versions in a
 # lower layer that scanners still attribute to the image):
 #   - setuptools (CVE-2025-47273): build toolchain, not a declared dependency — bump it.
+#     pip is NOT upgraded (see scripts/pip_sbom_check.py).
 #   - msgpack: an ORPHAN — nothing in first-party code or any installed package imports
 #     or declares it (verified via grep + pipdeptree --reverse); it is pulled in
 #     transiently during resolution and left behind. Remove it outright rather than ship
@@ -49,7 +50,7 @@ COPY packages/ontology-engine/requirements.txt .
 # of scanner-flagged pins like spaCy's black==22.3.0 (CVE-2026-31900, never installed).
 # Only exact tests/ or test/ names, so numpy.testing / sklearn._testing stay intact.
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" && \
+    pip install --no-cache-dir --upgrade "setuptools>=78.1.1" && \
     pip uninstall -y msgpack && \
     python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
 
@@ -58,7 +59,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # is never invoked. Its bundled JARs (jena-core, log4j 2.19, httpclient 4.2,
 # xercesImpl, …) carry Critical/High CVEs that have no bearing on our code path —
 # emptying the directory deletes them from the image. HermiT.jar (in ../hermit)
-# is self-contained and untouched. Also upgrade pip to pick up its own fixes.
+# is self-contained and untouched.
 #
 # The directory itself MUST survive: owlready2/reasoning.py runs
 # os.listdir(<pkg>/pellet) at *import time* (to build the Pellet classpath), so
@@ -66,8 +67,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # breaks HermiT too — surfacing as REASONER_ERROR at runtime. An empty dir makes
 # os.listdir return [] (empty classpath), which is fine since Pellet is unused.
 RUN PELLET_DIR="$(python -c 'import owlready2, os; print(os.path.join(os.path.dirname(owlready2.__file__), "pellet"))')" && \
-    find "$PELLET_DIR" -mindepth 1 -delete && \
-    pip install --no-cache-dir --upgrade pip
+    find "$PELLET_DIR" -mindepth 1 -delete
 # Fail the build loudly if owlready2 can't import after the Pellet strip (e.g. a
 # future change removes the pellet dir), instead of degrading to REASONER_ERROR
 # at runtime.
@@ -79,12 +79,22 @@ COPY --chown=appuser:appuser packages/ontology-engine/tests/fixtures/data-catalo
 RUN mkdir -p /app/output /app/data && chown appuser:appuser /app/output /app/data
 ENV PYTHONPATH=/app/src
 
+# Prefer IPv4 unless built with PREFER_IPV4=false. In a dual-stack subnet
+# without IPv6 egress to AWS, IPv6-first connects stall for minutes, long
+# enough to expire a request's SigV4 signature. Kept before USER (needs root).
+ARG PREFER_IPV4=true
+RUN if [ "$PREFER_IPV4" = "true" ]; then echo "precedence ::ffff:0:0/96 100" >> /etc/gai.conf; fi
+
 USER appuser
 
 # Fail the build if the code this image runs imports anything the image cannot (scripts/image_import_check.py).
 # llama_index is optional: coa_common.embeddings imports it lazily, for kg-build and serve only.
 COPY scripts/image_import_check.py /tmp/
 RUN python /tmp/image_import_check.py coa_ontology.main --optional llama_index
+
+# Fail the build if the image's python can import a pip with a vendored SBOM (scripts/pip_sbom_check.py).
+COPY scripts/pip_sbom_check.py /tmp/
+RUN python /tmp/pip_sbom_check.py
 EXPOSE 8001
 
 # Health check hits the FastAPI /health endpoint (see main.py line 189).
