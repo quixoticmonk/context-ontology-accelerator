@@ -91,7 +91,10 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
 COPY smithy-generated/control-plane-python-server/ /tmp/server/
 RUN pip install --no-cache-dir --root-user-action=ignore /tmp/server/ && rm -rf /tmp/server/
 COPY packages/sources/ /tmp/sources/
-# Install the documents package, then upgrade pip to clear its own advisories.
+# Install the documents package, then uninstall the Lambda python's pip: nothing at runtime
+# runs it, and its vendored SBOM trips scanners (see scripts/pip_sbom_check.py). This RUN is
+# the image's last pip use. /usr/bin/pip (the RPM pip of the system python3.9 the dnf step
+# brings in) stays: it is OS-owned, scanned through ALAS, and has no vendored SBOM.
 # setuptools >= 83 (the constraints' floor) has no pkg_resources, which setuptools 82
 # removed, so the build then imports the unstructured partitioners the handler loads
 # lazily: a dependency that imports pkg_resources at module level fails the build
@@ -102,10 +105,10 @@ COPY packages/sources/ /tmp/sources/
 # tests/ or test/) from installed packages in the same layer, after the import checks.
 # Dead weight at runtime; numpy.testing / sklearn._testing stay intact.
 RUN pip install --no-cache-dir --root-user-action=ignore /tmp/sources/ && rm -rf /tmp/sources/ && \
-    pip install --no-cache-dir --root-user-action=ignore --upgrade pip && \
     python -c "import unstructured.partition.auto, unstructured.partition.pdf, unstructured.partition.docx" && \
     python -c "import setuptools; assert int(setuptools.__version__.split('.')[0]) >= 83, setuptools.__version__" && \
-    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]"
+    python -c "import pathlib,shutil,sysconfig; dirs={sysconfig.get_paths()[k] for k in ('purelib','platlib')}; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('tests') if p.is_dir()]; [shutil.rmtree(p,ignore_errors=True) for d in dirs for p in pathlib.Path(d).rglob('test') if p.is_dir()]" && \
+    pip uninstall -y --root-user-action=ignore pip
 
 # numba's @njit(cache=True) needs a writable cache dir (/tmp is writable on Lambda)
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
@@ -118,4 +121,8 @@ USER 1000
 # llama_index is optional: coa_common.embeddings imports it lazily, for kg-build and serve only.
 COPY scripts/image_import_check.py /tmp/
 RUN python /tmp/image_import_check.py coa_sources.documents.preprocessing.handler --optional llama_index
+
+# Fail the build if the image's python can import a pip with a vendored SBOM (scripts/pip_sbom_check.py).
+COPY scripts/pip_sbom_check.py /tmp/
+RUN python /tmp/pip_sbom_check.py --absent
 CMD ["coa_sources.documents.preprocessing.handler.handler"]
