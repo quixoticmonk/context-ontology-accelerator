@@ -13,6 +13,11 @@ locals {
   dz_project_access_name = "${var.name_prefix}-dz-project-access"
   login_role_name        = "${var.name_prefix}-smus-login"
 
+  # DataZone domains in this account and region. Domain-scoped calls are
+  # authorized against the domain ARN; the exact ID is not usable in the SMUS
+  # execution policy because the domain references that role.
+  datazone_domains_arn = "arn:${data.aws_partition.current.partition}:datazone:${var.region}:${data.aws_caller_identity.current.account_id}:domain/*"
+
   # ── Lambda function names ─────────────────────────────────────────
   fn_namespace_api      = "${var.name_prefix}-namespace-api"
   fn_roles_api          = "${var.name_prefix}-roles-api"

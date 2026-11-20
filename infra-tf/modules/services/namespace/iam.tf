@@ -75,31 +75,33 @@ resource "aws_iam_role" "smus_exec" {
 # checkov:skip=CKV_AWS_356:Residual `*` is LakeFormation only; those actions do not support resource-level IAM (Service Authorization Reference).
 # checkov:skip=CKV_AWS_111:LakeFormation grant/revoke are authorized by the LF permission model, not IAM ARN.
 data "aws_iam_policy_document" "smus_exec" {
+  # DataZone domain read. The domain lifecycle (create, update, delete, list) is
+  # owned by Terraform and the deploying principal, never by this role, so it is
+  # not granted here (COA v0.3.11).
   statement {
-    sid = "DataZoneDomain"
+    sid       = "DataZoneDomainRead"
+    actions   = ["datazone:GetDomain"]
+    resources = [local.datazone_domains_arn]
+  }
+
+  # DataZone project and environment operations, on domains in this account and
+  # region only. DataZone authorizes domain-scoped calls against the domain ARN,
+  # even for actions the Service Authorization Reference lists without a resource
+  # type. The exact domain ID cannot be used here: the domain references this
+  # role. Deletes are not granted: project deletion runs as the dz-project-access
+  # role (see cleanup.delete_smu_project), and the metadata-only project profile
+  # has no environments to delete.
+  statement {
+    sid = "DataZoneProjectEnvironment"
     actions = [
-      "datazone:CreateDomain",
-      "datazone:GetDomain",
-      "datazone:UpdateDomain",
-      "datazone:DeleteDomain",
-      "datazone:ListDomains",
       "datazone:CreateProject",
       "datazone:GetProject",
       "datazone:UpdateProject",
-      "datazone:DeleteProject",
       "datazone:CreateEnvironment",
       "datazone:GetEnvironment",
       "datazone:UpdateEnvironment",
-      "datazone:DeleteEnvironment",
     ]
-    # Scoped to DataZone domains in this account + region. CreateDomain
-    # keeps a wildcard resource name (matches the SageMaker section's
-    # `domain/*` pattern in the same file — the domain ID isn't
-    # knowable until create-time). Everything else operates on domains
-    # this account owns.
-    resources = [
-      "arn:${data.aws_partition.current.partition}:datazone:${var.region}:${data.aws_caller_identity.current.account_id}:domain/*",
-    ]
+    resources = [local.datazone_domains_arn]
   }
 
   statement {
@@ -199,16 +201,38 @@ data "aws_iam_policy_document" "smus_exec" {
     ]
   }
 
-  # IAM operations scoped to roles created by this stack only.
+  # IAM read operations scoped to roles created by this stack only.
   statement {
-    sid = "IAMPrefixed"
+    sid = "IAMReadPlatformRoles"
     actions = [
       "iam:GetRole",
-      "iam:PassRole",
       "iam:ListRolePolicies",
       "iam:GetRolePolicy",
     ]
     resources = ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}*"]
+  }
+
+  # PassRole only on this role itself, and only to the SMUS services that run
+  # domain work as the domain execution role (COA v0.3.11). The metadata-only
+  # project profile has no blueprints, so the domain has no other role to pass.
+  # Never grant PassRole on the prefixed wildcard: that would let this role hand
+  # the Lake Formation admin and data-access roles to any service.
+  statement {
+    sid       = "IAMPassSelfToSMUSServices"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.smus_exec.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values = [
+        "datazone.amazonaws.com",
+        "sagemaker.amazonaws.com",
+        "glue.amazonaws.com",
+        "lakeformation.amazonaws.com",
+        "athena.amazonaws.com",
+      ]
+    }
   }
 
   statement {
@@ -303,8 +327,11 @@ resource "aws_iam_role_policy_attachment" "smus_exec_domain_execution" {
 # pipeline's DeletePlatform step assumes it for DeleteProject.
 
 data "aws_iam_policy_document" "dz_project_access_trust" {
+  # sts:TagSession (COA v0.3.11): a caller whose session carries transitive
+  # session tags, such as a CI job's session, hands them on to every role it
+  # assumes, and STS refuses that unless the target role allows sts:TagSession.
   statement {
-    actions = ["sts:AssumeRole"]
+    actions = ["sts:AssumeRole", "sts:TagSession"]
 
     principals {
       type        = "AWS"
