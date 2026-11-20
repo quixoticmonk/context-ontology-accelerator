@@ -182,6 +182,10 @@ It feeds the ontology-engine `GROUNDING_LLM_MODEL_ID` environment variable; the
 grounding region follows `LLM_REGION` (the deploy region). Like the other model keys it is
 geography-validated when the ontology ECS task starts.
 
+GraphRAG lexical retrieval calls the model through llama-index's `BedrockConverse`, which accepts only
+the models in its own table (in the 0.15.x releases serve installs: the Claude 4.5, 4.6, 4.7, 4.8, 5 and
+5.5 models, among others). If `bedrock_llm_model_id` names another model, the Tier 3 lexical retrieval
+strategies fail when they start, while the rest of serve keeps working.
 Example `infra-tf/shared.tfvars` for an `ap-northeast-1` deployment (a bare
 in-region ID for the embedding model because Cohere Embed v4 publishes no
 `jp.` profile):
@@ -493,6 +497,24 @@ lambda_reserved_concurrency = 0
 
 The value must be a non-negative integer. `0` omits the reservation entirely — the functions then draw from the shared unreserved pool with no dedicated guarantee or cap, which is fine for a single-tenant evaluation.
 
+#### IPv4 preference in the service images
+
+The Python images that run in the VPC (Serve, MCP, ontology engine, database scan enrichment and
+document KG build) prefer IPv4 when an endpoint resolves to both IPv4 and IPv6 addresses. It is **on by
+default** because it changes nothing where IPv4 works, and it fixes dual-stack subnets without IPv6 egress
+to AWS, where each IPv6 connect stalls for minutes and signed OpenSearch Serverless requests expire with
+`403 Forbidden`. Turn it off only if your subnets route IPv6 to AWS and you want IPv6 tried first.
+
+```bash
+# Keep glibc's IPv6-first address order (default: prefer IPv4)
+make up-all PREFER_IPV4=false
+```
+
+The value must be `true` or `false`; the image build stops otherwise. It is a Docker build argument
+(`--build-arg PREFER_IPV4`), set by the `image/Makefile` of each of those five images, so changing it
+builds new images. ECR tags are immutable and follow the commit, so commit before you rebuild, or the push
+of the unchanged tag is refused. The VKG and document preprocessing images do not use it.
+
 #### VKG task sizing
 
 Each namespace's Virtual Knowledge Graph runs as a Fargate task hosting Ontop.
@@ -716,7 +738,9 @@ These four are read only under their `DEEP_REASONING_*` names; there is no
 `AGENTIC_*` alias for them. Serve reads the values once, when the runtime
 starts. A malformed or out-of-range value logs a warning and falls back to the
 default. Changing a value is an AgentCore runtime update: re-apply
-`50-agentcore`, after which new sessions start with the new values.
+`50-agentcore`, after which new sessions start with the new values. An MCP
+client keeps its Context Manager session for as long as its MCP session is
+active, so reconnect it to pick them up.
 
 #### PII masking in questions
 
@@ -777,6 +801,7 @@ the relevant Lambda when tuning a large or pathological source.
 
 | Variable | Set By | Purpose |
 |----------|--------|---------|
+| `SCL_CM_SESSION_SCOPE` | MCP server `config.py` default | How MCP tool calls map onto Context Manager runtime sessions. `mcp_session` (default): one per (caller, MCP session). `caller`: one per (caller, namespace), shared across that caller's MCP sessions, for clients that open a new MCP session per tool call. Not set by `modules/services/mcp/locals.tf`; to change it, add it to the MCP runtime's environment there. |
 | `SCL_MCP_MODE` | `modules/services/mcp/main.tf` | Switches the container entrypoint between Context Manager (default) and MCP Server. When set to `"true"`, the container starts in MCP mode. |
 | `BULK_REVIEW_PAGE_BUDGET` | `worker.py` default | Per-invocation table budget for the bulk-review worker (default `1000`); when a source has more tables, the worker processes one page, re-enqueues a continuation, and resumes across chained invocations rather than silently capping. |
 | `BULK_REVIEW_WALL_CLOCK_BUDGET_S` | `worker.py` default | Per-invocation wall-clock budget in seconds (default `240`), a second guard under the 5-minute Lambda timeout that stops the worker after the current search page and continues in a fresh invocation when neared. |
@@ -1540,6 +1565,20 @@ group, so its history, including logs older than 30 days, then expires.
 Deleting a namespace deletes both groups, and their logs
 are gone for good. `make down-all` deletes neither: the prefixed groups expire,
 and you delete legacy groups that never got retention by hand.
+
+A service at zero tasks stays there until something sets its desired count
+again: a forced deployment keeps the count, and the CPU target-tracking policy
+cannot scale out from zero. So when a reload or a sweep finds a service at zero,
+the Lambda registers the service's auto scaling again with the settings it gets
+at provision time (MinCapacity 1, MaxCapacity 3 and the CPU target-tracking
+policy), which replaces any change made to them by hand, and then sets the
+desired count to 1. That brings back a service someone scaled to zero by hand,
+and one that a newer release scaled down before it was rolled back. The
+`reload_triggered` log event then has `"scaled_up_from_zero": true` and
+`"min_capacity_restored"`. If registering the auto scaling fails, the service
+still gets its task, but MinCapacity stays 0, so the Lambda also emits
+`ReloadFailed` and the reload alarm fires; the `autoscaling_failed` log event has
+the error.
 
 **Runtime-only services expand the IAM and regional surface.** The services in
 [A.2](#a2-services-called-at-runtime-but-not-provisioned) — Athena, Glue, Lake
