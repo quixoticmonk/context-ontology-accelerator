@@ -18,6 +18,10 @@ IMAGE_KEY    ?= sources-kg-build
 ECR_REPO_URL ?= $(shell aws ssm get-parameter --region $(REGION) --name $(SSM_PREFIX)/ecr/$(IMAGE_KEY)/url --query Parameter.Value --output text 2>/dev/null)
 IMAGE_TAG    ?= $(shell git -C $(REPO_ROOT) rev-parse --short HEAD 2>/dev/null || echo latest)
 PLATFORM     := linux/amd64
+# Python service images prefer IPv4 over IPv6 unless built with false (COA v0.3.11).
+# Passed to the Dockerfile as --build-arg PREFER_IPV4; override with
+# `make up-all PREFER_IPV4=false`.
+PREFER_IPV4 ?= true
 
 .PHONY: build push tag clean help check-repo
 .DEFAULT_GOAL := help
@@ -32,8 +36,9 @@ check-repo:
 	fi
 
 build: check-repo ## Build the kg-build image
+	@case "$(PREFER_IPV4)" in true|false) ;; *) echo "ERROR: PREFER_IPV4 must be true or false, got: $(PREFER_IPV4)"; exit 1;; esac
 	@echo "==> Building $(ECR_REPO_URL):$(IMAGE_TAG) ($(PLATFORM))"
-	docker build --platform $(PLATFORM) -f $(DOCKERFILE) -t $(ECR_REPO_URL):$(IMAGE_TAG) $(REPO_ROOT)
+	docker build --platform $(PLATFORM) --build-arg PREFER_IPV4=$(PREFER_IPV4) -f $(DOCKERFILE) -t $(ECR_REPO_URL):$(IMAGE_TAG) $(REPO_ROOT)
 
 push: build ## Build + push + write tag file
 	@registry=$$(echo $(ECR_REPO_URL) | cut -d/ -f1); \

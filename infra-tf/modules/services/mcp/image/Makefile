@@ -39,6 +39,10 @@ ECR_REPO_URL ?= $(shell aws ssm get-parameter --region $(REGION) --name $(SSM_PR
 # Content-addressed tag: short git SHA keeps the image immutable per commit.
 IMAGE_TAG    ?= $(shell git -C $(REPO_ROOT) rev-parse --short HEAD 2>/dev/null || echo latest)
 PLATFORM     := linux/arm64
+# Python service images prefer IPv4 over IPv6 unless built with false (COA v0.3.11).
+# Passed to the Dockerfile as --build-arg PREFER_IPV4; override with
+# `make up-all PREFER_IPV4=false`.
+PREFER_IPV4 ?= true
 
 .PHONY: build push login tag clean help check-repo
 .DEFAULT_GOAL := help
@@ -54,10 +58,12 @@ check-repo:
 	fi
 
 build: check-repo ## Build the MCP server image for linux/arm64
+	@case "$(PREFER_IPV4)" in true|false) ;; *) echo "ERROR: PREFER_IPV4 must be true or false, got: $(PREFER_IPV4)"; exit 1;; esac
 	@echo "==> Building $(ECR_REPO_URL):$(IMAGE_TAG) ($(PLATFORM))"
 	docker build \
 	  --platform $(PLATFORM) \
 	  -f $(DOCKERFILE) \
+	  --build-arg PREFER_IPV4=$(PREFER_IPV4) \
 	  -t $(ECR_REPO_URL):$(IMAGE_TAG) \
 	  $(REPO_ROOT)
 
