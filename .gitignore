@@ -244,3 +244,9 @@ connectors/**/target/
 
 .ash
 !.ash.yaml
+
+# Terraform working state (the lock file .terraform.lock.hcl is committed)
+terraform/**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
