@@ -65,38 +65,68 @@ locals {
   #
   # Optional `include_error`: adds `#e = :e` to the UpdateExpression
   # for FAILED terminals so the errorMessage is persisted.
+  #
+  # Optional `keep_reason` (COA v0.3.11): the KG-build task records its own
+  # reason before it exits non-zero (SCAN_FAILED with an errorMessage such as
+  # "All documents quarantined"). The generic failure write would replace that
+  # reason with the ECS task description, so it runs only while the source is
+  # not SCAN_FAILED yet. DocUpdateStatusIngesting sets SCANNING at the start of
+  # every run, so a SCAN_FAILED seen here was written during this run.
+  # attribute_exists(PK) stops the write from re-creating a source deleted
+  # mid-run as a stub row, since `<>` is also true for a missing item. A
+  # refused condition is the expected outcome and is never retried; any other
+  # UpdateItem error (throttling, a service fault) is retried, because nothing
+  # else moves a document source out of SCANNING. The condition also makes a
+  # retry safe: if an attempt wrote and still returned an error, the retry
+  # finds SCAN_FAILED and is refused.
   doc_status_update = {
     for entry in [
-      { key = "DocUpdateStatusIngesting", status = "SCANNING", include_error = false, next = "SourcesPreProcessing" },
-      { key = "DocUpdateStatusCompleted", status = "COMPLETED", include_error = false, next = null },
-      { key = "DocUpdateStatusFailed", status = "SCAN_FAILED", include_error = true, next = "DocIngestionFailed" },
-      { key = "DocUpdateStatusDeleteFailed", status = "DELETE_FAILED", include_error = true, next = "DocDeletionFailed" },
+      { key = "DocUpdateStatusIngesting", status = "SCANNING", include_error = false, keep_reason = false, next = "SourcesPreProcessing" },
+      { key = "DocUpdateStatusCompleted", status = "COMPLETED", include_error = false, keep_reason = false, next = null },
+      { key = "DocUpdateStatusFailed", status = "SCAN_FAILED", include_error = true, keep_reason = true, next = "DocIngestionFailed" },
+      { key = "DocUpdateStatusDeleteFailed", status = "DELETE_FAILED", include_error = true, keep_reason = false, next = "DocDeletionFailed" },
       ] : entry.key => merge(
       {
         Type     = "Task"
         Resource = "arn:${data.aws_partition.current.partition}:states:::dynamodb:updateItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.sources.name
-          Key = {
-            PK = { "S.$" = "States.Format('NS#{}', $.namespace_id)" }
-            SK = { "S.$" = "States.Format('SRC#{}', $.doc_source_id)" }
-          }
-          UpdateExpression = entry.include_error ? "SET #s = :s, #u = :u, #e = :e" : "SET #s = :s, #u = :u"
-          ExpressionAttributeNames = entry.include_error ? {
-            "#s" = "status", "#u" = "updatedAt", "#e" = "errorMessage"
-            } : {
-            "#s" = "status", "#u" = "updatedAt"
-          }
-          ExpressionAttributeValues = entry.include_error ? {
-            ":s" = { S = entry.status }
-            ":u" = { "S.$" = "$$.State.EnteredTime" }
-            ":e" = { "S.$" = "$.error.Cause" }
-            } : {
-            ":s" = { S = entry.status }
-            ":u" = { "S.$" = "$$.State.EnteredTime" }
-          }
-        }
+        Parameters = merge(
+          {
+            TableName = aws_dynamodb_table.sources.name
+            Key = {
+              PK = { "S.$" = "States.Format('NS#{}', $.namespace_id)" }
+              SK = { "S.$" = "States.Format('SRC#{}', $.doc_source_id)" }
+            }
+            UpdateExpression = entry.include_error ? "SET #s = :s, #u = :u, #e = :e" : "SET #s = :s, #u = :u"
+            ExpressionAttributeNames = entry.include_error ? {
+              "#s" = "status", "#u" = "updatedAt", "#e" = "errorMessage"
+              } : {
+              "#s" = "status", "#u" = "updatedAt"
+            }
+            ExpressionAttributeValues = entry.include_error ? {
+              ":s" = { S = entry.status }
+              ":u" = { "S.$" = "$$.State.EnteredTime" }
+              ":e" = { "S.$" = "$.error.Cause" }
+              } : {
+              ":s" = { S = entry.status }
+              ":u" = { "S.$" = "$$.State.EnteredTime" }
+            }
+          },
+          { for k, v in { ConditionExpression = "attribute_exists(PK) AND #s <> :s" } : k => v if entry.keep_reason },
+        )
         ResultPath = null
+      },
+      # for/if instead of `cond ? {...} : {}`: HCL requires both branches of a
+      # conditional to have the same object type.
+      {
+        for k, v in {
+          Retry = [
+            { ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"], MaxAttempts = 0 },
+            { ErrorEquals = ["States.ALL"], MaxAttempts = 3, BackoffRate = 2, IntervalSeconds = 2 },
+          ]
+          Catch = [
+            { ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"], ResultPath = "$.failureReasonKept", Next = entry.next },
+          ]
+        } : k => v if entry.keep_reason
       },
       entry.next != null ? { Next = entry.next } : { End = true },
     )

@@ -286,19 +286,32 @@ locals {
               SK = { "S.$" = "States.Format('SRC#{}', $.sourceId)" }
             }
             UpdateExpression = "SET #s = :s, #u = :u, #l = :l"
+            # Only while the row exists (a deleted source is not recreated) and
+            # no newer run has recorded itself in currentScanJobId; same
+            # expression as SCAN_RUN_FENCE in coa_sources/database/scan_run.py
+            # (COA v0.3.11). A failed condition is caught below, so the
+            # execution still ends in DbScanFailed without writing the source.
+            ConditionExpression = "attribute_exists(PK) AND (attribute_not_exists(#run) OR #run <= :run)"
             ExpressionAttributeNames = {
-              "#s" = "status"
-              "#u" = "updatedAt"
-              "#l" = "lastScanJobId"
+              "#s"   = "status"
+              "#u"   = "updatedAt"
+              "#l"   = "lastScanJobId"
+              "#run" = "currentScanJobId"
             }
             ExpressionAttributeValues = {
-              ":s" = { S = "SCAN_FAILED" }
-              ":u" = { "S.$" = "$$.State.EnteredTime" }
-              ":l" = { "S.$" = "$.scanJobSK" }
+              ":s"   = { S = "SCAN_FAILED" }
+              ":u"   = { "S.$" = "$$.State.EnteredTime" }
+              ":l"   = { "S.$" = "$.scanJobSK" }
+              ":run" = { "S.$" = "$.scanJobSK" }
             }
           }
           ResultPath = null
-          Next       = "DbScanFailed"
+          Catch = [{
+            ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"]
+            ResultPath  = "$.sourceStatusSkipped"
+            Next        = "DbScanFailed"
+          }]
+          Next = "DbScanFailed"
         }
         DbScanFailed = {
           Type  = "Fail"

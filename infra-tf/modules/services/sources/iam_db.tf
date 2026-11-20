@@ -395,6 +395,11 @@ data "aws_iam_policy_document" "federation_provisioner" {
       "lakeformation:DeregisterResource",
       "lakeformation:DescribeResource",
       "lakeformation:GrantPermissions",
+      # And revoke it when the last source referencing a native Glue database
+      # is deleted (COA v0.3.11). Revoking needs a Lake Formation data-lake
+      # admin, which this role is; the sources API assumes it rather than
+      # being one.
+      "lakeformation:RevokePermissions",
     ]
     resources = ["*"]
   }

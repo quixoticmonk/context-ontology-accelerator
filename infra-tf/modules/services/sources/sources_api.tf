@@ -319,7 +319,12 @@ resource "aws_lambda_function" "sources_api" {
       SMUS_DOMAIN_ID                  = var.smus_domain_id
       PROJECT_ACCESS_ROLE_ARN         = var.smus_project_access_role_arn
       FEDERATION_PROVISIONER_ROLE_ARN = aws_iam_role.federation_provisioner.arn
-      RESOURCE_PREFIX                 = "${var.name_prefix}-"
+      # SSM parameter holding the serve runtime role ARN (written by the serve
+      # module). The native-grant revoke on source delete reads it through the
+      # federation provisioner role, the only principal that can revoke what
+      # it granted (COA v0.3.11).
+      CONSUMER_QUERY_ROLE_SSM_PARAM = "${var.ssm_prefix}/${var.env}/serve/runtime-role-arn"
+      RESOURCE_PREFIX               = "${var.name_prefix}-"
       # BARE prefix (not `{prefix}-{env}-`) — keys the `{prefix}:namespace`
       # tag on every resource this role checks at registration. Must
       # equal the prefix in `namespace_tag_key` above.
